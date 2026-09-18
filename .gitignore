@@ -270,3 +270,7 @@ page4.png
 /t6.txt
 /t7.txt
 /weld.txt
+
+# ---- 本机工具产物 / 运行残留（非项目内容）----
+steamtools-ca.crt
+small.log
