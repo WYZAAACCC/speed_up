@@ -1,0 +1,97 @@
+Font 'default' does not have a glyph for '\u6eb6' [U+6eb6], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u8d28' [U+8d28], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u603b' [U+603b], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u91cf' [U+91cf], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u76f8' [U+76f8], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u5bf9' [U+5bf9], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u6f02' [U+6f02], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u79fb' [U+79fb], substituting with a dummy symbol.
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 26230 (\N{CJK UNIFIED IDEOGRAPH-6676}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 31890 (\N{CJK UNIFIED IDEOGRAPH-7C92}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 28040 (\N{CJK UNIFIED IDEOGRAPH-6D88}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 22833 (\N{CJK UNIFIED IDEOGRAPH-5931}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 26102 (\N{CJK UNIFIED IDEOGRAPH-65F6}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 28342 (\N{CJK UNIFIED IDEOGRAPH-6EB6}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 36136 (\N{CJK UNIFIED IDEOGRAPH-8D28}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 26159 (\N{CJK UNIFIED IDEOGRAPH-662F}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 21542 (\N{CJK UNIFIED IDEOGRAPH-5426}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 23432 (\N{CJK UNIFIED IDEOGRAPH-5B88}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 24658 (\N{CJK UNIFIED IDEOGRAPH-6052}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 65311 (\N{FULLWIDTH QUESTION MARK}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 38388 (\N{CJK UNIFIED IDEOGRAPH-95F4}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+/root/work/phase0a/analyze.py:174: UserWarning: Glyph 25968 (\N{CJK UNIFIED IDEOGRAPH-6570}) missing from font(s) DejaVu Sans.
+  fig.tight_layout()
+Font 'default' does not have a glyph for '\u6eb6' [U+6eb6], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u8d28' [U+8d28], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u603b' [U+603b], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u91cf' [U+91cf], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u76f8' [U+76f8], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u5bf9' [U+5bf9], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u6f02' [U+6f02], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u79fb' [U+79fb], substituting with a dummy symbol.
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 26230 (\N{CJK UNIFIED IDEOGRAPH-6676}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 31890 (\N{CJK UNIFIED IDEOGRAPH-7C92}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 28040 (\N{CJK UNIFIED IDEOGRAPH-6D88}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 22833 (\N{CJK UNIFIED IDEOGRAPH-5931}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 26102 (\N{CJK UNIFIED IDEOGRAPH-65F6}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 28342 (\N{CJK UNIFIED IDEOGRAPH-6EB6}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 36136 (\N{CJK UNIFIED IDEOGRAPH-8D28}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 26159 (\N{CJK UNIFIED IDEOGRAPH-662F}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 21542 (\N{CJK UNIFIED IDEOGRAPH-5426}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 23432 (\N{CJK UNIFIED IDEOGRAPH-5B88}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 24658 (\N{CJK UNIFIED IDEOGRAPH-6052}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 65311 (\N{FULLWIDTH QUESTION MARK}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 38388 (\N{CJK UNIFIED IDEOGRAPH-95F4}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+/root/work/phase0a/analyze.py:176: UserWarning: Glyph 25968 (\N{CJK UNIFIED IDEOGRAPH-6570}) missing from font(s) DejaVu Sans.
+  fig.savefig(out, dpi=150, bbox_inches="tight")
+Font 'default' does not have a glyph for '\u6eb6' [U+6eb6], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u8d28' [U+8d28], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u603b' [U+603b], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u91cf' [U+91cf], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u76f8' [U+76f8], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u5bf9' [U+5bf9], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u6f02' [U+6f02], substituting with a dummy symbol.
+Font 'default' does not have a glyph for '\u79fb' [U+79fb], substituting with a dummy symbol.
+读入 76 行，时间范围 0 → 1500
+
+====================================================================
+溶质总量：初始 349854.7057，最终 349854.7057
+总漂移  ：+0.000000e+00  （相对 +0.000e+00）
+最大漂移：+0.000e+00  @ t=0
+====================================================================
+晶粒消失事件：0 次
+
+没有检测到晶粒消失事件。
+提示：把仿真时间加长，或增加初始晶粒数，让晶粒真正开始消失。
+
+图已保存：./phase0a_mass.png

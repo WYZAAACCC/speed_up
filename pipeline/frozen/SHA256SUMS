@@ -1,0 +1,16 @@
+# Gate 0 步骤 1 冻结登记表  ——  生成: 2026-09-18
+# 校验: cd pipeline/frozen && sha256sum -c SHA256SUMS
+#
+# ⚠ 2026-09-18 两次更新，都是**纯增量**，默认产出逐位不变（已用 diff 验证）：
+#   1) 增加 --wgb 选项（默认 4.0e-6）—— 用于修界面欠解析（Gate 0 §6.5）
+#   2) 文件头增加 GENERATED_PARAMS 行 —— 供工具读实参，
+#      因为 splice 会重写 d.i 的文件头，且原来的 [consts] 那行是静态模板文本
+#   验证：默认参数下生成的 stage1_meltpool_d.i 与改动前 sha256 均为
+#   2c10a73b47c2d679ac8869179d5b1b8887f0ef6f3547253642c17d29f767148f
+#
+f61c725042bc27089bb10dbe2185394faae8b3504f8ff79ed39d551324f4e696  gen_aniso_nonad.py
+1009d666f6e9101d7ad78692cb9bba642237c6d78f60469a837c117f177e14b7  splice_aniso_nonad.py
+#
+# 对照（AD 版，位于上级目录，未改动，仅登记）
+# 78c7705b5b31a2ada5b8dea2025f97c227c4b8472a407d56d0a042c807b3043f  gen_aniso.py
+# 9d1167aa2208bfdc80bafb323a77600dc9c2622033c80057547d915a06cc8311  splice_aniso.py
