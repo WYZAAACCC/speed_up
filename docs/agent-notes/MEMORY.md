@@ -1,0 +1,16 @@
+- [晶粒-溶质耦合加速课题](grain-solute-acceleration-project.md) — 研究方向、MOOSE 实测结论（拓扑事件不破坏守恒、AMR 才破坏）、文献核查结果
+- [逐面神经算子管线状态](neural-operator-pipeline-state.md) — pipeline 管线、守恒已达机器精度、转移规则尚无差异、27-35% 方差未解释
+- [WSL + MOOSE 环境](wsl-moose-environment-setup.md) — 运行环境布局与六个坑的解法（C 盘、代理证书、libtool 残骸、-j 8 等）
+- [MOOSE 输入文件十四个坑](moose-api-gotchas.md) — pi/symbol_values/dtmax/mu 属性名/Exodus 分块/跨块 IC 取小编号块/Checkpoint 默认按墙钟 等，都是实测踩出来的
+- [Artifact 发布不可用](artifact-publishing-unavailable.md) — 本机 Artifact 工具会因 ANTHROPIC_AUTH_TOKEN 失败，改用本地 HTML
+- [D 版不收敛排查现状](d-version-stall-debug.md) — 2b 导致牛顿残差停在非零地板；已排除 5 个假设（含实验证据）、发现 align4 的 0/0 bug、最小复现尚无效
+- [D 版不收敛的真根因：核写错了](d-version-kernel-bug.md) — splice 删掉 GrainGrowth 动作后手写的核漏了 TimeDerivative、v 含自己、variable_L 没设 → 解的根本不是同一个方程；含"先确认解的是不是同一个方程"这条教训
+- [论文级的物理缺口清单](physics-gaps-for-reviewers.md) — A_ani 无标定、无形核故无等轴晶、溶质边界层不可解析等 7 条，写论文前必须逐条解决
+- [夜间工作状态 2026-09-18](overnight-2026-09-18-plan.md) — D 版收敛阻塞点、AD 转换已完成、待办与 Git Bash 坑
+- [AD 版性能阻塞](ad-version-performance-blocker.md) — 雅可比精确了但单进程每牛顿步 2.5 分钟、全量约 40 小时，MPI 实测更慢；含两个"先测量救了"的教训
+- [求解器选择：MUMPS vs ASM](solver-choice-mumps-vs-asm.md) — 非AD+MUMPS 二次收敛到 4e-10，推翻"非AD有7e-7残差地板"的旧归因（地板是预条件子造成的）
+- [LPBF 路线规划](lpbf-roadmap.md) — 四份文档的分工（RESEARCH_INTENT / OPEN_PROBLEMS / GB_SOLUTE_GOAL / ROADMAP）；含已验证事实、架构、形核 API、性能结论
+- [晶界溶质目标](gb-solute-goal.md) — 用户要求"审稿人挑不出毛病、近似物理真实"；核心立足点是复现可观测的积分量（Γ_GB、s·δ·D_GB）而非 1nm 剖面
+- [专家审核 2026-09-18](expert-review-2026-09-18.md) — 项目定位降级为"可验证数值框架+加速预研"；三处纠正（拖曳≠偏析、GP 论证过度、表述降级）；Gate 0-3 执行结构；12 篇文献
+- [Gate 0 冻结可重复性](gate0-frozen-reproducibility.md) — 生产数据用的是占位溶质参数（NN 数据集可能受污染）；配置漂移已收敛；含"脚本里不限作用域的 kill -9 会杀掉自己的长跑"这个坑
+- [④ 熔化开关的 Landau 修复](landau-melting-fix.md) — 温度从四次项移到二次项，自由能有界、η≤1 可证；已进生产输入，四条验证证据 + 3D 代价结论
