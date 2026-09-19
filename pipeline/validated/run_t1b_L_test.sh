@@ -48,11 +48,18 @@ TMO="${TMO:-600}"
 
 rm -rf "$ROOT"; mkdir -p "$ROOT"; cd "$ROOT"
 
-mk_case () {   # $1=目录 $2=L2b 表达式 $3=material_property_names $4=ACInterface 的 mob_name
-python3 - "$1" "$2" "$3" "$4" <<'PY'
+mk_case () {   # $1=目录 $2=L2b 表达式 $3=mp $4=mob_name $5=L_aniso 的 expression（空=默认 L2a*L2b）
+python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
 import os, sys
 d, l2b, mp = sys.argv[1], sys.argv[2], sys.argv[3]
 mob = sys.argv[4]
+lover = sys.argv[5] if len(sys.argv) > 5 else ""
+if lover.strip():
+    l_mp = "    material_property_names = 'gdir_p gdir_q'\n"
+    l_ex = lover
+else:
+    l_mp = "    material_property_names = 'L2a L2b'\n"
+    l_ex = "L2a*L2b"
 os.makedirs(d, exist_ok=True)
 mp_line = f"    material_property_names = '{mp}'\n" if mp.strip() else ""
 t = f"""[Mesh]
@@ -166,8 +173,7 @@ t = f"""[Mesh]
     type = DerivativeParsedMaterial
     property_name = L
     coupled_variables = 'gr0 gr1'
-    material_property_names = 'L2a L2b'
-    expression = 'L2a*L2b'
+{l_mp}    expression = '{l_ex}'
     derivative_order = 2
   []
 
@@ -208,14 +214,15 @@ mk_case const   "1"                  ""              L    # 正对照：L 与 η
 mk_case eta_dep "1+0.7*(2*align4-1)" "align4"        L    # ← 生产结构
 mk_case inline  "1+0.7*(2*$AL4-1)"   "gdir_p gdir_q" L    # 把 η 依赖写进 L2b 表达式
 mk_case direct  "1+0.7*(2*$AL4-1)"   "gdir_p gdir_q" L2b  # 再绕过 L_aniso 那一层
-echo "  写出 4 个算例（只差 L2b / L_aniso 两处）"
+mk_case merged  "1"                  ""              L    "1*(1+0.7*(2*$AL4-1))"  # ← 候选修法：L 自己字面含变量
+echo "  写出 5 个算例（只差 L2b / L_aniso 两处）"
 
 # 关掉输出里的 csv 噪声，避免覆盖
-for d in const eta_dep inline direct; do rm -f "$d"/*.csv 2>/dev/null || true; done
+for d in const eta_dep inline direct merged; do rm -f "$d"/*.csv 2>/dev/null || true; done
 
 echo
 echo "=== 跑 FD 判决（nx=$NX，只在初始态做一次）==="
-for d in const eta_dep inline direct; do
+for d in const eta_dep inline direct merged; do
   cd "$ROOT/$d"
   set +e
   timeout "$TMO" "$MOOSE" -i case.i Mesh/nx=$NX \
@@ -237,7 +244,7 @@ pat = re.compile(r"\|\|J - Jfd\|\|_F/\|\|J\|\|_F\s?=?\s?(\S+?),\s*"
 print("  %-10s %-26s %s" % ("算例", "比值 ||J-Jfd||/||J||", "绝对 ||J-Jfd||"))
 print("  " + "-" * 62)
 res = {}
-for d in ("const", "eta_dep", "inline", "direct"):
+for d in ("const", "eta_dep", "inline", "direct", "merged"):
     f = os.path.join(d, "jac.log")
     if not os.path.exists(f):
         print("  %-10s 没有日志" % d); continue
@@ -264,7 +271,8 @@ if "const" in res:
         print(f"  ✅ 正对照干净（{rc:.2e}，MOOSE 阈值 1e-7）⇒ 测试有分辨力")
     for d, tag in (("eta_dep", "生产结构"),
                    ("inline", "把 η 写进 L2b"),
-                   ("direct", "再绕过 L_aniso")):
+                   ("direct", "再绕过 L_aniso"),
+                   ("merged", "候选修法：L 字面含 η")):
         if d not in res:
             continue
         r = res[d][0]

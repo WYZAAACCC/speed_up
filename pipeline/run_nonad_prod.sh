@@ -173,6 +173,29 @@ python3 "$REPO/validated/make_jacfix.py" \
 mv stage1_meltpool_d.i.jac stage1_meltpool_d.i
 echo "雅可比补全核已替换（diff: stage1_meltpool_d.i.jac.diff）"
 
+# =============================================================================
+# 【2026-09-20 T1b 修复】把「经 material_property_names 的链式法则不进雅可比」的三处链拆平
+# =============================================================================
+# `DerivativeParsedMaterial` **只对「表达式里字面出现的变量」发射导数**。
+# 表达式里只有别的材料属性时**一个导数都不发射**，而生产核明确在索取：
+#     [grN_int]     ACInterface(variable_L=true)  → dL/dgr0, d^2L/dgr0^2
+#     [coupled_res] SplitCHWRes(gr0..gr7)         → dM/dgr0
+#     [grN_antitrap] AntitrappingCurrent          → dF_at/dgr*
+# ⇒ 求到的是**静默的零** ⇒ **雅可比与残差不一致**。
+#
+# 判据（validated/run_jacchain_check.sh，三条全过）：
+#   ① 结构：修后三处导数都在 `[Debug] show_material_props` 的产出清单里，
+#      且**负对照（未修档）确实一个都没有**
+#   ② 回归：观测量**逐位相同** ⇒ 只改了雅可比、残差没动
+#   ③ 代价：86×30 上 4s → 26s（建材料的固定开销），**没有**出现"求导树爆炸"
+#
+# 也是必须由脚本做：`L2a`/`align4` 是 splice 生成的，人工改会漂移。
+python3 "$REPO/validated/make_jacchain.py" \
+        --src stage1_meltpool_d.i --out stage1_meltpool_d.i.jc >> gen.log 2>&1 \
+  || { echo "jacchain 失败"; tail -12 gen.log; exit 1; }
+mv stage1_meltpool_d.i.jc stage1_meltpool_d.i
+echo "材料链已拆平（diff: stage1_meltpool_d.i.jc.diff）"
+
 python3 - <<'PY'
 import re, sys
 s = open("stage1_meltpool_d.i", encoding="utf-8").read()
@@ -186,6 +209,24 @@ assert s.count("type = ADGrainGrowth") == 0, "这是 AD 版，不是非 AD 版"
 assert s.count("type = ACGrGrPolyJ") == 8, \
     f"ACGrGrPolyJ 有 {s.count('type = ACGrGrPolyJ')} 处，期望 8 —— jacfix 没生效"
 assert s.count("type = ACGrGrPoly\n") == 0, "还有裸 ACGrGrPoly 残留"
+
+# --- 1c. 【2026-09-20 T1b 修复】材料链已拆平（上一步 make_jacchain.py 做的）---
+#   判据：L_aniso / solute_mobility / at_susc 的表达式里必须**字面含 gr0**。
+#   否则导数不发射 ⇒ 雅可比与残差不一致（静默出错）。
+def _blk(name, txt):
+    m = re.search(rf"^[ \t]*\[{name}\](?P<b>(?:.*?\n)*?)^[ \t]*\[\][ \t]*$", txt, re.M)
+    assert m, f"找不到块 [{name}]"
+    return m.group("b")
+
+for _n in ("L_aniso", "solute_mobility"):
+    _b = _blk(_n, s)
+    assert re.search(r"expression\s*=\s*'[^']*gr0", _b), \
+        f"[{_n}] 的表达式里没有字面变量 gr0 ⇒ jacchain 没生效（导数仍不会发射）"
+# 抗截留项是可选的（尚未合入生产）
+if "property_name = F_at" in s:
+    _b = _blk("at_susc", s)
+    assert re.search(r"expression\s*=\s*'[^']*gr0", _b), \
+        "[at_susc] 的表达式里没有字面变量 gr0 ⇒ jacchain 没生效"
 # coupled_variables 必须**逐个**写在 [grN_poly] 块里：否则 _dLdarg 是空的，
 # (∂L/∂η_j) 那项照旧缺 —— 和 P0-1 是同一个病。
 # ⚠ 不能简单地数全文里 `coupled_variables = 'T gr` 的出现次数：实测是 **18** 处

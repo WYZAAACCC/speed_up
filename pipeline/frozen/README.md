@@ -350,6 +350,47 @@ stage1_meltpool_c.i   e703567a…  →  bffa17426f4f2b17a97652730b27a02e4345d3b3
 
 ---
 
+### 5.7 【2026-09-20】T1b 修复：材料链拆平（`make_jacchain.py`）
+
+**接在生产链里，紧跟 `make_jacfix.py`**（也是必须由脚本做 —— `L2a`/`align4`
+是 splice 生成的，人工改会漂移）。
+
+**修的是什么**：`DerivativeParsedMaterial` **只对「表达式里字面出现的变量」发射导数**；
+表达式里只有别的材料属性时**一个导数都不发射**，而生产核明确在索取：
+
+| 被索取的属性 | 索取者 | 修前 |
+|---|---|---|
+| `dL/dgr0`、`d²L/dgr0²` | `[grN_int]` = `ACInterface(variable_L = true)` | ❌ 静默为零 |
+| `dM/dgr0` | `[coupled_res]` = `SplitCHWRes(coupled_variables='gr0..gr7')` | ❌ 静默为零 |
+| `dF_at/dgr*` | `[grN_antitrap]` = `AntitrappingCurrent` | ❌ 静默为零 |
+
+⇒ **雅可比与残差不一致**（残差里 `L(η)`/`M(η)` 在，雅可比里它们的导数不在）。
+
+**受控 FD 判决**（`../validated/run_t1b_L_test.sh`，1D/60 单元/真晶界，只差两处）：
+
+| 算例 | `\|\|J−Jfd\|\|/\|\|J\|\|` |
+|---|---|
+| `const`（正对照） | **6.17e-10** ✅ |
+| `eta_dep`（**生产结构**） | **1.36e-03** ❌ |
+| `inline`（只把 η 写进 `L2b`） | **1.36e-03** ❌ ← **逐位相同！** |
+| `direct`（绕过 `L_aniso`） | **1.23e-09** ✅ |
+| `merged`（内联进 `L` 自己的表达式） | **1.23e-09** ✅ |
+
+⚠ **当年那条「给 `L2b` 加 `coupled_variables` 就够了」的修复实测无效** ——
+加 `coupled_variables` 并不会让 MOOSE 发射导数。看比值逐位相同就知道：断链在**上一层**。
+
+**验收**（`../validated/run_jacchain_check.sh`，三条全过）：
+
+| 判据 | 结果 |
+|---|---|
+| ① 结构（含负对照） | ✅ 三处导数都进了 `[Debug] show_material_props` 的产出清单；**未修的档里确实一个都没有** |
+| ② 回归 | ✅ 观测量**逐位相同**（`os_mean` / `total_solute`）⇒ **只改了雅可比，残差没动** |
+| ③ 代价 | ✅ 86×30 上 4s → 26s（建材料的**固定**开销）；**没有**出现注释里记的那次「内联导致 5 分钟 100% CPU、0 次 JIT」 |
+
+⚠ 内联后 `L` 的表达式 2181 字符（`L2a` 1690 + `align4` 400），`M` 279 字符，`F_at` 136 字符。
+
+---
+
 ## 六、使用约定
 
 1. **生产只用本目录的两个文件**，不要再从 `/root/work/bak/` 取。

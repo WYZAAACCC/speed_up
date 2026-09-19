@@ -21,7 +21,7 @@
 | 编号 | 项 | 状态 | 关键数字 |
 |---|---|---|---|
 | T1 | 溶质雅可比 | ✅ | 警告 2→0；FD **8.11e-9 → 2.99e-10**。<br>⚠ **生产配置上的「FD ≤ 1e-5」判据已确认无效**（五组结构不同的雅可比给出逐位相同的 0.0208202）⇒ **替代判据见 [`T1_CRITERION.md`](T1_CRITERION.md)**（用户 2026-09-19 授权自行设计） |
-| **T1b** | **晶粒核 / 迁移率雅可比补全** | 🔴 **根因已锁定** | 🔴 **2026-09-20 根因查明**：`DerivativeParsedMaterial` **只对表达式里字面出现的变量发射导数**，经 `material_property_names` 的链式法则**不参与发射** ⇒ `L2b`/`L_aniso`/`solute_mobility` 只产出基属性，而 `ACInterface(variable_L=true)` 索取 `dL/dgr0`、`SplitCHWRes` 索取 `dM/dgr0` ⇒ **静默为零 ⇒ 雅可比与残差不一致**。<br>**判据**（`run_t1b_L_test.sh`，4 档、只差两处）：正对照 `6.17e-10` ✅ / 生产结构 `1.36e-03` ❌ / 把 η 写进 `L2b` 仍 `1.36e-03` ❌ / 绕过 `L_aniso` `1.23e-09` ✅ ⇒ **断链在 `L_aniso` 那一层**。<br>✅ **L1 残差同一性已通过**：`jac_mode` 开关的对照差异 **1.6e-13**。<br>⚠ 当年那条「给 `L2b` 加 `coupled_variables`」的修复**实测无效**（`inline` 与 `eta_dep` 比值逐位相同）。见下面 §T1b 详段 |
+| **T1b** | **晶粒核 / 迁移率雅可比补全** | ✅ **已修并验收** | **根因（2026-09-20）**：`DerivativeParsedMaterial` **只对表达式里字面出现的变量发射导数**，经 `material_property_names` 的链式法则**不参与发射** ⇒ `L2b`/`L_aniso`/`solute_mobility` 只产出基属性，而 `ACInterface(variable_L=true)` 索取 `dL/dgr0`、`SplitCHWRes` 索取 `dM/dgr0` ⇒ **静默为零 ⇒ 雅可比与残差不一致**。<br>**FD 判决**（`run_t1b_L_test.sh`，4 档只差两处）：正对照 `6.17e-10` ✅ / 生产结构 `1.36e-03` ❌ / 只修 `L2b` 仍 `1.36e-03` ❌（**逐位相同**）/ 绕过 `L_aniso` `1.23e-09` ✅ / 内联进 `L` `1.23e-09` ✅。<br>**修法**：`validated/make_jacchain.py`（已接进生产链，紧跟 `make_jacfix.py`）把三处链拆平。<br>**验收**（`run_jacchain_check.sh`，三条全过）：① 结构 ✅ 三处导数都发射、**负对照确实没有**；② 回归 ✅ 观测量**逐位相同**（只改雅可比）；③ 代价 ✅ 86×30 上 4s→26s，**无求导树爆炸**。<br>⚠ 当年那条「给 `L2b` 加 `coupled_variables`」的修复**实测无效**。见下面 §T1b 详段 |
 | T2 | 总溶质守恒 | ✅ | 漂移 **0.000e+00**（判据 1e-8） |
 | T3 | 非负浓度 | ✅ | min(c) = 0.0358（判据 −1e-10） |
 | T4 | 液固平衡分配 | ✅ | k_eff 偏差 **0.0495%**（判据 1%） |
@@ -87,14 +87,20 @@
 ⚠ **`inline` 与 `eta_dep` 的比值逐位相同（`0.00136379`）** 是关键证据：
 把 `L2b` 自己修好**完全没用** —— 断链在 `L_aniso` 那一层。
 
-#### ④ 修法方向（下一步）
+#### ④ 修法（**已实施并验收**）
 
-让**每一个**材料都把依赖的变量写进自己的表达式。对本链：
-把 `L2a` 与 `L2b` 合并成一个 `DerivativeParsedMaterial`
-（`coupled_variables = 'T gr0..gr7'`，表达式里同时含 `L2a` 的级数和 `align4` 的式子）。
-⚠ 风险：符号求导树可能爆炸（生成器注释里记着「拆三层是为了让每个材料的求导树都小」，
-且曾有一次内联尝试 5 分钟 100% CPU、0 次 JIT）⇒ **必须先量 JIT 时间再决定**。
-⚠ 同样的问题**也存在于 `solute_mobility`（`M`）**：`SplitCHWRes` 索取的 `dM/dgr0` 也是零。
+让**每一个**被索取的属性，其表达式自己**字面含变量**：
+`validated/make_jacchain.py` 把 `L2a`+`align4` 内联进 `L`、把
+`S_eta2`/`h_gb`/`h_solid` 内联进 `M`、把 `h_gb` 内联进 `F_at`。
+已接进生产链（`run_nonad_prod.sh`，紧跟 `make_jacfix.py`）。
+
+验收（`run_jacchain_check.sh`）三条全过：① 结构（含负对照）✅；
+② 回归 ✅ **观测量逐位相同**；③ 代价 ✅ 4s→26s，**无求导树爆炸**。
+
+⚠ 内联时**必须同时把新出现的变量加进 `coupled_variables`** ——
+否则解析器报 `Unknown identifier`（本轮实测踩到：`at_susc` 原来是 `'c w'`）。
+⚠ 写进块内的注释**不得**出现 `expression = '...'` 的样子 —— 本文件的解析是正则，
+会在注释里先命中（AGENTS.md 教训 6，本轮又踩一次）。
 
 ---
 
