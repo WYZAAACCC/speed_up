@@ -96,6 +96,8 @@ def main():
     ap.add_argument("--src", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--dry-run", action="store_true")
+    # 与 make_jacfix.py 的接口对齐：diff 总是写，`--diff` 只是接受这个旗标
+    ap.add_argument("--diff", action="store_true", help="（总是写 diff，此旗标仅为接口一致）")
     a = ap.parse_args()
 
     t = open(a.src, encoding="utf-8").read()

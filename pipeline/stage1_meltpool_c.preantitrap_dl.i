@@ -671,21 +671,13 @@
   []
 
   # --- 分层扩散系数 -> 迁移率 M = D(η)/f_cc ---
-    # 【缺口 #3 修复 (c)】D_L = 1.2e-06 m²/s —— **子网格闭合，不是材料常数**。
-    #   物理值 D_L = 2.52e-09（Ti 的液相扩散系数）⇒ δ_c = D_L/V = 4.2 nm，
-    #   比 dx = 1 µm 小 238 倍 ⇒ **网格不可解析**，
-    #   数值上那层被摊到 ~dx 宽 ⇒ 实测 k_eff = 0.999 vs 物理 0.655（微偏析低估 350×）。
-    #   取 D_L ≥ 2·V_scan·dx = 1.2e-06 使 δ_c ≥ 2 个网格。
-    #   **精确关系 c_max−c0 = 2A·c0/k_c 与 D_L 无关** ⇒ 放大不改变答案，
-    #   只是把物理上本就有、但网格看不见的那层变成可解析的。
-    #   副作用核算（熔池混合 0.02、D_S/D_GB 逐点不变）见 make_dl_prod.py 的文件头。
   [solute_mobility]
     type = DerivativeParsedMaterial
     property_name = M
     coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
     material_property_names = 'S_eta2 h_gb h_solid'
     constant_names = 'D_L D_S D_GB k_c A_part'
-    constant_expressions = '1.2e-06 4e-13 4e-10 0.9 0.264'
+    constant_expressions = '2.52e-09 4e-13 4e-10 0.9 0.264'
     expression = '(D_L + (D_S-D_L)*h_solid + (D_GB-D_S)*h_gb) / (k_c + 2*A_part*min(1, 2*S_eta2))'
     derivative_order = 2
   []

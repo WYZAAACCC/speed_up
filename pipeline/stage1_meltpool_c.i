@@ -193,6 +193,86 @@
 []
 
 [Kernels]
+  # 【抗截留】gr0 的界面推进所带的溶质再分配修正
+  [gr0_antitrap]
+    type = AntitrappingCurrent
+    variable = w
+    v = gr0
+    f_name = F_at
+    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
+    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
+    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
+  []
+  # 【抗截留】gr1 的界面推进所带的溶质再分配修正
+  [gr1_antitrap]
+    type = AntitrappingCurrent
+    variable = w
+    v = gr1
+    f_name = F_at
+    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
+    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
+    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
+  []
+  # 【抗截留】gr2 的界面推进所带的溶质再分配修正
+  [gr2_antitrap]
+    type = AntitrappingCurrent
+    variable = w
+    v = gr2
+    f_name = F_at
+    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
+    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
+    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
+  []
+  # 【抗截留】gr3 的界面推进所带的溶质再分配修正
+  [gr3_antitrap]
+    type = AntitrappingCurrent
+    variable = w
+    v = gr3
+    f_name = F_at
+    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
+    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
+    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
+  []
+  # 【抗截留】gr4 的界面推进所带的溶质再分配修正
+  [gr4_antitrap]
+    type = AntitrappingCurrent
+    variable = w
+    v = gr4
+    f_name = F_at
+    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
+    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
+    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
+  []
+  # 【抗截留】gr5 的界面推进所带的溶质再分配修正
+  [gr5_antitrap]
+    type = AntitrappingCurrent
+    variable = w
+    v = gr5
+    f_name = F_at
+    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
+    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
+    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
+  []
+  # 【抗截留】gr6 的界面推进所带的溶质再分配修正
+  [gr6_antitrap]
+    type = AntitrappingCurrent
+    variable = w
+    v = gr6
+    f_name = F_at
+    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
+    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
+    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
+  []
+  # 【抗截留】gr7 的界面推进所带的溶质再分配修正
+  [gr7_antitrap]
+    type = AntitrappingCurrent
+    variable = w
+    v = gr7
+    f_name = F_at
+    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
+    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
+    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
+  []
   # --- 溶质（分裂式 Cahn-Hilliard）---
   # 这套写法直接沿用 phase2_prod.i，已验证可跑
   [w_dot]
@@ -418,6 +498,22 @@
 []
 
 [Materials]
+  # 【抗截留】Karma–Rappel / Plapp 薄界面抗截留项的 susceptibility
+  #   F = ALPHA·W·(1−k_eq)·c·(1−h_gb)
+  #   ALPHA = 2 是 1D 标定值（validated/run_antitrap2.sh）
+  #   (1−h_gb)：抑制晶界上的伪溶质流 —— 本模型的 η 兼表晶粒身份，
+  #             晶粒长大时 η̇ ≠ 0，不抑制就会凭空产生溶质流
+  #   `+ 0*w`：让 dF/dw 这个属性确实存在（值为 0），避免依赖静默默认
+  [at_susc]
+    type = DerivativeParsedMaterial
+    property_name = F_at
+    coupled_variables = 'c w'
+    material_property_names = 'h_gb'
+    constant_names = 'ALPHA W k_eq'
+    constant_expressions = '2 2e-06 0.6303'
+    expression = 'ALPHA*W*(1-k_eq)*c*(1-h_gb) + 0*w'
+    derivative_order = 2
+  []
   # 【2026-09-17 同步 Ti64 参数】
   #   sigma = 0.6 J/m^2 (Gornakova & Prokofjev 2020)
   #   mu0   = 6*sigma/wGB   = 9.0e5
@@ -671,13 +767,21 @@
   []
 
   # --- 分层扩散系数 -> 迁移率 M = D(η)/f_cc ---
+    # 【缺口 #3 修复 (c)】D_L = 1.2e-06 m²/s —— **子网格闭合，不是材料常数**。
+    #   物理值 D_L = 2.52e-09（Ti 的液相扩散系数）⇒ δ_c = D_L/V = 4.2 nm，
+    #   比 dx = 1 µm 小 238 倍 ⇒ **网格不可解析**，
+    #   数值上那层被摊到 ~dx 宽 ⇒ 实测 k_eff = 0.999 vs 物理 0.655（微偏析低估 350×）。
+    #   取 D_L ≥ 2·V_scan·dx = 1.2e-06 使 δ_c ≥ 2 个网格。
+    #   **精确关系 c_max−c0 = 2A·c0/k_c 与 D_L 无关** ⇒ 放大不改变答案，
+    #   只是把物理上本就有、但网格看不见的那层变成可解析的。
+    #   副作用核算（熔池混合 0.02、D_S/D_GB 逐点不变）见 make_dl_prod.py 的文件头。
   [solute_mobility]
     type = DerivativeParsedMaterial
     property_name = M
     coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
     material_property_names = 'S_eta2 h_gb h_solid'
     constant_names = 'D_L D_S D_GB k_c A_part'
-    constant_expressions = '2.52e-09 4e-13 4e-10 0.9 0.264'
+    constant_expressions = '1.2e-06 4e-13 4e-10 0.9 0.264'
     expression = '(D_L + (D_S-D_L)*h_solid + (D_GB-D_S)*h_gb) / (k_c + 2*A_part*min(1, 2*S_eta2))'
     derivative_order = 2
   []
