@@ -120,8 +120,17 @@ def main():
                     pass
     if e_al4 is None:
         sys.exit("错误：找不到 align4 的定义")
-    e_L2b_inline = f"(1+0.7*(2*({e_al4})-1))"
+    # ⚠ 必须**从 `[L2b]` 读它的表达式**，再把 `align4` 换掉 ——
+    #   不要在这里写死 `1+0.7*(2*align4-1)`！
+    #   第一版就是写死的，于是 `gen_aniso_nonad.py --A-ani <别的值>` **被整个抹掉**
+    #   （`run_ani_sweep.sh` 的断言当场抓到：A 没进 L 的表达式）。
+    #   `A_ani` 就住在这个 0.7 里，写死等于把那个参数锁死。
+    e_L2b = expr_of(t, "L2b")
+    if "align4" not in e_L2b:
+        sys.exit(f"错误：[L2b] 的表达式里没有 align4，无法内联：{e_L2b[:80]}")
+    e_L2b_inline = f"({e_L2b.replace('align4', f'({e_al4})')})"
     e_L_new = f"({e_L2a})*{e_L2b_inline}"
+    log.append(("L2b→L", f"原式 {len(e_L2b)} 字符，内联 align4 后 {len(e_L2b_inline)} 字符"))
 
     m = block(t, "L_aniso")
     body_new = (
