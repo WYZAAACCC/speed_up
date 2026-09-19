@@ -51,8 +51,21 @@ try:
 except Exception:
     pass
 
-N = 8
-ETA = [f"gr{i}" for i in range(N)]
+# ⚠ 不要硬编码 op_num。从输入的 [free_energy] 的 coupled_variables 里读
+#   （它必须列出全部序参量，否则 f_loc 的 η 导数会静默缺失 —— P0-1 同类）。
+#   读不到就报错退出，**不要猜**。
+def read_eta(t):
+    m = re.search(r"^[ 	]*\[free_energy\][\s\S]*?coupled_variables\s*=\s*'([^']*)'",
+                  t, re.M)
+    if not m:
+        sys.exit("错误：读不到 [free_energy] 的 coupled_variables —— 无法确定 op_num")
+    names = m.group(1).split()
+    eta = [v for v in names if v.startswith("gr") and v[2:].isdigit()]
+    if not eta:
+        sys.exit(f"错误：[free_energy] 的 coupled_variables 里没有 gr*：{names}")
+    if sorted(eta, key=lambda v: int(v[2:])) != eta:
+        sys.exit(f"错误：序参量不是有序的 gr0..grN：{eta}")
+    return eta
 
 
 def block(t, name):
@@ -86,6 +99,9 @@ def main():
     a = ap.parse_args()
 
     t = open(a.src, encoding="utf-8").read()
+    ETA = read_eta(t)
+    N = len(ETA)
+    print(f"  从输入读到 {N} 个序参量：{ETA[0]}..{ETA[-1]}")
     log = []
 
     # ---------------- ① L：把 L2a 与 align4 内联进 L_aniso ----------------
