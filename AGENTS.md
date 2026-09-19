@@ -427,6 +427,29 @@ sleep 8
 wsl.exe -e bash -lc 'echo ok; ps -e --no-headers | wc -l'
 ```
 
+**⚠ 2026-09-20 补充：`--shutdown` 有时不够，要 `--terminate`。**
+
+那天的现象是：`wsl --shutdown` 之后**每次新起一条命令都在几秒内又卡死**
+（连 `pgrep`、`free` 这种命令都卡），而且**不是"作业太多"** —— 有一次是什么都没跑。
+Windows 侧 `Get-Process` 能看到 `vmmemWSL` 在、`wsl --list --verbose` 显示
+发行版是 **`Running`** —— **VM 起来了，但 guest 内部的 init/shell 无响应。**
+
+正确的恢复次序是：
+
+```powershell
+wsl.exe --terminate Ubuntu     # ← 关键这步：强制杀掉发行版实例
+Start-Sleep 5
+wsl.exe --shutdown
+Start-Sleep 10
+wsl.exe -e bash -lc 'echo ALIVE; ps -e --no-headers | wc -l'
+```
+
+补上 `--terminate` 之后立刻恢复（46 个进程、`up 0 min`）。
+⇒ **判据：不是看 VM 在不在，是看 guest 里 `ps` 能不能数出进程。**
+
+**别的都完好**：重启后 `/root/moose`、`/root/miniconda3`、自建 app 与 JIT 缓存都在，
+项目文件在 `/mnt/f` 全程安全（Windows 侧可读，已核实）。
+
 重启后**逐条复验** `/root/work`、`/usr`、`/mnt/f` 和进程数；
 本轮实测全部恢复，`/root/moose`、`/root/miniconda3`、自建 app 与 JIT 缓存
 （539 项）**都完好**。
