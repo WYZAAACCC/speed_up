@@ -960,7 +960,7 @@
       type = ErrorFractionMarker
       indicator = jump
       refine = 0.5
-      coarsen = 0.1
+      coarsen = 0.02
     []
   []
 []

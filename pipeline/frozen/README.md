@@ -234,7 +234,7 @@ AMR 打开后（见 `../validated/VALIDATION_STATUS.md` §1.6）多了第三条�
 | 改了什么 | 内容 |
 |---|---|
 | 新增 | 节点型 AuxVariable `S_eta2_aux` = Ση² + 对应 `ParsedAux` |
-| 新增 | `[Adaptivity]`：`GradientJumpIndicator(S_eta2_aux)` + `ErrorFractionMarker`，`max_h_level = 1`、`coarsen = 0.1`、`interval = 2` |
+| 新增 | `[Adaptivity]`：`GradientJumpIndicator(S_eta2_aux)` + `ErrorFractionMarker`，`max_h_level = 1`、`coarsen = 0.02`、`interval = 2` |
 
 **实测**（`../validated/run_prod_amr.sh`，54×19 缩小网格）：
 
@@ -246,7 +246,9 @@ AMR 打开后（见 `../validated/VALIDATION_STATUS.md` §1.6）多了第三条�
 
 ⇒ **level=1 反而比 uniform 快**（单元多 55%，但自适应步长走的步数更少）。
 
-⚠ **`coarsen` 不能是 0**：生产是长跑、界面在移动，只加密不粗化会让单元数**单调增长**。
+⚠ **`coarsen` 必须小到不破坏守恒**：实测 0.05/0.1 会让 `total_solute` 漂移 1e-7~2e-7
+（超 T2 的 1e-8 判据），而 **0.02 保持精确 0**。原设 0.1 是拿守恒换了一个短算例里
+看不到的收益。⚠ 长跑下 0.02 能不能压住单元数**仍未验证**。
 
 ```
 stage1_meltpool_c.i   34b63e4b…  →  e703567a5879141db9c628d13adad739024d3d08f7579fbee68beb7f20774165
