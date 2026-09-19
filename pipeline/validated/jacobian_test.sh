@@ -31,7 +31,12 @@ TOL="${TOL:-1e-5}"
 
 source /root/miniconda3/etc/profile.d/conda.sh
 conda activate moose
-MOOSE=/root/moose/modules/phase_field/phase_field-opt
+# ⚠ 【2026-09-20 修复】这里原来硬编码 MOOSE 自带的 `phase_field-opt`。
+#   但**任何走完 jacfix 的生产输入都含自建核 `ACGrGrPolyJ`**，
+#   用自带二进制会直接报 `'ACGrGrPolyJ' is not a registered object` 而中止
+#   —— 也就是说本脚本对生产输入**一直是坏的**，而日志里那句话很容易
+#   被当成"算例的问题"。自建 `gb_jac-opt` 是超集，对两种算例都安全 ⇒ 改成默认它。
+MOOSE="${MOOSE:-/root/projects/gb_jac/gb_jac-opt}"
 
 OUT="$D/jacobian_${TAG}"
 rm -rf "$OUT"; mkdir -p "$OUT"; cd "$OUT"
