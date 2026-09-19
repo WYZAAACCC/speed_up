@@ -144,12 +144,6 @@
 []
 
 [AuxVariables]
-  # 【AMR 指示量】固相指示 S = Ση² —— 晶粒内 1、固固晶界 0.5、液相 0。
-  # ⚠ 必须**节点型**：单元常量没有单元内梯度，GradientJumpIndicator 会恒为 0。
-  [S_eta2_aux]
-    order = FIRST
-    family = LAGRANGE
-  []
   [T]
     initial_condition = 353
   []
@@ -164,12 +158,6 @@
 []
 
 [AuxKernels]
-  [S_eta2_k]
-    type = ParsedAux
-    variable = S_eta2_aux
-    coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
-    expression = 'gr0^2+gr1^2+gr2^2+gr3^2+gr4^2+gr5^2+gr6^2+gr7^2'
-  []
   [T_field]
     type = FunctionAux
     variable = T
@@ -281,30 +269,12 @@
     mob_name = L
     coupled_variables = 'gr1 gr2 gr3 gr4 gr5 gr6 gr7'
   []
-  # 【溶质拖曳】f_loc 对 η_i 的导数 —— 补上 δF/δη 里缺的溶质项，
-  # 让模型变分自洽。量级比势垒小 9~11 个数量级（见脚本头注释）。
-  [gr0_solute]
-    type = AllenCahn
-    variable = gr0
-    f_name = f_loc
-    mob_name = L
-    coupled_variables = 'c gr1 gr2 gr3 gr4 gr5 gr6 gr7'
-  []
   [gr1_drive]
     type = AllenCahn
     variable = gr1
     f_name = f_drive
     mob_name = L
     coupled_variables = 'gr0 gr2 gr3 gr4 gr5 gr6 gr7'
-  []
-  # 【溶质拖曳】f_loc 对 η_i 的导数 —— 补上 δF/δη 里缺的溶质项，
-  # 让模型变分自洽。量级比势垒小 9~11 个数量级（见脚本头注释）。
-  [gr1_solute]
-    type = AllenCahn
-    variable = gr1
-    f_name = f_loc
-    mob_name = L
-    coupled_variables = 'c gr0 gr2 gr3 gr4 gr5 gr6 gr7'
   []
   [gr2_drive]
     type = AllenCahn
@@ -313,30 +283,12 @@
     mob_name = L
     coupled_variables = 'gr0 gr1 gr3 gr4 gr5 gr6 gr7'
   []
-  # 【溶质拖曳】f_loc 对 η_i 的导数 —— 补上 δF/δη 里缺的溶质项，
-  # 让模型变分自洽。量级比势垒小 9~11 个数量级（见脚本头注释）。
-  [gr2_solute]
-    type = AllenCahn
-    variable = gr2
-    f_name = f_loc
-    mob_name = L
-    coupled_variables = 'c gr0 gr1 gr3 gr4 gr5 gr6 gr7'
-  []
   [gr3_drive]
     type = AllenCahn
     variable = gr3
     f_name = f_drive
     mob_name = L
     coupled_variables = 'gr0 gr1 gr2 gr4 gr5 gr6 gr7'
-  []
-  # 【溶质拖曳】f_loc 对 η_i 的导数 —— 补上 δF/δη 里缺的溶质项，
-  # 让模型变分自洽。量级比势垒小 9~11 个数量级（见脚本头注释）。
-  [gr3_solute]
-    type = AllenCahn
-    variable = gr3
-    f_name = f_loc
-    mob_name = L
-    coupled_variables = 'c gr0 gr1 gr2 gr4 gr5 gr6 gr7'
   []
   [gr4_drive]
     type = AllenCahn
@@ -345,30 +297,12 @@
     mob_name = L
     coupled_variables = 'gr0 gr1 gr2 gr3 gr5 gr6 gr7'
   []
-  # 【溶质拖曳】f_loc 对 η_i 的导数 —— 补上 δF/δη 里缺的溶质项，
-  # 让模型变分自洽。量级比势垒小 9~11 个数量级（见脚本头注释）。
-  [gr4_solute]
-    type = AllenCahn
-    variable = gr4
-    f_name = f_loc
-    mob_name = L
-    coupled_variables = 'c gr0 gr1 gr2 gr3 gr5 gr6 gr7'
-  []
   [gr5_drive]
     type = AllenCahn
     variable = gr5
     f_name = f_drive
     mob_name = L
     coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr6 gr7'
-  []
-  # 【溶质拖曳】f_loc 对 η_i 的导数 —— 补上 δF/δη 里缺的溶质项，
-  # 让模型变分自洽。量级比势垒小 9~11 个数量级（见脚本头注释）。
-  [gr5_solute]
-    type = AllenCahn
-    variable = gr5
-    f_name = f_loc
-    mob_name = L
-    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr6 gr7'
   []
   [gr6_drive]
     type = AllenCahn
@@ -377,30 +311,12 @@
     mob_name = L
     coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr7'
   []
-  # 【溶质拖曳】f_loc 对 η_i 的导数 —— 补上 δF/δη 里缺的溶质项，
-  # 让模型变分自洽。量级比势垒小 9~11 个数量级（见脚本头注释）。
-  [gr6_solute]
-    type = AllenCahn
-    variable = gr6
-    f_name = f_loc
-    mob_name = L
-    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr7'
-  []
   [gr7_drive]
     type = AllenCahn
     variable = gr7
     f_name = f_drive
     mob_name = L
     coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6'
-  []
-  # 【溶质拖曳】f_loc 对 η_i 的导数 —— 补上 δF/δη 里缺的溶质项，
-  # 让模型变分自洽。量级比势垒小 9~11 个数量级（见脚本头注释）。
-  [gr7_solute]
-    type = AllenCahn
-    variable = gr7
-    f_name = f_loc
-    mob_name = L
-    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6'
   []
 []
 
@@ -678,7 +594,7 @@
     material_property_names = 'S_eta2 h_gb h_solid'
     constant_names = 'D_L D_S D_GB k_c A_part'
     constant_expressions = '2.52e-09 4e-13 4e-10 0.9 0.264'
-    expression = '(D_L + (D_S-D_L)*h_solid + (D_GB-D_S)*h_gb) / (k_c + 2*A_part*min(1, 2*S_eta2))'
+    expression = '(D_L + (D_S-D_L)*h_solid + (D_GB-D_S)*h_gb) / (k_c + 2*A_part*S_eta2)'
     derivative_order = 2
   []
 
@@ -693,11 +609,11 @@
     type = DerivativeParsedMaterial
     property_name = f_loc
     coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
-    constant_names     = 'k_c c0 A_part Omega0 wgb'
-    constant_expressions = '0.9 0.036 0.264 -5e-11 4e-06'
+    constant_names = 'k_c c0 A_part'
+    constant_expressions = '0.9 0.036 0.264'
     expression = 'k_c/2*(c-c0)^2
-                  + A_part*c^2*min(1, 2*(gr0^2+gr1^2+gr2^2+gr3^2+gr4^2+gr5^2+gr6^2+gr7^2))
-                  + (Omega0/wgb)*(c-c0)*8*((gr0^2+gr1^2+gr2^2+gr3^2+gr4^2+gr5^2+gr6^2+gr7^2)^2 - (gr0^4+gr1^4+gr2^4+gr3^4+gr4^4+gr5^4+gr6^4+gr7^4))'
+                  + A_part*c^2*(gr0^2+gr1^2+gr2^2+gr3^2
+                                +gr4^2+gr5^2+gr6^2+gr7^2)'
     derivative_order = 2
   []
 
@@ -942,26 +858,6 @@
     # （涨 1.5x 就被砍回 0.5x），时间几乎推不动。
     # 放到 10 让自适应步长能涨起来。
     optimal_iterations = 10
-  []
-[]
-
-[Adaptivity]
-  marker = marker
-  interval = 2
-  max_h_level = 1
-  [Indicators]
-    [jump]
-      type = GradientJumpIndicator
-      variable = S_eta2_aux
-    []
-  []
-  [Markers]
-    [marker]
-      type = ErrorFractionMarker
-      indicator = jump
-      refine = 0.5
-      coarsen = 0.1
-    []
   []
 []
 

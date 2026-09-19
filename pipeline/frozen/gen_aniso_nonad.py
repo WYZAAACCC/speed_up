@@ -168,18 +168,84 @@ def compute_mu_qp(sigmas):
     return 6.0 * (max(sigmas) + min(sigmas)) / 2.0 / WGB
 
 
-def build_orientations(n):
+def _inv_norm_cdf(q):
     """
-    取向 theta_i (度)，在 [0, 90) 内等间距铺开（含确定性抖动，可复现）。
+    标准正态分布的分位函数（Acklam 有理逼近，精度 ~1e-9）。
+    不依赖 scipy —— 本脚本在 moose 环境里也要能跑。
 
-    真实 LPBF 柱状基体有 <100> 纤维织构（易生长轴偏向建造方向），
-    这里的铺开代表**取向散射较大的柱状基体**。想改成强织构，
-    把返回值收窄到 [0,25] U [65,90] 即可（例如 th = [t*0.35 for t in th]）。
+    【2026-09-19 从 `pipeline/gen_aniso.py`（AD 版）移植】为了支持 `--texture fiber`。
     """
-    th = [(i * 90.0 / n + (i * 37 % 11) * 0.9) % 90.0 for i in range(n)]
-    th = sorted(set(round(t, 6) for t in th))
-    while len(th) < n:
-        th.append(round((len(th) * 13.7) % 90.0, 6))
+    a = (-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00)
+    b = (-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01)
+    c = (-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00)
+    d = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00)
+    p_low, p_high = 0.02425, 1.0 - 0.02425
+    if q < p_low:
+        t = math.sqrt(-2.0 * math.log(q))
+        return (((((c[0]*t+c[1])*t+c[2])*t+c[3])*t+c[4])*t+c[5]) / \
+               ((((d[0]*t+d[1])*t+d[2])*t+d[3])*t+1.0)
+    if q > p_high:
+        t = math.sqrt(-2.0 * math.log(1.0 - q))
+        return -(((((c[0]*t+c[1])*t+c[2])*t+c[3])*t+c[4])*t+c[5]) / \
+                ((((d[0]*t+d[1])*t+d[2])*t+d[3])*t+1.0)
+    t = q - 0.5
+    r = t * t
+    return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*t / \
+           (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1.0)
+
+
+def build_orientations(n, texture="random", hwhm_deg=20.0):
+    """
+    取向 theta_i (度)，在 [0, 90) 内。
+
+    ⚠ **本函数的默认值是 `texture="random"`，与 Gate 0 冻结基线逐位一致。**
+    （`pipeline/gen_aniso.py`（AD 版）的默认是 `fiber` —— 两者不同，**不要混用**。
+    这里保持 `random` 是为了让**不传 `--texture` 的既有调用产出逐位不变的取向集**，
+    这是冻结基线的可复现性要求，见 `frozen/README.md`。）
+
+    `texture="random"` —— 取向散射较大的柱状基体（**Gate 0 基线**）。
+        在 [0,90) 内近似均匀铺开，确定性、可复现。
+
+    `texture="fiber"` —— **LPBF 真实的 <100> 纤维织构**。
+        粉末床熔化的柱状晶沿最大热梯度方向（≈ 建造方向 BD）优先生长，
+        而 β-Ti 的易生长轴是 <100>，于是 <100> 与 BD 对齐。
+        在 2D 里"与 y 对齐"对应 theta = 90 ≡ 0 (mod 90)，所以分布**峰在 0 与 90 两端**，
+        用半高半宽 `hwhm_deg` 控制离散度。
+
+    【为什么需要 fiber】见 `docs/agent-notes/physics-gaps-for-reviewers.md` 缺口 #5：
+    真实 LPBF 基体是强 <100> 纤维织构，而散射分布下 2a 几乎失效
+    （缺口 #7：8 个取向里只有 3 对低于 Read–Shockley 阈值 15°）。
+
+    ⚠ **`hwhm_deg` 没有实验依据**（本项目没有 Ti64 LPBF 的 EBSD 极图）。
+    ⇒ 用它做**敏感性研究**，而不是假装它是标定过的材料常数。
+    """
+    if texture == "random":
+        # ---- Gate 0 基线：逐位不变，不要改 ----
+        th = [(i * 90.0 / n + (i * 37 % 11) * 0.9) % 90.0 for i in range(n)]
+        th = sorted(set(round(t, 6) for t in th))
+        while len(th) < n:
+            th.append(round((len(th) * 13.7) % 90.0, 6))
+        return th[:n]
+
+    if texture != "fiber":
+        raise ValueError(f"未知 texture={texture!r}（可选 'fiber' / 'random'）")
+
+    sigma = hwhm_deg / 1.177410022          # 半高半宽 -> 标准差
+    half = (n + 1) // 2
+    th = []
+    for i in range(half):
+        q = (i + 0.5) / (2.0 * half)        # (0, 0.5) 内的等分位点
+        d = abs(_inv_norm_cdf(q)) * sigma
+        d = min(d, 44.0)                    # 截断，避免越过 45（那是另一侧）
+        th.extend([round(d, 6), round(90.0 - d, 6)])
+    th = sorted(set(t for t in th if 0.0 <= t < 90.0))
+    while len(th) < n:                      # 取整去重后不够时补中心附近
+        th.append(round(min(44.0, 1.0 + len(th) * 0.5), 6))
+        th = sorted(set(th))
     return th[:n]
 
 
@@ -194,6 +260,14 @@ def main():
     ap.add_argument("--op-num", type=int, default=8)
     ap.add_argument("--A-ani", type=float, default=0.7,
                     help="2b 各向异性强度；0 = 关闭 2b")
+    ap.add_argument("--texture", default="random", choices=("random", "fiber"),
+                    help="⚠ **默认 `random`，与 Gate 0 冻结基线逐位一致。** "
+                         "`fiber` = LPBF 真实的 <100> 纤维织构（峰值在 0 与 90 两端）——"
+                         "**只有显式传它才会启用**，用于缺口 #5 的敏感性研究。")
+    ap.add_argument("--hwhm", type=float, default=20.0,
+                    help="纤维织构的半高半宽（度），仅 --texture fiber 有效。"
+                         "⚠ **没有实验依据**（本项目无 Ti64 LPBF 的 EBSD 极图）"
+                         "⇒ 只能做敏感性研究，不能当标定过的材料常数。")
     ap.add_argument("--out", default="aniso_block.i")
     ap.add_argument("--wgb", type=float, default=4.0e-6,
                     help="扩散界面宽 wGB (m)。默认 4.0e-6 = 生产基线，产出逐位不变。"
@@ -224,7 +298,7 @@ def main():
     MU_QP = 6.0 * SIGMA_H / WGB
 
     n = args.op_num
-    th = build_orientations(n)
+    th = build_orientations(n, args.texture, args.hwhm)
     eta = [f"gr{i}" for i in range(n)]
     pairs = [(m, nn) for m in range(n) for nn in range(m + 1, n)]
 

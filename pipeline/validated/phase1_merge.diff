@@ -1,0 +1,147 @@
+--- stage1_meltpool_c.i
++++ /tmp/c_merged.i
+@@ -82,5 +82,5 @@
+   [laser_T]
+     type = ParsedFunction
+-    expression = '353 + 28/(2*pi*20*sqrt((x+1.2e-4-0.6*t)^2+y^2+1e-10))*exp(-0.6*(sqrt((x+1.2e-4-0.6*t)^2+y^2+1e-10)+x+1.2e-4-0.6*t)/(2*6e-06))'
++    expression = 'min(353 + 28/(2*pi*20*sqrt((x+1.2e-4-0.6*t)^2+y^2+1e-10))*exp(-0.6*(sqrt((x+1.2e-4-0.6*t)^2+y^2+1e-10)+x+1.2e-4-0.6*t)/(2*6e-06)), 3200)'
+   []
+ []
+@@ -193,4 +193,9 @@
+     variable = w
+     mob_name = M
++    # 【必须】M 现在依赖 η ⇒ 不声明 gr0..gr7 的话，∂M/∂η_i 整块不进雅可比
++    # （SplitCHWResBase.h:83 `_dmobdarg[cvar] = getMaterialPropertyDerivative(_mob_name, i)`，
++    #  而 cvar 来自 mapJvarToCvar —— 只认声明过的耦合变量）。
++    # 这是 P0-1 的同类缺陷，只是换了个核。
++    coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
+   []
+   [coupled_parsed]
+@@ -472,8 +477,124 @@
+   # kappa_c 可以自由减小的理由：晶界能由 kappa_op/mu 决定，kappa_c 只是 c 场的
+   # 正则化项；减小它还会让分裂式 CH 的 4 阶刚度下降（更稳）。无物理副作用。
+-  [ch_params]
++  # =====================================================================
++  # 【Phase 1.3】溶质迁移率分层：D_L / D_S / D_GB（审计 P0-3 + P0-4）
++  # =====================================================================
++  # 改前：M = 2.8e-9 常数，于是 D = M·f_cc，而 f_cc = k_c + 2·A_part·Ση²：
++  #     液相 (Ση²=0)      D = 2.52e-9
++  #     固相 (Ση²=1)      D = 4.00e-9   <- **比液相还快 1.59 倍（物理上反了）**
++  #     固固晶界(Ση²=0.5)  D = 3.26e-9   <- 没有独立的晶界快速通道
++  # 真实 Ti64 中 V 的 D_L 比 D_S 高约 4 个数量级，D_GB 又比 D_S 高若干个数量级。
++  #
++  # ---- 指示函数的选取（这里踩过一个坑，必须记下来）----
++  # 第一版草稿用的是 h_gb = 4·S·(1−S)（S = Ση_i²）。
++  # 它有个致命缺陷：**固液界面中点也满足 S ≈ 0.5**，于是固液界面会被
++  # 误判成晶界，拿到 D_GB 的快速扩散 —— 而 LPBF 里恰恰是固液界面最重要。
++  # 用 check_D_layering.py 与代码核对时发现了（晶界态算出 1.66e-9 而不是 4e-10）。
++  #
++  # 正确的晶界指示必须能区分「**两个不同晶粒**相遇」与「固相遇到液相」：
++  #     固液界面：只有 1 个 η 非零        -> 指示 = 0
++  #     固固晶界：2 个 η 同时非零          -> 指示 = 1
++  # 用配对乘积即可：
++  #     h_gb = 16 · Σ_{i<j} η_i² η_j² = 8·(S² − Q),   Q = Σ η_i⁴
++  #   二元晶界 (η₀=η₁=0.5)：S=0.5, Q=0.125 -> 8·(0.25−0.125) = 1  OK
++  #   晶粒内部 (η₀=1)      ：S=1,   Q=1     -> 0                  OK
++  #   液相                 ：S=0             -> 0                  OK
++  #   固液界面             ：只有 1 个 η     -> 0                  OK  <- 关键
++  #   三叉晶界 (各 1/3)     ：S=1/3, Q=1/27  -> 16/27 ≈ 0.593      OK
++  #
++  # 固相指示：晶界处 S 只有 0.5，直接用 S 会让液相项漏进来（D 偏大）。
++  #     h_s = min(1, 2·S)
++  #   晶界 -> min(1,1) = 1；晶粒内 -> 1；液相 -> 0；固液界面 -> 2S（线性混合）
++  #
++  #   ⚠ 第一版用的是 h_s = S + h_gb(1−S)。它在**晶界两翼**把液相项漏进了固相，
++  #     而且这一点是**用 1D 晶界算例量出来的**（validated/make_1d_gb.py），
++  #     不是推出来的：
++  #         位置           S       h_gb    h_solid    D (m²/s)      D/D_S
++  #         晶粒 x=0.2µm  0.9998   0.000    0.9998    1.02e-12       2.6×
++  #         晶粒 x=0.6µm  0.9982   0.000    0.9982    4.99e-12      12×
++  #         晶粒 x=1.4µm  0.9096   0.033    0.9126    2.34e-10     584×
++  #         晶界两翼      0.6068   0.619    0.8501    6.26e-10   ← 比晶界中心还大！
++  #         晶界中心      0.5000   1.000    1.0000    4.00e-10
++  #     **D 的最大值跑到了晶界两侧**，物理上反了；固相里 D 比 D_S 大 2.6~584 倍。
++  #     根因：D_L 与 D_S 相差 6300 倍时，(1−h_solid) 的尾巴被放大 6300 倍。
++  #     ⇒ 固相指示**必须在晶界处正好等于 1**。
++  #   min(1, 2S) 在 S=0.5（二元晶界中点）恰好饱和到 1，两翼也全是 1。
++  #   修复后实测：固相 D = 4.009e-13（期望 D_S=4.0e-13，+0.24%），
++  #               且 D 随远离晶界**单调下降**。
++  #   ⚠ 代价：min() 在 S=0.5 处有一个导数拐点（正好落在二元晶界中心线上）；
++  #     MOOSE 对 min() 取次梯度，实测牛顿正常收敛。
++  #
++  # 合成：
++  #     D(η) = D_L + (D_S−D_L)·h_s + (D_GB−D_S)·h_gb
++  #   三个极限分别精确给出 D_L / D_S / D_GB —— 可逐点核对（T6）。
++  #
++  # =====================================================================
++  #     M    = D(η) / f_cc,     f_cc = k_c + 2·A_part·S
++  # =====================================================================
++  # **关键性质**：f_cc 就是 f_loc 对 c 的二阶导（f_loc 是 c 的二次多项式），
++  # 所以由构造保证 D = M·∂²f/∂c² 逐点成立。
++  #
++  # ⚠⚠ 参数来源：Ti64 中 V 的 D_S、D_GB 定量数据**基本不存在**（本项目已知
++  #    文献缺口）。以下数值一律是 **calibration 参数**，不是材料常数。
++  #    **不得**在任何文档或论文里写成"已验证的 Ti64 数据"。
++  #
++  # ⚠ M 现在依赖 η ⇒ [Kernels]/[coupled_res] **必须**声明 gr0..gr7，
++  #    否则 ∂M/∂η_i 整块不进入雅可比 —— 与 P0-1 完全同类。
++  #     本脚本已同步打上那个补丁。
++  # =====================================================================
++  [ch_kappa]
+     type = GenericConstantMaterial
+-    prop_names  = 'M        kappa_c'
+-    prop_values = '2.8e-9   1e-14'
++    prop_names  = 'kappa_c'
++    prop_values = '1e-14'
++  []
++
++  # --- S = Ση²（固相指示 + f_cc 的输入）---
++  [solute_S]
++    type = DerivativeParsedMaterial
++    property_name = S_eta2
++    coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++    expression = 'gr0^2+gr1^2+gr2^2+gr3^2+gr4^2+gr5^2+gr6^2+gr7^2'
++    derivative_order = 2
++  []
++
++  # --- Q = Ση⁴（只为算 h_gb）---
++  [solute_Q]
++    type = DerivativeParsedMaterial
++    property_name = Q_eta4
++    coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++    expression = 'gr0^4+gr1^4+gr2^4+gr3^4+gr4^4+gr5^4+gr6^4+gr7^4'
++    derivative_order = 2
++  []
++
++  # --- 晶界指示 h_gb = 8(S²−Q) = 16·Σ_{i<j}η_i²η_j²；二元晶界=1，其余=0 ---
++  [solute_hgb]
++    type = DerivativeParsedMaterial
++    property_name = h_gb
++    coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++    material_property_names = 'S_eta2 Q_eta4'
++    expression = '8*(S_eta2^2 - Q_eta4)'
++    derivative_order = 2
++  []
++
++  # --- 固相指示 h_s = min(1, 2S)；晶界处饱和到 1 ---
++  [solute_hs]
++    type = DerivativeParsedMaterial
++    property_name = h_solid
++    coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++    material_property_names = 'S_eta2'
++    expression = 'min(1, 2*S_eta2)'
++    derivative_order = 2
++  []
++
++  # --- 分层扩散系数 -> 迁移率 M = D(η)/f_cc ---
++  [solute_mobility]
++    type = DerivativeParsedMaterial
++    property_name = M
++    coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++    material_property_names = 'S_eta2 h_gb h_solid'
++    constant_names = 'D_L D_S D_GB k_c A_part'
++    constant_expressions = '2.52e-09 4e-13 4e-10 0.9 0.264'
++    expression = '(D_L + (D_S-D_L)*h_solid + (D_GB-D_S)*h_gb) / (k_c + 2*A_part*S_eta2)'
++    derivative_order = 2
+   []
+ 

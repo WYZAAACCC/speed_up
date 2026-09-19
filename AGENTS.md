@@ -23,6 +23,7 @@
 | **查以前踩过的坑** | **`docs/agent-notes/moose-api-gotchas.md`**（19 条） + 本文件 §3 |
 | 查上一次是怎么排查某个 bug 的 | `docs/agent-notes/d-version-kernel-bug.md`、`d-version-stall-debug.md` |
 | 查运行环境怎么搭的 | `docs/agent-notes/wsl-moose-environment-setup.md` + 本文件 §4 |
+| **查「下一步该做什么」** | **`docs/guidence_material/audit_material_pack/`** ← 另一代理对本仓库的**独立审计**：`00_FINAL_AUDIT.md`（判定 + 四个 P0）、`01_IMPLEMENTATION_PLAN.md`（实施顺序与禁止事项）、`02_TEST_MATRIX.md`（每步判据）、`03_CODE_AGENT_PROMPT.md`（可直接执行的任务说明） |
 
 **`docs/agent-notes/` 是前任代理的持久记忆（17 条，2026-09-19 导出）**，
 每条记录的是「**为什么**」某个做法对或错，代码和报告里通常只写「是什么」。
@@ -62,7 +63,8 @@
   需要时**先问**。
 - **报告/结论必须与代码逐行核对**。凡未核实的，标注**【未核实】**；
   凡由已有事实推出的，标注**【推理】**。
-- 机器是 **20 核 / 23 GB**，是共享资源。长任务用后台跑，**别把机器占满**。
+- 机器是 **20 逻辑核**；**主机 32 GB，但 WSL 被 `.wslconfig` 限到 24 GB（实测可用 22–23 GB）**。
+  规划内存预算时**用 22 GB 而不是 32 GB**。是共享资源，长任务用后台跑，**别把机器占满**。
 - 默认**中文回答**。
 
 ---
@@ -92,8 +94,37 @@
 
 - **界面欠解析**：`w/dx = 1.41`，判据要求 4–8。修法（放大 `wGB` / AMR / `ε`-收敛研究）
   取决于专家对 **Q10**（判据里「界面」指哪个宽度）的答复——**别在答复前动手改**。
+  > **2026-09-19 更新**：这个问题已经用**实测**定下来了，不再是"等 Q10"。
+  > 新增 T8b（`pipeline/validated/run_t8_dx.sh`）：**固定 `wGB = 4 µm` 只扫 `dx`**，
+  > 以 `dx = 0.25 µm` 为基准 ——
+  > `dx = 0.5 µm`（`w/dx = 2.83`）**+1.61% ✅**，
+  > **`dx = 1.0 µm`（生产）偏 +6.85% ❌**，拟合 R² 同步从 0.9999 掉到 0.994。
+  > 所以"改 `wGB`"这条路是**关死**的（`wGB = 2 µm` ⇒ 代价 64×，约 50 天），
+  > 该花的那笔钱是**网格**（`dx: 1.0 → 0.5` ⇒ 4× 代价，约 76 h/轨迹）。
+  > ⚠ 顺带一条陷阱：`dx = 2 µm` 的偏差只有 −3.38%（"合格"），
+  > 但它的拟合 R² = 0.947 —— **是噪声蒙出来的**。不能只看偏差百分数。
+  > 完整论证见 `pipeline/validated/VALIDATION_STATUS.md §1.5`。**这个决定仍然需要用户点头。**
 - **步骤 3 的 `W/(D/V)` 扫描未开始**。建议**先只跑 `s = 476`（LPBF 实际工况点）
   的对照算例 = 2 个**，那一个点的答案就是评审止损条款的答案，不要一次跑 60 个。
+
+### 2.1 ⚠ 另一代理的独立审计给出了**四个 P0**（2026-09-19）
+
+`docs/guidence_material/audit_material_pack/00_FINAL_AUDIT.md`。
+**其中三个是本项目此前没有明确提出的**，且都指向同一个要害：
+**这个模型目前还没有「独立的晶界偏析」和「独立的晶界扩散」通道。**
+
+| # | P0 | 状态 |
+|---|---|---|
+| 1 | **`SplitCHParsed` 缺 `coupled_variables`** ⇒ c 方程雅可比缺一整块 | 与本报告 P15 一致，**已双重确认**。一行可修 |
+| 2 | **液固分配与晶界偏析混在同一个 `A_part` 里**：`f_loc` 的 `A_part·c²·Ση²` 项在液相/晶粒内/固固晶界分别取 0 / 1 / **0.5** ⇒ 同一个系数既定液固分配 `k=0.63`，又定固固晶界富集 | **已独立复核（本人）**：GB 平衡浓度比晶粒内高 **1.22 倍**——确实不是独立的偏析模型。**必须拆成 `f_liquid_solid_partition + f_gb_segregation`** |
+| 3 | **没有晶界快速扩散通道**：全域用同一个 `M`，`D` 只随 `f_cc` 变（液 0.9 / 固 1.428 / 晶界 1.164） | **已独立复核（本人）**：属实。而「学晶界扩散」正是本课题的**目标本身** |
+| 4 | **固相扩散反而比液相快 1.59 倍**（`D = M·f_cc`，固 4.00e-9 vs 液 2.52e-9） | **已独立复核（本人）**：`D_固/D_液 = 1.5867` ✅ **物理上反了**——真实 Ti64 的 V 液相应快约 4 个数量级。源文件里本有一句注释说 `1.8` 对不上任何 `f_cc`，但**没人把后果推出来** |
+
+**⇒ 这四条合起来意味着**：**在修好之前，生产输出不能作为「真实晶界扩散」的训练真值。**
+这与用户「学接近真实的物理」的硬约束直接冲突，应当**优先于**界面分辨率问题处理。
+
+> 这四条已在 `pipeline/REPORT_FOR_EXPERTS.md` §6.4 登记，并同步给专家。
+> 修复前后必须做 `-snes_test_jacobian` 检查与解/迭代数/守恒的对照。
 
 ---
 
@@ -111,12 +142,14 @@
 | 3 | **`validateNonlinearCoupling` 只 `mooseWarning`，不报错**，而且只检查**非线性系统**（AuxVariable 不查）。日志里刷 `Missing coupled variables {...}` | 极易漏看，然后雅可比少一整块 | **把这条告警当错误看**。当前生产输入的 `[coupled_parsed]` 就有这条（见 P15） |
 | 4 | **`GBAnisotropy` / `GBAnisotropyBase` 硬编码声明 `mu` 属性**，且 `_mu_qp = 6·sigma_init/wGB` 是**公式不是参数** | 与我们的常数势垒**双声明冲突** | **不能用**。本项目在 Python 里预先算好 Moelans 不动点，再以 parsed 表达式给出 |
 | 5 | **`ACGrGrPoly` 的 `mu` 属性名是硬编码的**；`ACInterface` 的 `mob_name`/`kappa_name` 才可配 | — | 改自由能结构时要留意谁在消费哪个属性名 |
+| 6 | **用正则改 MOOSE 输入块时，块名必须**行首锚定**（`^[ \t]*\[blk\]` + `re.M`）** | `[ \t]*\[free_energy\]` 里的 `[ \t]*` 会匹配到**注释**里「（见 `[free_energy]` 的…」括号前的那个空格 ⇒ **匹配到注释**，报出来却是「块里没有 f_loc」，指向完全错误的方向。本轮**踩了两次**（先误判成"注释里出现过"，加了 `[ \t]*` 反而更糟） | 一律用 `re.search(r"(^[ \t]*\[blk\](?:.*?))\n[ \t]*\[\]", t, re.S \| re.M)`。**并且改完必须 `--dry-run` 看 diff 命中了几处** |
+| 7 | **改 MOOSE 核时，override 的函数必须是**框架真正调用**的那一个** | `ACBulk` 派生自 `KernelValue`，而 `KernelValue::computeJacobian()` 走的是 **`precomputeQpJacobian()`**（`KernelValue.C:52`）。`Kernel::computeQpJacobian()` 默认为 0 **且根本不会被调用**。<br>本轮为做 T1 正对照去 override 了后者 ⇒ `full` 与 `zero_all` 两档**实际是同一个东西**，**对照静默失效**，白跑一轮 | 写 override 前**先 grep 框架里谁在调它**：`grep -rn "函数名" framework/src/`。看到调用点再动手。**「编译通过、程序不报错」完全不代表改动生效了** |
 
 ### 3.2 会「白烧机时」的
 
 | # | 坑 | 症状 | 正确做法 |
 |---|---|---|---|
-| 6 | **MOOSE 的「未使用参数」检查在 `executeExecutioner()` **之后** | 一个 4 小时的长跑会**跑完全程才中止** | 改完 `.i` **先跑 `--check-input`**（秒级） |
+| 6 | **MOOSE 的「未使用参数」检查在 `executeExecutioner()` **之后** | 一个 4 小时的长跑会**跑完全程才中止** | 改完 `.i` **先跑 `--check-input`**。⚠ 实测耗时 **≈120 s**（不是「秒级」——都花在那几条巨型 parsed 表达式的 LLVM JIT 编译上）。仍远小于长跑，但要做时间预算 |
 | 7 | **网格是生成器链**：`Mesh/nx=86` **静默无效**，必须用 `Mesh/gen/nx` | 你以为改了网格，其实没改，整个对照实验作废 | 用 CLI 覆盖参数后，**先确认它真的生效了** |
 | 8 | **CSV 输出按「输入文件名」命名，不是 `Outputs/file_base`** | **两个并发算例（同一个 `.i`）写同一个 CSV，互相覆盖** | **并发跑必须各自独立目录**；重跑前先删 `*_out.csv` |
 | 9 | **不激活 conda 环境 `moose`** ⇒ `mpicxx` 找不到 ⇒ `ParsedMaterial` 的 LLVM JIT 全部失败 | 刷屏 `JIT compile failed`，**静默退回解释执行**（数值对，但慢很多） | 手工跑长算例前必须 `conda activate moose`（`run_nonad_prod.sh` 本来就激活了） |
@@ -132,8 +165,98 @@
 | 14 | **设计验证算例前，先问「这个测试能不能看到目标现象」** | 曾用「平衡态 `k` 随界面分辨率变化」去查溶质截留，全部精确给出 `k = 0.6303`——**因为平衡态 `V = 0`，根本没有边界层**，原理上看不到，白跑一轮 |
 | 15 | **被比较的量本身是否随扰动变化？** | `f_grain` 验证首次 FAIL（4.2e-3），原因是拿**扰动点**的 `M0` 当基准而不是名义状态 |
 | 16 | **传承结论也要能算数才算数** | 「AMR 破坏守恒」这条在仓库里只有转述、**没有量级没有脚本没有日期**，却被用作「放弃 AMR」的唯一理由——而它挡着一条可能省 **9 倍算力**的路（详见报告 P14） |
+| 17 | **「工具没打印出结果」时，先怀疑自己的 grep，别怀疑工具** | 读 `-snes_test_jacobian` 的输出时，我按 PETSc 文档写了 `grep "Norm of matrix ratio"` —— **一个都没匹配到**，差点得出"FD 没打印出来"的结论。PETSc 实际打印的是 `\|\|J - Jfd\|\|_F/\|\|J\|\|_F = <值>`。**而本仓库的 `jacobian_test.sh` 早就用对了**（它 grep 的是 `J - Jfd`）。⇒ **遇到格式问题先照抄仓库里已在用的写法，不要重新去查上游文档** |
+| 18 | **停掉后台任务 ≠ 停掉它起的子进程** | 见 §3.11。僵尸 MOOSE 会继续偷 CPU，且 cwd 变成 `(deleted)`；更糟的是它和"重跑的新进程"同时跑同一件事，而 `pgrep` 只取第一个 —— 看到的进度是**错的那个** |
+| 19 | **探针/检查工具必须先做「正对照」** | 用「往输入里插对象、问 MOOSE 某个材料属性存不存在」这个手法时，我**两次都跳过了正对照**：<br>第一次直接拿它下结论；第二次因为**另一种探针**（`ElementAverageMaterialProperty` 后处理器）连生产必需的 `dL/dgr0` 都报「不存在」，就把结论全盘否定了。<br>**真相**：后处理器版有**构造顺序伪影**（在材料声明之前请求），AuxKernel 版（`MaterialRealAux`）是可靠的 —— 而这一点，只要**拿一个确定存在的属性（如 `L2b`）跑一遍正对照**，一次就能分清。<br>⇒ **永远先拿一个"已知答案"跑通工具，再相信它对"未知答案"的报错** |
+| 20 | **凡是「守恒量做差」得到的后处理，先问它的噪声地板在哪** | `gamma_gb = c_total − c_edge×L` 是两个量级 2.7e-7 的数相减 ⇒ 噪声地板约在 **1e-6 相对量级**。查 Ω₀ 标定时，真值 4e-11 的信号被它读成 **2.77e-13（差 169 倍）**，一度让我误判「Γ 对 Ω₀ 不线性」并准备推翻整条理论链。<br>**真相**：`c_max − c_min` 直接给出的剖面 Δc 与理论**逐档吻合到 0.88/0.96**，严格线性。<br>⇒ **能从原始剖面读的量，不要从守恒量的差去反推** |
+| 21 | **隔离实验必须做到「只差一个因素」，否则「哪个因素是元凶」只是运气** | 「AMR 段错误」的旧结论来自 `front1d.i`（崩）与 `grain_growth_circle.i`（不崩）的对照 —— 而这两者在**维度、物理、材料、后处理**上**全都不同**。<br>逐项比对后才发现真正差异是「有没有硬编码 `elementid` 后处理」。**只删掉那 2 个后处理块、其余逐字不动**，AMR 立刻从「6 秒崩溃」变成「正常跑完 107 步」。<br>⇒ **判断"隔离是否成立"的标准不是"两组有差异"，而是"两组只差这一个差异"** |
+| 22 | **「逐字节相同」通常过严 —— 先想清楚什么量在物理上应该相同** | 验证「改雅可比不改残差」时，我用「CSV 逐字节相同」当判据，结果 FAIL。**但这个判据本身就是错的**：雅可比一变，**牛顿迭代路径就变**，舍入路径随之变，末几位必然分叉。<br>实测差异在**第 13 位有效数字**（1.6e-13），比求解器容差（1e-8）低 5 个数量级 ⇒ **残差确实是同一个函数**。<br>⇒ **判据要写成「差异落在求解器容差量级内」，而不是「逐位相同」** |
+| 23 | **设计实验前，先在文档里搜一遍这个量有没有现成结论** | 做缺口 #3 的实验时，我实测移动前沿的 `k_eff = 0.880`，**把它当成「模型错了」的异常**（期望平衡值 0.6303）并准备写进结论。<br>实际上 `VALIDATION_STATUS.md` 的 **T7 段早就写明**：`k_eff ≈ 0.887`，且**明确指出它本来就不等于 0.6303**（T4 量的是静止界面的**平衡**分配系数，两者不是同一个量）。<br>⇒ 实测值与 T7 一致，**是判读错了，不是模型错了**。**白写了一版实验。**<br>⇒ 动手前先 `grep` 文档里那个量的名字；**尤其注意同名量在不同工况下可能是不同的物理量** |
 
-### 3.4 排查顺序（血的教训）
+### 3.4 本仓库**自己的守卫**也曾静默失效
+
+**别只怀疑 MOOSE，也要怀疑我们自己的检查脚本。**
+
+| 坑 | 症状 | 真相 |
+|---|---|---|
+| 17 | `run_nonad_prod.sh` 里有一段 **mu0 自洽性硬失败**（改 `--wgb` 忘了同步 `[barrier_muT]` 的 `mu0` ⇒ 晶界能是错的 ⇒ 拒绝运行）。它先找 `GENERATED_PARAMS wgb=… mu0=…` 这一行 | **拼接器根本不输出这一行**（`grep GENERATED_PARAMS stage1_meltpool_d.i` 为空）⇒ `mu0_gen` 永远是 `None` ⇒ 检查被跳过。代码落到 fallback，读的是文件头那行**静态模板注释** `[consts] kappa_op=1.8e-6`，而脚本自己在上面 233-234 行的注释里就写了「那是静态模板文本，不随 `--wgb` 变化」。**即"注释说这条路是错的"，而这条路正是实际走的那条** |
+
+**2026-09-19 已修**：改读**生成器自己打印的 `mu_qp`**（`gen.log`），
+并且**取不到就硬失败**（不再静默跳过）。已用正向 + 两个负向用例验证：
+① 把 `mu0` 在两处一起改歪 ⇒ 拦住；② `gen.log` 里没有 `mu_qp` ⇒ 拦住。
+
+**教训**：写守卫时要**反向测一次**——把被守卫的条件破坏掉，确认它真的会拦。
+只验证「正常情况能过」等于没验证。
+
+---
+
+### 3.5 改 `wGB` 时，**晶界能**重标定了，**溶质偏析**没有
+
+**这是本项目最容易踩、而且踩了不报错的一类坑。**
+
+`wGB` 是扩散界面的数值宽度，本身不是物理量。所以「改 `wGB`」必须
+**同步重标定**依赖它的参数，否则改的就真是物理了。
+
+仓库对**晶界能**这一套做对了 —— 生成器 `gen_aniso*.py` 在改 `--wgb` 时会同步改
+`mu0 = 6σ/wGB`、`κ = a*·wGB·σ`、`L = 4/3·M0/wGB`，并且有
+`pipeline/check_wgb_invariance.py` 专门数值验证「真实 σ 不变」。
+
+**但溶质偏析那一项没有对应的机制**：自由能里的 `A_part·c²·Ση²` 是个**常数**
+`A_part = 0.264`，不随 `wGB` 变。后果（2026-09-19 实测）：
+
+| `w_gb` (µm) | `Γ_GB`（晶界溶质过剩） |
+|---|---|
+| 0.2 | 1.81e-09 |
+| 0.4 | 3.67e-09 |
+| 0.8 | 6.49e-09 |
+
+**`Γ_GB` 正比于 `w_gb`** —— 也就是说它不是一个内禀的晶界性质，
+而是「单位宽度的过剩量」。**在改 `wGB` 的扫描里，测到的"晶界偏析"会跟着变。**
+
+**怎么用这条**：
+
+- 任何**跨 `wGB`** 的比较（T8 ε 收敛、T11 晶界过剩、Phase 3 之前的一切），
+  都必须先问一句：**这一项随 `wGB` 重标定了吗？**
+- 审计 Phase 3 要求把偏析拆成独立的 `f_segregation(c, h_gb)`，
+  正是要给它一套**自己的、与 `wGB` 配套的标定**。在这之前，
+  `Γ_GB` **不能**当作物理量写进论文。
+- 扫 `w_gb` 时域长也要跟着放大：tanh 剖面到 ±3.5·`w_gb` 才回到体相值。
+  实测 `w_gb=0.8 µm` + 域长 4 µm 时 tanh 尾巴伸到边界，
+  `D_in_grain` 变成 `D_S` 的 6 倍。**用小域扫大 `w_gb` 会测到边界污染。**
+
+---
+
+### 3.6 `/mnt/f` 上的读会**静默返回过期数据**（9p 缓存）
+
+**这是本项目最隐蔽的坑之一 —— 它不报错，只是给你一个旧版本。**
+
+`/mnt/f` 是 Windows 盘经 **9p 协议**挂载的。对同一个**正在被追加**的 CSV
+连续读三次（实测 2026-09-19）：
+
+```
+第 1 次: 1757 行, 末 t=0.0351
+第 2 次: 2680 行, 末 t=0.0535
+第 3 次: 6185 行, 末 t=0.1236   ← 与 shell 的 tail / wc -l 一致
+```
+
+**症状长什么样**：读出来的结果**时间倒退**、行数比 `wc -l` 少、
+或者"跑了很久还是没进展"。本项目因此**误判过两次**：
+一次以为"结果发散了"，一次以为"平衡依赖于 M"——两次都是假的。
+
+**怎么防**：
+
+- 用 `pipeline/validated/robust_csv.py` 的 `read_rows()` ——
+  它会反复读到与 `wc -l` 一致为止，并取**行数最多**的那一次。
+- **不要**写 `list(csv.DictReader(open(path)))` 就完事。
+- 判据用**已经跑完**的文件时，先 `wc -l` 看一眼，或 `read_rows_strict()`
+  （读两次，不一致就抛错而不是悄悄用）。
+- 交互式排查时，`tail` / `wc` / `awk`（shell）走的是另一条路径，实测更可靠。
+
+**注意**：这只影响**读**。MOOSE 写文件没问题，算例本身也没问题。
+
+---
+
+### 3.7 排查顺序（血的教训）
 
 > **先确认「解的是不是同一个方程」，再谈求解器。**
 >
@@ -147,6 +270,169 @@
 
 ---
 
+### 3.8 建**自建 MOOSE app** 时踩的坑（2026-09-19）
+
+为了补 `ACGrGrPoly` 的雅可比缺项，建了 `pipeline/app/`（app 名 `GbJac`）。
+建的过程中踩了四个坑：
+
+1. **本机的 MOOSE 源码没有子模块。** libMesh / PETSc / WASP 全部来自 conda 的
+   `moose-dev` 包，它们的位置由**激活 conda 环境**时设置的环境变量
+   （`LIBMESH_DIR` / `PETSC_DIR` / `WASP_DIR`）指定。
+   **不激活就直接 `make`** 会报两个**与核代码毫无关系**的错：
+   ```
+   /bin/sh: libmesh-config: not found
+   ***ERROR*** WASP does not seem to be available.
+   ```
+   看到这两条先查环境，别去改代码。
+   （`pipeline/app/build_app.sh` 已经把这步写在最前面，并逐项断言这三个变量。）
+
+2. **`stork.sh` 生成的 `src/main.C` 引用的是 `<App>TestApp.h`** ——
+   那是 test app 的头文件，主 app 编译不过。
+   要改成 `<App>App.h` / `MooseApp::main<<App>App>`。
+   `build_app.sh` 用 `sed 's/GbJacTestApp/GbJacApp/g'` 幂等地修掉。
+
+3. **`mapJvarToCvar(jvar, cvar)` 那个返回 `bool` 的重载在 libmoose 里没有对
+   `KernelValue` 实例化。** 用它**编译链接都不报错**，只在**运行期**炸：
+   ```
+   symbol lookup error: libgb_jac-opt.so.0: undefined symbol:
+     JvarMapInterfaceBase<KernelValue>::mapJvarToCvar(unsigned int, unsigned int&)
+   ```
+   要复用「迁移率乘积法则」那一项，直接调 `ACBulk<Real>::computeQpOffDiagJacobian(jvar)`
+   —— `AllenCahn.C:65` 就是这么写的。
+
+4. 顺带一条**好**消息（说明第 3 条里的直调是安全的）：
+   `JvarMapKernelInterface::computeOffDiagJacobian` 在 `_jvar_map[jvar] < 0` 时
+   **提前返回**（`framework/include/utils/JvarMapInterface.h:204`），
+   所以核里的 `computeQpOffDiagJacobian` 收到的 `jvar` **一定**在
+   `coupled_variables` 里，`mapJvarToCvar(jvar)` 的下标一定有效。
+
+---
+
+### 3.9 用 Python 改输入文件时，**别在 Windows 侧跑**
+
+Windows 的 `open(path, "w")` 默认把 `\n` 翻成 `\r\n`。同一个 `make_variant.py`：
+
+| 在哪跑 | 结果 |
+|---|---|
+| WSL 的 python3 | LF 保持，899 行，diff **3 个 hunk** ✓ |
+| Windows 的 python3 | **全文件变 CRLF**，778 行 → 899 行**每一行都变** ✗ |
+
+另一方面，这个坑**在同一个会话里犯了两次**，第二次更难查：
+
+| 次数 | 场景 | 症状 |
+|---|---|---|
+| 1 | 用 Windows 的 `python3 make_variant.py` 生成输入 | 778 行 → 899 行全是 CRLF，diff 不可读 |
+| 2 | **用 Windows 的 `python3 - <<PY` 改一个 `.sh` 脚本**（在 Git Bash 里跑） | 脚本首行变成 `#!/bin/bash^M`，于是 `set -eo pipefail` 被解析成 `pipefail\r` ⇒ bash 报 **`set: pipefail: invalid option name`** —— 报错信息**完全不提行尾**，看着像脚本逻辑坏了 |
+
+第 2 次的诊断法（值得记住）：
+```bash
+head -1 script.sh | cat -A     # 看到 ^M$ 就是 CRLF
+file script.sh                  # 会直接写 "with CRLF line terminators"
+```
+
+⇒ 改输入文件/脚本的 Python 一律在 **WSL** 里跑（`wsl -e bash -lc 'python3 ...'`），
+别在 Git Bash 里调 Windows 的 python3。
+
+---
+
+### 3.10 `pkill -f` 会杀掉**你自己**
+
+```bash
+pkill -f "gb_jac-opt -i"        # ← 危险
+```
+
+`pkill -f` 匹配的是**完整命令行**，而这条 `wsl -e bash -lc '... gb_jac-opt -i ...'`
+自己的命令行里就含有这个字符串 ⇒ **shell 被自己 SIGKILL**（退出码 **9**，
+现象是"命令没输出、返回 9"）。
+
+用精确进程名 + 按 PID 杀：
+
+```bash
+for P in $(pgrep -x gb_jac-opt); do kill -9 "$P"; done
+```
+
+同一条教训在生产脚本 `run_nonad_prod.sh` 里已经出现过一次（原来那段
+`pgrep -f 'phase_field-opt -i' | xargs kill -9` 把全机器上每一个 MOOSE 都杀了）。
+
+---
+
+### 3.11 停后台任务时，**MOOSE 子进程不会跟着死**
+
+把 `bash run_xxx.sh`（里面再起 MOOSE）放到后台、然后"停掉任务"，
+**停掉的只是那层 shell**。MOOSE 子进程会**继续跑**，后果有三层：
+
+1. **偷 CPU** —— 你以为停了，其实还在算。
+2. **cwd 变成 `(deleted)`** —— 因为脚本开头的 `rm -rf "$ROOT"` 把目录删了，
+   而它还指着那儿。`readlink /proc/<pid>/cwd` 会看到
+   `/root/work/xxx/base (deleted)`。
+3. 如果是"停掉再改脚本重跑"，新进程和旧僵尸会**同时跑同一件事**，
+   而 `pgrep -x` 只取第一个 —— 看到的进度是**错的那个进程**的。
+
+**判据**：`readlink /proc/<pid>/cwd` 里带 `(deleted)` 的就是僵尸。
+
+```bash
+for P in $(pgrep -x gb_jac-opt); do
+  CWD=$(readlink /proc/$P/cwd 2>/dev/null)
+  case "$CWD" in *"(deleted)"*) kill -9 "$P";; esac
+done
+```
+
+**每次停掉一个跑 MOOSE 的后台任务，都要显式查一遍残留。**
+（本轮就是靠这条才没把 s6-B 长跑和 t8dx 一起误伤 —— 按 `cwd` 判断，
+不按进程名一刀切。）
+
+### 3.12 WSL 虚拟机整个**卡死**时怎么判断、怎么抢救（2026-09-19 新增）
+
+**症状（按出现顺序）**：
+
+1. 无害的告警先出现：`WSL (… - Relay) ERROR: ConfigUpdateLanguage: … /etc/default/locale failed 5`
+2. 然后**真实**的 I/O 错：`/root/miniconda3/etc/profile.d/conda.sh: Input/output error`、
+   `ls /root/work` 报 `unknown io error`、`/usr/bin/python3: Input/output error`
+3. **决定性判据**：`ps -e --no-headers | wc -l` 返回 **0**
+   ⇒ `/proc` 都读不到了，这是**内核/虚拟化层**卡死，不是路径问题
+
+**⚠ 最容易误判的地方**：报错是「某个路径读失败」，看着像路径写错或权限问题。
+实际是 **部分失败** —— 同一时刻 `/`、`/root/moose`、`/usr/bin` 能读，
+`/root/work`、`/usr`、`/mnt/f` 读不了；**`/usr` 失败而 `/usr/bin` 成功**这种
+「父目录比子目录先坏」的模式，就已经排除了路径问题。
+
+**关键分诊：去 Windows 侧读同一份数据。**
+
+```bash
+ls -d pipeline/validated && echo "Windows 侧 OK"     # 在 Windows 的 Bash 里跑
+```
+
+* **Windows 侧能读** ⇒ 盘是好的，坏的是 WSL 的虚拟化/9p 层
+  ⇒ **项目文件全安全**，只需重启 WSL
+* **Windows 侧也读不了** ⇒ 真·磁盘故障，那是另一回事
+
+**抢数据：不要试图 `cp`/`mv`（目录操作会失败），直接 `cat` 具体文件。**
+实测「目录列举失败」时**具体文件仍然可读** —— 本轮就是靠这个把
+`ident_full.csv` / `ident_off.csv` / `omega_calib.log` 全部抢出来的。
+抢到的东西**立刻写到 `/mnt/f`（Windows 侧）或直接写进对话**，别留在 WSL 里。
+
+**修复：`sync` **没有用**（实测无效），只能重启。**
+
+```bash
+wsl.exe --shutdown        # 在 Windows 侧跑
+sleep 8
+wsl.exe -e bash -lc 'echo ok; ps -e --no-headers | wc -l'
+```
+
+重启后**逐条复验** `/root/work`、`/usr`、`/mnt/f` 和进程数；
+本轮实测全部恢复，`/root/moose`、`/root/miniconda3`、自建 app 与 JIT 缓存
+（539 项）**都完好**。
+
+**风险记账**：WSL 侧未落盘的数据可能丢（本轮没丢）。项目文件在 `/mnt/f`，
+**任何情况下都安全** —— 所以「抢救」的优先级只针对 WSL 内的算例产物。
+
+**诱因（推测，未证实）**：卡死发生在**同时跑两个 MOOSE 作业 + 一个 gdb 调试会话**
+的时候。本机 WSL **只有 23 GB 内存**，而 MOOSE 单进程就要 0.3~3 GB，
+JIT 编译还会并行起多个 `mpicxx`/`cc1plus`。
+⇒ **别在这个 WSL 里同时起两个以上重作业**（与用户「不要占满机器」的约束一致）。
+
+---
+
 ## §4 环境事实
 
 ### 4.1 运行环境
@@ -154,9 +440,10 @@
 | 项 | 值 |
 |---|---|
 | 全部计算在 **WSL** 里跑 | 仓库路径 `/mnt/f/speed_up`（Windows 侧 `F:\speed_up`） |
-| MOOSE 二进制 | `/root/moose/modules/phase_field/phase_field-opt` |
-| conda 环境 | `moose`（含 `mpicxx`，**跑 MOOSE 必须激活**）；`ml`（含 torch，用于生成器/训练） |
-| 机器 | **20 核 / 23 GB** |
+| MOOSE 二进制 | `/root/moose/modules/phase_field/phase_field-opt`（**原版，未改动**）<br>`/root/projects/gb_jac/gb_jac-opt`（**生产用**：原版全部对象 + 本项目的 `ACGrGrPolyJ`）<br>源码在 `pipeline/app/`，重建：`bash pipeline/app/build_app.sh` |
+| conda 环境 | `moose`（含 `mpicxx`，**跑 MOOSE / 建 app 必须激活**）；`ml`（含 torch，用于生成器/训练） |
+| 机器 | **主机 31.8 GB / 20 逻辑核 / RTX 4060 Laptop GPU**；但 **WSL 被 `.wslconfig` 限到 24 GB，实测可用 22–23 GB**。规划内存预算用 **22 GB** |
+| GPU | **与本工作无关**——MOOSE 主求解走 CPU，PETSc/ASM 不自动用 GPU。别指望显卡加速 |
 | PETSc / SLEPc | 3.25.4 / 3.25.1 |
 
 ### 4.2 生产链路
@@ -165,8 +452,10 @@
 pipeline/stage1_meltpool_c.i          ← 唯一真源（手改只改它）
         ↓  frozen/gen_aniso_nonad.py   （已冻结 + SHA256，生成各向异性材料块）
         ↓  frozen/splice_aniso_nonad.py（把材料块拼进去，并把 [Modules] 换成手写核）
-pipeline/stage1_meltpool_d.i          ← 实际运行文件
+pipeline/stage1_meltpool_d.i          ← splice 的产物
+        ↓  validated/make_jacfix.py    （ACGrGrPoly → ACGrGrPolyJ，雅可比补全核）
         ↓  run_nonad_prod.sh           （哈希校验 → 生成 → 断言 → 运行 → 报告）
+        运行文件 N.i  →  gb_jac-opt -i N.i
 ```
 
 - **`frozen/` 下的两个生成器已冻结并登记 SHA256**（`frozen/SHA256SUMS`）。
@@ -241,6 +530,12 @@ pipeline/stage1_meltpool_d.i          ← 实际运行文件
 | 任务 | 怎么做 |
 |---|---|
 | 跑一个最小验证 | `tests/` 下已有现成算例（`front1d.i`、`grain_growth_circle.i`、`grain_growth_ac.i`…）。**别新写**，先看有没有 |
+| **改一个物理因素做对照** | **`validated/`**（见下）。物理修复**不要直接改生产文件** |
+| 生成小网格的验证算例 | `bash validated/make_case.sh`（尺寸用命令行覆盖，生成文件与生产逐字相同） |
+| 查雅可比完不完备 | `bash validated/jacobian_test.sh <算例目录> <标签>`（T1） |
+| 查 `D_L/D_S/D_GB` 对不对 | `python3 validated/check_D_layering.py <输入.i> --dl .. --ds .. --dgb ..`（T6） |
+| 生成分支输入（温度截断 / 迁移率分层） | `python3 validated/make_variant.py --src … --out … --t-cap 3200`（会同时写出 `.diff`） |
+| 在小网格上对比几个变体 | `bash validated/compare_variants.sh 标签=文件.i …` |
 | 检查生产输入还能不能跑 | `phase_field-opt --check-input -i <生成的 .i>` |
 | 完整生产流程（**需要用户批准**） | `bash run_nonad_prod.sh` |
 | 看某次运行的诊断 | `python3 gate0_report.py` → `diagnostics.json` |

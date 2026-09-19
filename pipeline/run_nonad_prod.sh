@@ -9,7 +9,29 @@
 #       54 分钟才走到迭代 8
 #     * MPI -n 8 反而更慢（25 分钟没走完迭代 1）
 #
-#   非 AD 版唯一的缺陷是 ACGrGrPoly 丢 dL/deta_j（雅可比误差 1.2e-3）。
+#   【2026-09-19 已修】原文这里写的是
+#        「非 AD 版唯一的缺陷是 ACGrGrPoly 丢 dL/deta_j（雅可比误差 1.2e-3）」
+#      **这句话有两处不对，现在都能定案了**：
+#
+#      (1) **缺陷本身说少了**。核对 MOOSE 源码后确认 `ACGrGrPoly` 丢**两类**项：
+#            (a) (∂L/∂η_j)·F_η  —— 它覆盖了 ACBulk::computeQpOffDiagJacobian 却没调它
+#            (b) (∂γ/∂η_j)·F_η  —— 它把 gamma_asymm 当常数，
+#                                   而 D 版的 `gamma_aniso` 是依赖 η 的
+#          并且算例里 `[grN_poly]` **根本没写 coupled_variables**，
+#          所以 (a) 连原料（_dLdarg）都是空的。
+#          C 版之所以没暴露：γ 是常数、L 只依赖 T ⇒ 两项恰好都恒等于零。
+#
+#      (2) **但它的影响说大了**。本轮实测（validated/run_jacfix_test.sh，
+#          同一二进制同一算例只差核类型）：缺项只有 **~5e-7（相对）**，
+#          FD 比值 **0.0208202 → 0.0208202，一位都没变**。
+#          ⇒ **它不是 T1 过不了的原因**，那句 1.2e-3 从来就只是引用、没人测过。
+#          ⚠ 所以：**别把 "T1 过不了" 归因到这一条上**——
+#            主导误差还没定位（见 VALIDATION_STATUS.md §1.4 的排除表）。
+#
+#      **修法仍然保留**（它是对的、零代价、残差逐位不变）：
+#      `pipeline/app/` 里的自建 MOOSE 核 `ACGrGrPolyJ`，由本脚本自动替换进去。
+#      所以本脚本现在跑的是 `gb_jac-opt`，不再是 `phase_field-opt`。
+#
 #   **材料值已逐位验证与 AD 版相同**（kappa_op/gamma_asymm/L 的 max/min 全一致），
 #   所以物理不变；差的是雅可比完备性，影响收敛速率、不影响收敛解。
 #
@@ -27,7 +49,17 @@
 #     详见 frozen/README.md 与 GATE0_PROGRESS.md。
 source /root/miniconda3/etc/profile.d/conda.sh
 conda activate moose
-MOOSE=/root/moose/modules/phase_field/phase_field-opt
+# 【2026-09-19】改用自建 app 的二进制：它 = phase_field-opt 的全部对象
+# + 本项目的 ACGrGrPolyJ（雅可比补全核）。理由见文件头。
+# ⚠ 进程名也跟着变了，下面所有 pgrep 都已同步改成 gb_jac-opt。
+MOOSE=/root/projects/gb_jac/gb_jac-opt
+[ -x "$MOOSE" ] || {
+  echo "错误：找不到 $MOOSE。"
+  echo "      先跑： bash /mnt/f/speed_up/pipeline/app/build_app.sh"
+  exit 1; }
+# 确认补全核真的在这个二进制里（构建失败会静默退化成只有 phase_field 的对象集）
+"$MOOSE" --registry 2>/dev/null | grep -q "ACGrGrPolyJ" || {
+  echo "错误：$MOOSE 里没有注册 ACGrGrPolyJ —— app 没建好。"; exit 1; }
 # ⚠ 目标目录。脚本开头会 `rm -rf "$D"`，所以试跑时**务必**用环境变量指到别处：
 #       D=/root/work/s1d_test bash run_nonad_prod.sh
 #   默认仍是生产目录，以免改变既有用法。
@@ -49,7 +81,7 @@ D="${D:-/root/work/s1d_nonad}"
 # ⇒ 现在按 **cwd 是否等于 $D** 精确限定：只清本目录的残留，别人的算例不动。
 #    另外打印被杀的 PID 与目录，让"谁杀了谁"永远可见。
 KILLED=0
-for P in $(pgrep -x phase_field-opt 2>/dev/null); do
+for P in $(pgrep -x gb_jac-opt 2>/dev/null); do
   CWD=$(readlink /proc/$P/cwd 2>/dev/null | sed 's/ (deleted)$//')
   if [ "$CWD" = "$D" ]; then
     echo "  停掉本目录（$D）的残留进程 pid=$P"
@@ -58,7 +90,7 @@ for P in $(pgrep -x phase_field-opt 2>/dev/null); do
   fi
 done
 sleep 3
-echo "已停本目录残留进程 $KILLED 个；机器上仍有 $(pgrep -xc phase_field-opt 2>/dev/null || echo 0) 个 MOOSE 在跑（不属于本目录，未动）"
+echo "已停本目录残留进程 $KILLED 个；机器上仍有 $(pgrep -xc gb_jac-opt 2>/dev/null || echo 0) 个 MOOSE 在跑（不属于本目录，未动）"
 
 rm -rf "$D"; mkdir -p "$D"; cd "$D" || exit 1
 
@@ -103,7 +135,11 @@ fi
 echo "生成器哈希校验通过（frozen/SHA256SUMS）"
 
 # --- 源输入必须已是 Ti64 真实值，否则拒绝跑 ---
-grep -q "constant_expressions = '0.9 0.036 0.264'" stage1_meltpool_c.i || {
+# ⚠ **必须用前缀匹配，不能要求闭合引号。** 2026-09-19 合入 Phase 3 后，
+#   `f_loc` 的常量表变成了 `'0.9 0.036 0.264 -5e-11 4e-06'`（多了 Omega0/wgb），
+#   原来那句 `grep -q "constant_expressions = '0.9 0.036 0.264'"`
+#   会把**合法**输入判成"参数不对"而拒绝跑 —— 是冒烟测试抓出来的。
+grep -qE "^[[:space:]]*constant_expressions = '0\.9 0\.036 0\.264" stage1_meltpool_c.i || {
   echo "错误：stage1_meltpool_c.i 的溶质参数不是 Ti64 真实值"
   echo "      （期望 k_c=0.9, c0=0.036, A_part=0.264 ⇒ k=0.63）。"
   echo "      若确实要用占位参数（k=0.5），**必须显式说明理由**，不要默认跑。"
@@ -122,6 +158,21 @@ python3 gen_aniso_nonad.py --op-num 8 --out aniso_block.i > gen.log 2>&1 || { ec
 python3 splice_aniso_nonad.py >> gen.log 2>&1 || { echo "splice 失败"; tail -5 gen.log; exit 1; }
 grep -E "自检|kappa_op   :|gamma_asymm:|最大相对误差" gen.log | head -5
 
+# =============================================================================
+# 【2026-09-19】把 ACGrGrPoly 换成 ACGrGrPolyJ（雅可比补全核）
+# =============================================================================
+# 为什么必须由脚本做、不能靠人工：splice 的职责是**逐字复刻** GrainGrowthAction
+# 建的三个核（TimeDerivative / ACGrGrPoly / ACInterface），它不知道本项目
+# 补了一个雅可比更全的核。留人工就会漂移 —— 这正是 Gate 0 要消灭的东西。
+#
+# 替换脚本自己会核对「恰好 8 处、无残留 ACGrGrPoly」，核不上就报错退出。
+# 它同时写出 diff，便于复查"到底改了哪几行"。
+python3 "$REPO/validated/make_jacfix.py" \
+        --src stage1_meltpool_d.i --out stage1_meltpool_d.i.jac --diff >> gen.log 2>&1 \
+  || { echo "jacfix 失败"; tail -8 gen.log; exit 1; }
+mv stage1_meltpool_d.i.jac stage1_meltpool_d.i
+echo "雅可比补全核已替换（diff: stage1_meltpool_d.i.jac.diff）"
+
 python3 - <<'PY'
 import re, sys
 s = open("stage1_meltpool_d.i", encoding="utf-8").read()
@@ -130,6 +181,22 @@ s = open("stage1_meltpool_d.i", encoding="utf-8").read()
 assert s.count("type = TimeDerivative") == 8, "核没修好（缺 TimeDerivative）"
 assert "variable_L = true" in s, "缺 variable_L"
 assert s.count("type = ADGrainGrowth") == 0, "这是 AD 版，不是非 AD 版"
+
+# --- 1b. 【2026-09-19】雅可比补全核已替换（上一步 make_jacfix.py 做的）---
+assert s.count("type = ACGrGrPolyJ") == 8, \
+    f"ACGrGrPolyJ 有 {s.count('type = ACGrGrPolyJ')} 处，期望 8 —— jacfix 没生效"
+assert s.count("type = ACGrGrPoly\n") == 0, "还有裸 ACGrGrPoly 残留"
+# coupled_variables 必须**逐个**写在 [grN_poly] 块里：否则 _dLdarg 是空的，
+# (∂L/∂η_j) 那项照旧缺 —— 和 P0-1 是同一个病。
+# ⚠ 不能简单地数全文里 `coupled_variables = 'T gr` 的出现次数：实测是 **18** 处
+#   （8 个 _poly + 8 个 _int + 2 个材料块），写成 `== 8` 会**假失败**。
+#   所以按块检查。
+for k in range(8):
+    m = re.search(rf"\[gr{k}_poly\](.*?)\n  \[\]", s, re.S)
+    assert m, f"找不到 [gr{k}_poly] 块"
+    assert "type = ACGrGrPolyJ" in m.group(1), f"[gr{k}_poly] 不是 ACGrGrPolyJ"
+    assert "coupled_variables = 'T gr" in m.group(1), \
+        f"[gr{k}_poly] 缺 coupled_variables —— (∂L/∂η_j) 项拿不到原料"
 
 # --- 2. 【Gate 0 修正】生产值只**断言**，不覆盖 ---
 #   原版这里用 re.sub 把 l_max_its / l_tol / nl_abs_tol / end_time **无条件覆盖**，
@@ -232,23 +299,45 @@ try:
                  f"否则自由能不再是 Landau 形式。拒绝运行。")
     # ⚠ 必须读 GENERATED_PARAMS，不能读文件头那行 `[consts] kappa_op=1.8e-6`
     #   —— 那是**静态模板文本**（描述 C 版基线），不随 --wgb 变化。
-    gp = re.search(r"GENERATED_PARAMS\s+wgb=(\S+)\s+kappa_op_iso=(\S+)"
-                   r"\s+gamma_asymm_iso=(\S+)\s+mu0=(\S+)", s)
-    if gp:
-        kappa_op = float(gp.group(2))
-        mu0_gen = float(gp.group(4))
-    else:
-        mk = re.search(r"kappa_op=(\S+?)[,\s]", s)
-        if not mk:
-            raise ValueError("既没有 GENERATED_PARAMS 行，也找不到 kappa_op= 注释")
-        kappa_op = float(mk.group(1))
-        mu0_gen = None
+    # ⚠⚠ 【2026-09-19 修正】下面这段原先**从来没生效过**。
+    #   它先找 `GENERATED_PARAMS wgb=... kappa_op_iso=... mu0=...` 这一行，
+    #   但**拼接器根本不输出这一行**（已核对：d.i 里 grep 不到）。
+    #   于是 mu0_gen 永远是 None，`mu0 一致性`那条硬失败被跳过；
+    #   代码落到 else 分支，读的是**文件头那行静态模板注释**
+    #   `[consts] kappa_op=1.8e-6` —— 上面 233-234 行的注释自己就写了
+    #   "那是静态模板文本（描述 C 版基线），不随 --wgb 变化"。
+    #   ⇒ 后果：把 --wgb 改成非 4 µm 而忘了同步 [barrier_muT] 的 mu0，
+    #     脚本**不会拦**，会算出一套晶界能错误的算例，而且看起来一切正常。
+    #
+    #   现在改为读**生成器自己打印的 mu_qp**（gen.log）。它由生成器真算出来，
+    #   且生成器自己断言它必须逐位等于算例的 mu0。不依赖任何静态注释，
+    #   也不需要改冻结的生成器。
+    mu0_gen = None
+    kappa_op = None
+    try:
+        genlog = open("gen.log", encoding="utf-8", errors="replace").read()
+        mk = re.search(r"kappa_op\s*:\s*(\S+)", genlog)
+        if mk:
+            kappa_op = float(mk.group(1))
+        mq = re.search(r"mu_qp\s*:\s*(\S+)", genlog)
+        if mq:
+            mu0_gen = float(mq.group(1))
+    except Exception:
+        pass
+    if kappa_op is None:
+        raise ValueError("gen.log 里找不到 kappa_op 自检行 —— 生成器输出格式变了？")
     # mu0 一致性：生成器的 MU_QP = 6σ/wGB 必须逐位等于算例 [barrier_muT] 的 mu0。
     # 不一致 => (a*,gamma*) 与 mu 不自洽 => 晶界能不是目标值。**硬失败**。
-    if mu0_gen is not None and abs(mu0_gen - mu0) > 1e-9 * abs(mu0):
+    # 【2026-09-19】mu0_gen 取不到时也**硬失败**（不再静默跳过）——
+    #   正是"取不到就跳过"让这段检查白挂了不知道多久。
+    if mu0_gen is None:
+        sys.exit("错误：gen.log 里找不到 mu_qp —— 无法核对 mu0 自洽性。"
+                 "宁可拒绝运行，也不要带着未核对的晶界能往下跑。")
+    if abs(mu0_gen - mu0) > 1e-9 * abs(mu0):
         sys.exit(f"错误：mu0 不自洽 —— 生成器 MU_QP={mu0_gen:.6g} 但 "
                  f"[barrier_muT] mu0={mu0:.6g}。改了 --wgb 就必须同步改 barrier_muT"
                  f"（mu0 = 6σ/wGB）。当前配置会产生错误的晶界能，拒绝运行。")
+    print(f"  mu0 自洽：生成器 mu_qp = 算例 mu0 = {mu0:.6g}（逐位一致）")
     nx = int(re.search(r"^\s+nx = (\d+)\s*$", s, re.M).group(1))
     xmin = float(re.search(r"^\s+xmin = \s*(\S+)\s*$", s, re.M).group(1))
     xmax = float(re.search(r"^\s+xmax = \s*(\S+)\s*$", s, re.M).group(1))
@@ -276,12 +365,12 @@ echo "=== 启动生产跑（单进程）==="
 ( PEAK=0
   while true; do
     SUM=0
-    for P in $(pgrep -x phase_field-opt 2>/dev/null); do
+    for P in $(pgrep -x gb_jac-opt 2>/dev/null); do
       R=$(awk '/VmRSS/{print $2}' /proc/$P/status 2>/dev/null)
       [ -n "$R" ] && SUM=$((SUM + R))
     done
     [ "$SUM" -gt "$PEAK" ] && PEAK=$SUM && echo "$PEAK" > peak_kb.txt
-    pgrep -x phase_field-opt > /dev/null || break
+    pgrep -x gb_jac-opt > /dev/null || break
     sleep 5
   done ) &
 SAMPLER=$!

@@ -105,6 +105,12 @@
     variable = eta
     f_name = F
     mob_name = L
+    # 【必须】F 依赖 c（A*c^2*eta^2 那一项）⇒ 不声明 c 的话
+    # ∂(eta 方程)/∂c 整块不进雅可比。与审计 P0-1 完全同类。
+    # 判据来源：MOOSE 只在**声明过**的耦合变量上组装非对角项
+    # （JvarMapInterface 的 _jvar_map，未声明者在
+    #  JvarMapKernelInterface::computeOffDiagJacobian 里被静默 return 掉）。
+    coupled_variables = 'c'
   []
   [eta_iface]
     type = ACInterface
@@ -130,6 +136,9 @@
     f_name = F
     kappa_name = kappa_c
     w = w
+    # 【必须】F 依赖 eta ⇒ 同理，∂²F/∂c∂eta 不进雅可比会静默丢项。
+    # 这条同时是 T1 的判据「无 Missing coupled variables」的直接对应项。
+    coupled_variables = 'eta'
   []
 []
 
@@ -177,6 +186,15 @@
     type = NodalExtremeValue
     variable = c
     value_type = max
+    execute_on = 'initial timestep_end'
+  []
+  # 【T3 的判据用这个】移动前沿下 c 必须保持非负：
+  #     判据 min(c) >= -1e-10
+  # 不加这条就只能靠肉眼看 Exodus，无法作为自动判据。
+  [c_min]
+    type = NodalExtremeValue
+    variable = c
+    value_type = min
     execute_on = 'initial timestep_end'
   []
   # 固相深部浓度（左端固定，前沿右移后一直是固相）

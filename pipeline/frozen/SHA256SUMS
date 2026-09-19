@@ -8,7 +8,18 @@
 #   验证：默认参数下生成的 stage1_meltpool_d.i 与改动前 sha256 均为
 #   2c10a73b47c2d679ac8869179d5b1b8887f0ef6f3547253642c17d29f767148f
 #
-f61c725042bc27089bb10dbe2185394faae8b3504f8ff79ed39d551324f4e696  gen_aniso_nonad.py
+# ⚠ 2026-09-19 再更新一次，同样是**纯增量**：
+#   给 gen_aniso_nonad.py 增加 `--texture {random,fiber}` 与 `--hwhm`，
+#   并移植 AD 版的 `_inv_norm_cdf`。用途：缺口 #5（LPBF 真实的 <100> 纤维织构）
+#   与 #7（散射织构下 2a 几乎失效）。
+#   **默认仍是 `--texture random`，产出与基线逐字节相同** —— 已验证：
+#     python3 orig_gen.py --op-num 8 --out orig.i     # 取自 git HEAD 的原版
+#     python3 gen_aniso_nonad.py --op-num 8 --out new.i
+#     cmp orig.i new.i   →  逐字节相同 ✓
+#   ⚠ 与上级目录 AD 版 `gen_aniso.py` 的默认**不同**（那边默认是 fiber）——
+#     两者取向集完全不同，**不要混用**。
+#
+8e53c9c9beee2c7bf1c82829d73f094d36165136f5be452b425efb0b131c640e  gen_aniso_nonad.py
 1009d666f6e9101d7ad78692cb9bba642237c6d78f60469a837c117f177e14b7  splice_aniso_nonad.py
 #
 # 对照（AD 版，位于上级目录，未改动，仅登记）

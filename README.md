@@ -13,7 +13,8 @@
 | 目录 | 内容 |
 |---|---|
 | **`pipeline/`** | **主代码**。相场算例、生成器、生产脚本、诊断与验证工具、全部规划文档 |
-| `docs/` | 两份专家审核意见 + **`agent-notes/`（代理工作笔记，接手前先读）** |
+| **`pipeline/validated/`** | **验证分支与最小算例**（**不是生产**）。按独立审计的实施计划建：物理修复一律先在这里做，验证通过再议是否合入生产。入口见 `validated/VALIDATION_STATUS.md` |
+| `docs/` | 两份专家审核意见 + **`agent-notes/`（代理工作笔记，接手前先读）** + `guidence_material/`（独立审计材料包） |
 | `reference/` | MOOSE 参考源码（LGPL 2.1，许可证头完整保留；仅作查阅，非本项目代码） |
 | `phase0a/` | Cahn–Hilliard 守恒性的早期验证算例 |
 
@@ -56,12 +57,24 @@
 
 **已建成的**：2D 单熔池相场模型（430×150 µm，`dx = 1 µm`，8 个序参量 + 溶质分裂式
 Cahn–Hilliard + 解析温度场），含取向差加权的晶界能/迁移率与热梯度对齐；
-非 AD + BDF2 + ASM/ILU，牛顿二次收敛到 1e-10；生成器已冻结并带 SHA256 校验。
+非 AD + BDF2 + ASM/ILU，牛顿二次收敛到 1e-10；生成器已冻结并带 SHA256 校验；
+**晶粒核的雅可比已补全**（自建 MOOSE app `pipeline/app/`，补上上游 `ACGrGrPoly`
+丢掉的两类项 —— 见 `pipeline/validated/VALIDATION_STATUS.md §1.4`）。
+
+> ⚠ **但请注意**：补上之后 FD 比值**一位没变**（缺项只有 ~5e-7 相对）
+> ⇒ **T1 的 1e-5 判据在生产配置上仍然过不了，而且原因不是它**。
+> 主导误差**尚未定位**，§1.4 有排除表。不要引用这条修复去解释 T1。
 
 **已知的硬问题**（详见 `REPORT_FOR_EXPERTS.md` §6）：
 
 - **尺度分离**：弥散界面宽约 2 µm，真实溶质边界层 `D/V ≈ 4 nm`，相差 **476 倍** ⇒
   薄界面理论要求 `W < D/V` 才定量，**我们远离定量区**
+- **网格欠解析（已定量）**：平衡界面宽 `w = sqrt(κ/µ) = 1.414 µm`，`dx = 1 µm`
+  ⇒ 只有 **1.41 个单元/界面宽**。实测（T8b，`wGB = 4 µm` 固定、只扫 `dx`，
+  以 `dx = 0.25 µm` 为基准）：`dx = 0.5 µm` 偏 **+1.61%** ✅，
+  **`dx = 1 µm` 偏 +6.85% ❌**（判据 5%），拟合 R² 同步从 0.9999 掉到 0.994。
+  ⇒ 该花的是网格（`dx → 0.5 µm`，4× 代价），**不是**改 `wGB`
+  （`wGB = 2 µm` 要 64× ≈ 50 天）。完整论证见 `VALIDATION_STATUS.md §1.5`
 - **文献空白**：Ti64 的晶界偏析焓、晶界扩散系数、三重积等定量数据**基本不存在**
 - **模型缺口**：无形核（算不出等轴晶）、无溶质拖曳（自由能未进入序参量方程）
 - **参数出处**：`σ = 0.6 J/m²`、`M₀ = 232 m⁴/(J·s)`、`A_ani = 0.7` 三个参数缺可靠出处
@@ -70,20 +83,30 @@ Cahn–Hilliard + 解析温度场），含取向差加权的晶界能/迁移率�
 
 ## 运行环境
 
-- **MOOSE**（`phase_field-opt`），本工作使用 PETSc 3.25 / SLEPc 3.25
+- **MOOSE**：生产用 **自建 app** `/root/projects/gb_jac/gb_jac-opt`（= `phase_field`
+  模块全部对象 + 本项目的雅可比补全核 `ACGrGrPolyJ`，源码在 `pipeline/app/`）。
+  原版 `/root/moose/modules/phase_field/phase_field-opt` **未被改动**。
+  重建自建 app：`bash pipeline/app/build_app.sh`
+- 本工作使用 PETSc 3.25 / SLEPc 3.25
 - **Python 3** + numpy（`extract.py` 读 Exodus 需要 `netCDF4`）
-- ⚠ **跑 MOOSE 前必须激活含 `mpicxx` 的环境**，否则 `ParsedMaterial` 的 LLVM JIT
-  会全部失败并**静默退回解释执行**（数值结果相同，但慢）
+- ⚠ **跑 MOOSE 前必须激活含 `mpicxx` 的环境**（conda 的 `moose`），否则 `ParsedMaterial`
+  的 LLVM JIT 会全部失败并**静默退回解释执行**（数值结果相同，但慢）。
+  ⚠ 建 app 时**同样必须激活** —— libMesh / PETSc / WASP 全来自 conda 的 `moose-dev`，
+  它们的位置由激活环境时设置的 `LIBMESH_DIR` / `PETSC_DIR` / `WASP_DIR` 指定。
 
 ```bash
+# 建自建 app（只需一次；改了核再跑一次即可，增量编译）
+bash app/build_app.sh
+
 # 生成算例（在 pipeline/ 下）
 python3 frozen/gen_aniso_nonad.py --op-num 8 --out aniso_block.i
 python3 frozen/splice_aniso_nonad.py        # 合成 stage1_meltpool_d.i
+python3 validated/make_jacfix.py --src stage1_meltpool_d.i --out N.i   # 换成补全核
 
 # 语法检查（务必先做——MOOSE 的「未使用参数」检查在跑完之后）
-phase_field-opt --check-input -i stage1_meltpool_d.i
+/root/projects/gb_jac/gb_jac-opt --check-input -i N.i
 
-# 生产运行
+# 生产运行（自动做上面全部步骤 + 哈希校验 + 断言）
 bash run_nonad_prod.sh
 ```
 

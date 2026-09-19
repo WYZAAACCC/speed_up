@@ -66,8 +66,15 @@ f_新 = mu0·Σ(η⁴/4) − mu_T(T)·Σ(η²)/2 + mu0·γ Σ_{i<j} η_i²η_j²
 **3D**：本修复与维度无关（AllenCahn/ACInterface/DerivativeParsedMaterial
 都不含维度假设，表达式只引用序参量与材料属性）⇒ **3D 代码代价 = 0**。
 3D 真正的代价在温度场表达式、取向模型（现在是 2D 四重对称）、
-逐面数据表示，以及**算力**（本机 20 核/23 GB，同分辨率 3D 需 ~150×内存 ≈ 520 GB，
-而 AMR 已被实测判定破坏守恒、不可用）。
+逐面数据表示，以及**算力**（本机 20 核/23 GB，同分辨率 3D 需 ~150×内存 ≈ 520 GB）。
+
+> ⚠ **2026-09-19 订正**：原文此处写「AMR 已被实测判定破坏守恒、不可用」——
+> **两条都不成立**：
+> ① 段错误的元凶是**硬编码 `elementid` 后处理**，不是 SplitCH（判决性实验见
+> `pipeline/validated/VALIDATION_STATUS.md` §1.6）；
+> ② 2D 生产配置上 AMR 的 `total_solute` 漂移实测 **0.00e+00**
+> （`pipeline/validated/run_t14_2d.sh`）。
+> ⇒ **AMR 是 3D 内存问题的一条现实出路**，不是被排除的选项。
 
 详见 `pipeline/GATE1_PLAN.md` §十一。
 

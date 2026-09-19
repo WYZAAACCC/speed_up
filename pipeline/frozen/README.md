@@ -141,6 +141,8 @@ phase_field-opt -i N.i
 
 ## 五、复现基线
 
+### 5.1 改前基线（2026-09-18，历史，仅用于证明冻结版可用）
+
 用本目录的两个文件、对当时（2026-09-18，未改前）的
 `../stage1_meltpool_c.i` 跑完整流程，产物基线：
 
@@ -154,8 +156,137 @@ stage1_meltpool_d.i   sha256 = 6914a7cdbecd1dd38d5da4ed9507c710237ba6a53a62ae74b
 
 `gen_aniso` 自检：`kappa_op = 1.799943021e-06` vs 基线 `1.8e-6`，相对偏差 `3.17e-05`。
 
-> **注意**：Gate 0 步骤 2 会修改 `stage1_meltpool_c.i`，上述 `d.i` 哈希**届时必然改变**。
-> 它是"改前基线"，用于证明冻结版可用；改后的新基线需重新登记。
+### 5.2 **当前**基线（2026-09-19，Phase 1 修复已合入生产）
+
+`../stage1_meltpool_c.i` 已按用户决定合入三项修复（见
+`../validated/phase1_merge.diff`，**恰好 3 个 hunk**）：
+
+| 修复 | 内容 |
+|---|---|
+| 1.1 | `[coupled_parsed]` 增加 `coupled_variables = 'gr0 … gr7'` |
+| 1.2 | `[laser_T]` 外包 `min(…, 3200)`（温度截断） |
+| 1.3 | `[ch_params]` 常数 `M` 拆成 `S_eta2` / `Q_eta4` / `h_gb` / `h_solid` / `solute_mobility`；`[coupled_res]` 同步加 `coupled_variables` |
+
+两个生成器**一个字都没改**（`SHA256SUMS` 仍然有效）。
+
+```
+stage1_meltpool_c.i   76a421e2dd5224813ee1f868d475d40fe632c77708a66770e77f79c2f1dc9ab2   899 行
+stage1_meltpool_d.i   c68e9e31731f76bffe8c1164ec28140bbbdf2782563aa6a761be00c600248372  1199 行
+aniso_block.i         645938539da57f3c7efc84bf33afcb5f5f8bbcdbfc272a457b6d673df46599e9
+N.i                   8b5f48d7631db97d92a1e00dbfee520dbc53c8171bffbea66755399cb3410a37  1207 行
+                      （= d.i 再经 validated/make_jacfix.py，ACGrGrPoly → ACGrGrPolyJ）
+```
+
+复现命令见 `../run_nonad_prod.sh`（它自己会做哈希校验 + 生成 + 替换 + 断言）。
+
+> ⚠ **改前/改后的 `d.i` 哈希必然不同**，这是预期的：C 源输入变了。
+> 新旧基线都登记在这里，是为了让"哪次运行用了哪一版"可追溯
+> —— 这正是本目录存在的理由（见开头第一节）。
+
+> ⚠ **`splice_aniso_nonad.py` 本身仍然逐位未改**。
+> `gen_aniso_nonad.py` **在 2026-09-19 有一次纯增量改动**（见 §5.3）——
+> 已经登记进 `SHA256SUMS`，校验仍然全 OK。
+> `ACGrGrPolyJ` 的替换是**生成之后**由 `make_jacfix.py` 做的，
+> 故意不塞进 splice —— 因为 splice 的职责是「逐字复刻 GrainGrowthAction 建的核」，
+> 让它知道本项目补了一个核，职责就混了。
+
+---
+
+### 5.3 【2026-09-19】Phase 3 合入 + 织构能力
+
+**两件事，都是纯增量：**
+
+| # | 改了什么 | 验证 |
+|---|---|---|
+| A | `stage1_meltpool_c.i` 合入 **Phase 3**（`../validated/make_phase3_prod.py`，**恰好 3 个 hunk**）：① `f_loc` 的分配项由 `Ση²` 改为 `h_solid` ② 加独立偏析项 `(Omega0/wgb)(c−c0)h_gb`，`Ω₀ = −5e-11` ③ `M` 的分母 `f_cc` 同步 | 1D 平衡：Γ 从 222 → **0.00** at/nm²，且新 Ω₀ 给出 Γ ≈ **2.5 at/nm²**（落 Tan 锚点 2.2~5.3 内）；2D 生产 smoke：不崩、守恒漂移 **0.00e+00**、`c_max−c_min` **0.60×** |
+| B | `gen_aniso_nonad.py` 增 `--texture {random,fiber}` / `--hwhm`（移植 AD 版的 `_inv_norm_cdf`）。**默认仍是 `random`** | **默认档产出与原版逐字节相同**（`cmp` 验证，见 `SHA256SUMS` 注释） |
+
+```
+stage1_meltpool_c.i   34b63e4b30a8e76c4937fe62af6dc14aba14701877a620b06840f8135d0b3425   899 行
+                      （改前：76a421e2dd5224813ee1f868d475d40fe632c77708a66770e77f79c2f1dc9ab2）
+                      改前版本另存为 stage1_meltpool_c.prephase3.i
+gen_aniso_nonad.py    8e53c9c9beee2c7bf1c82829d73f094d36165136f5be452b425efb0b131c640e
+                      （改前：f61c725042bc27089bb10dbe2185394faae8b3504f8ff79ed39d551324f4e696）
+```
+
+**⚠ 顺带修了一个被合入暴露出来的守卫 bug**：`run_nonad_prod.sh` 原来用
+
+```bash
+grep -q "constant_expressions = '0.9 0.036 0.264'"      # ← 错
+```
+
+检查溶质参数。合入后那一行变成 `'0.9 0.036 0.264 -5e-11 4e-06'`，
+**闭合引号没了 ⇒ 守卫会把合法输入判成"参数不对"而拒绝跑**。
+已改成**前缀匹配** `^[[:space:]]*constant_expressions = '0\.9 0\.036 0\.264`。
+（这是 `validated/smoke_prod_chain.sh` 抓出来的 —— 它专门复刻生产链并验证
+「合入的改动在生成阶段有没有被吃掉」。）
+
+---
+
+### 5.4 【2026-09-19】AMR 合入生产（用户决定「改用 AMR」）
+
+**背景**：`dx` 原来只有「不加密（ε 偏 +6.85% ❌）」或「均匀加密 4×（19h→76h/轨迹）」两个选项。
+AMR 打开后（见 `../validated/VALIDATION_STATUS.md` §1.6）多了第三条路。
+
+**目标由 Q10 的裁决直接给出**：判据 `d/dx ≥ 4`，`d = sqrt(2κ/μ0) = 2.00 µm`
+⇒ 界面处需要 `dx = 0.5 µm`。基础网格 `dx = 1 µm` ⇒ **`max_h_level = 1` 就够**。
+
+| 改了什么 | 内容 |
+|---|---|
+| 新增 | 节点型 AuxVariable `S_eta2_aux` = Ση² + 对应 `ParsedAux` |
+| 新增 | `[Adaptivity]`：`GradientJumpIndicator(S_eta2_aux)` + `ErrorFractionMarker`，`max_h_level = 1`、`coarsen = 0.1`、`interval = 2` |
+
+**实测**（`../validated/run_prod_amr.sh`，54×19 缩小网格）：
+
+| 档 | 墙钟 | `n_elem` | 守恒漂移 | vs uniform |
+|---|---|---|---|---|
+| `uniform` | 187 s | 1026→1026 | 0.00e+00 | — |
+| **`amr1`** | **177 s** | 1026→**1587** | **0.00e+00** | **0.453%** |
+| `amr2` | 198 s | 1026→2934 | 0.00e+00 | 0.661% |
+
+⇒ **level=1 反而比 uniform 快**（单元多 55%，但自适应步长走的步数更少）。
+
+⚠ **`coarsen` 不能是 0**：生产是长跑、界面在移动，只加密不粗化会让单元数**单调增长**。
+
+```
+stage1_meltpool_c.i   34b63e4b…  →  e703567a5879141db9c628d13adad739024d3d08f7579fbee68beb7f20774165
+                      （改前另存 stage1_meltpool_c.preamr.i）
+```
+验证：`../validated/smoke_prod_chain.sh` 存活检查 **9 项全过** + `--check-input` **Syntax OK**。
+
+### 5.5 【2026-09-19】溶质拖曳项合入（修热力学不一致）
+
+**改了什么**：新增 8 个 `AllenCahn(f_loc)` 核（每个序参量一个），让 `f_loc` **也进 η 方程**。
+
+**为什么必须补**：原来 `f_loc` 只进 c 方程 ⇒ `δF/δη` 与 `δF/δc` 来自**不同的自由能**
+⇒ **模型不是变分的**（仓库自己的笔记就写着「源码自述：暂时没有溶质拖曳」）。
+⚠ 这是**形式上的热力学不一致**，与量级无关。
+
+**量级**：新增项比势垒小 **9~11 个数量级** ⇒ **可测量影响为零**。
+**这个补丁的价值是「一致性」，不是「预测变了」**（与 T13 的结论一致）。
+
+⚠ **不要**改用 `ACGrGrPoly` 或 `MatReaction` —— `AllenCahn` 的雅可比是**符号完备**的，
+而 `ACGrGrPoly` 正是本项目**缺项**的那一个（所以才写了 `ACGrGrPolyJ`）。
+
+```
+stage1_meltpool_c.i   e703567a…  →  bffa17426f4f2b17a97652730b27a02e4345d3b31812462ea4ec5614c9f10817
+                      （改前另存 stage1_meltpool_c.predrag.i）
+```
+验证：`../validated/run_drag_check.sh`（判据是**「看不出差别」才算通过** —— 因为它改的是一致性）。
+
+**✅ 实测（54×19 网格，`end_time=2e-6`）**：
+
+| 档 | rc | **NL 迭代** | `total_solute` 漂移 | 观测量差异 |
+|---|---|---|---|---|
+| `nodrag` | 0 | **21** | 1.41e-07 | — |
+| `drag` | 0 | **21** | 1.41e-07 | 只在**第 11~13 位有效数字** |
+
+**非线性迭代数完全相同 ⇒ 不拖慢收敛**；`liquid_frac` 逐位相同。
+⇒ **量级估计成立**（新增项确实在求解器容差之下）。
+⚠ 两档墙钟（83 s vs 8 s）**不可比**（单次运行 + 机器状态），不作为判据。
+
+**三条合入（Phase 3 + AMR + 拖曳）全部走通生产链**：
+`../validated/smoke_prod_chain.sh` 的「合入改动存活检查」**11 项全过** + `--check-input` **Syntax OK**。
 
 ---
 
