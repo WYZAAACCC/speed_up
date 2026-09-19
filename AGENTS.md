@@ -547,6 +547,10 @@ pipeline/stage1_meltpool_d.i          ← splice 的产物
 | 改生成器 | ⚠ 它们在 `frozen/` 已冻结。**先读 `frozen/README.md`**，改完要重新冻结并更新 SHA256SUMS |
 | 从 Exodus 提数据 | `python3 extract.py ...`（支持 2D/3D） |
 | 复现某条结论 | 报告里每条结论都注了脚本名；运行目录见报告 §10 |
+| **查溶质截留 / `k_eff`**（缺口 #3） | `bash validated/run_kc_vs_keff.sh`（扫 `kappa_c`）→ `run_kc_fix_res.sh`（扫 `s`）→ `run_prod_1d.sh`（**生产工作点**）⇒ 各自的 `report_*.py` 出表 |
+| **查抗截留项系数** | `bash validated/run_antitrap2.sh` → `python3 validated/report_antitrap2.py <root> "0.5 1 2 4"` |
+| **把抗截留项合入生产（候选）** | `python3 validated/make_antitrap_prod.py --src … --out … --dry-run`；然后 `bash validated/run_antitrap_check.sh` 走生产链 + 存活检查 |
+| ⚠ **改生产参数后** | **`grep -rn '<参数名>'` 全局搜一遍** —— `kappa_c` 就是只改了一半，让四个实验白做（教训 24） |
 
 ---
 

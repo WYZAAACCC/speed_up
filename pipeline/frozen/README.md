@@ -335,9 +335,10 @@ stage1_meltpool_c.i   e703567a…  →  bffa17426f4f2b17a97652730b27a02e4345d3b3
 | 项 | 状态 |
 |---|---|
 | 1D 系数标定（4 档 `s`） | ✅ `run_antitrap2.sh` + `report_antitrap2.py` |
-| 生产链存活 + `--check-input` | 见 `../validated/run_antitrap_check.sh` |
-| **`D_L` 子网格闭合**（修复第 3 条） | 🟡 **未做** —— 生产 `δ_c = 4.2 nm < dx = 1 µm`，必须把 `D_L` 提到 `≈2V·dx = 1.2e-6` |
-| 生产 `F_at` 里 `W` 的标定 | 🟡 **未做** —— 生产 η 不是 tanh，宽度定义要实测 |
+| 生产链存活（17 项） | ✅ `run_antitrap_check.sh` —— 8 个新核 + 原有 11 项合入都没被 splice 吃掉 |
+| 打补丁输入的端到端跑通 | ✅ 86×30 网格上**跑完完整一步**（`Finished Executing [45 s]`、`n_lin=23`、`n_nonlin=8`、`grain_tracker=11`），`total_solute` **逐位不变** |
+| `W` 取哪个定义 | ✅ **已澄清**：两个模型的 η 剖面**尾部衰减长相同**（都是 `λ_tail = 1.0 µm` ⇒ tanh 等效标度 2 µm），所以 `ALPHA=2 / W=2 µm` 可直接搬 |
+| **`D_L` 子网格闭合**（修复第 3 条） | 🟡 **未改生产** —— 生产 `δ_c = 4.2 nm < dx = 1 µm`，必须把 `D_L` 提到 `≈2V·dx = 1.2e-6` |
 | 2D 生产端到端 | ⬜ |
 
 ⚠ **第 3 条（`D_L`）与这一条是配套的，缺一不可**：抗截留项把 `L_eff` 从
