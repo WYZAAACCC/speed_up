@@ -1,0 +1,112 @@
+--- /mnt/f/speed_up/pipeline/stage1_meltpool_c.i
++++ /mnt/f/speed_up/pipeline/stage1_meltpool_c.antitrap.i
+@@ -193,6 +193,86 @@
+ []
+ 
+ [Kernels]
++  # 【抗截留】gr0 的界面推进所带的溶质再分配修正
++  [gr0_antitrap]
++    type = AntitrappingCurrent
++    variable = w
++    v = gr0
++    f_name = F_at
++    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
++    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
++    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++  []
++  # 【抗截留】gr1 的界面推进所带的溶质再分配修正
++  [gr1_antitrap]
++    type = AntitrappingCurrent
++    variable = w
++    v = gr1
++    f_name = F_at
++    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
++    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
++    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++  []
++  # 【抗截留】gr2 的界面推进所带的溶质再分配修正
++  [gr2_antitrap]
++    type = AntitrappingCurrent
++    variable = w
++    v = gr2
++    f_name = F_at
++    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
++    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
++    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++  []
++  # 【抗截留】gr3 的界面推进所带的溶质再分配修正
++  [gr3_antitrap]
++    type = AntitrappingCurrent
++    variable = w
++    v = gr3
++    f_name = F_at
++    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
++    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
++    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++  []
++  # 【抗截留】gr4 的界面推进所带的溶质再分配修正
++  [gr4_antitrap]
++    type = AntitrappingCurrent
++    variable = w
++    v = gr4
++    f_name = F_at
++    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
++    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
++    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++  []
++  # 【抗截留】gr5 的界面推进所带的溶质再分配修正
++  [gr5_antitrap]
++    type = AntitrappingCurrent
++    variable = w
++    v = gr5
++    f_name = F_at
++    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
++    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
++    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++  []
++  # 【抗截留】gr6 的界面推进所带的溶质再分配修正
++  [gr6_antitrap]
++    type = AntitrappingCurrent
++    variable = w
++    v = gr6
++    f_name = F_at
++    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
++    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
++    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++  []
++  # 【抗截留】gr7 的界面推进所带的溶质再分配修正
++  [gr7_antitrap]
++    type = AntitrappingCurrent
++    variable = w
++    v = gr7
++    f_name = F_at
++    # 必须列出 F_at 依赖的全部变量：c 直接依赖，gr_j 经 h_gb 依赖。
++    # 少列 ⇒ _dFdarg 拿不到 ⇒ 非对角雅可比缺项（P0-1 同类）。
++    coupled_variables = 'c gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
++  []
+   # --- 溶质（分裂式 Cahn-Hilliard）---
+   # 这套写法直接沿用 phase2_prod.i，已验证可跑
+   [w_dot]
+@@ -418,6 +498,22 @@
+ []
+ 
+ [Materials]
++  # 【抗截留】Karma–Rappel / Plapp 薄界面抗截留项的 susceptibility
++  #   F = ALPHA·W·(1−k_eq)·c·(1−h_gb)
++  #   ALPHA = 2 是 1D 标定值（validated/run_antitrap2.sh）
++  #   (1−h_gb)：抑制晶界上的伪溶质流 —— 本模型的 η 兼表晶粒身份，
++  #             晶粒长大时 η̇ ≠ 0，不抑制就会凭空产生溶质流
++  #   `+ 0*w`：让 dF/dw 这个属性确实存在（值为 0），避免依赖静默默认
++  [at_susc]
++    type = DerivativeParsedMaterial
++    property_name = F_at
++    coupled_variables = 'c w'
++    material_property_names = 'h_gb'
++    constant_names = 'ALPHA W k_eq'
++    constant_expressions = '2 2e-06 0.6303'
++    expression = 'ALPHA*W*(1-k_eq)*c*(1-h_gb) + 0*w'
++    derivative_order = 2
++  []
+   # 【2026-09-17 同步 Ti64 参数】
+   #   sigma = 0.6 J/m^2 (Gornakova & Prokofjev 2020)
+   #   mu0   = 6*sigma/wGB   = 9.0e5
