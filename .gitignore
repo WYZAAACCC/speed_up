@@ -279,3 +279,17 @@ small.log
 pipeline/*.i.diff
 pipeline/*.i.jac.diff
 pipeline/*.i.jc.diff
+
+# ---- Window B / CA3D 的大数组与缓存（可复现，不入库）----
+bench/**/*.npy
+bench/**/*.npz
+.jitcache/
+
+# ---- ca_pf_framework 下的重产物（MOOSE app 构建、大数组、审计日志）----
+pipeline/ca_pf_framework/pf1d_moose/
+pipeline/ca_pf_framework/*.npz
+pipeline/ca_pf_framework/*.vtk
+pipeline/ca_pf_framework/*.png
+pipeline/ca_pf_framework/_audit_logs/
+pipeline/ca_pf_framework/tests/*.e
+pipeline/ca_pf_framework/tests/*.out

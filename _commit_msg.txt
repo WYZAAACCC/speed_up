@@ -1,0 +1,32 @@
+Window B 夜班：12 变体晶体学 + 三维 PF 引擎立起，并抓到两个静默物理错误
+
+修掉的两个「不报错但结果错」的 bug（此前 Window B 的弹性结论全部作废）：
+1) FFT 归一化少 N^dim：E_el() 用连续谱 fftn/N^d（对），forces() 却把同一个
+   e_hat 直接 ifftn 得 sigma ⇒ sigma 小 N^d 倍（N=128 时 16384 倍），
+   界面完全感觉不到弹性驱动，只剩化学项在推。
+2) Khachaturyan Lambda 的声学张量收缩错索引：应为 A[j,l]=C[i,j,k,l] n_i n_k
+   （各向同性下 mu*I+(lam+mu)nn^T），原代码取第 3、4 指标 ⇒ Lambda 不再湮灭
+   rank-1 模式 sym(a(x)n)，「相容界面 / 孪晶」整块物理错掉。
+   注意 A0a/A0b/F1 与微弹性 T1-T3 全都对 n 退化，检测不到它；
+   新增 A0c/A0d 两条敏感判据才抓住。
+3) 另修：k=0 约定（clamped 的平均场力 ~5e8 会把相容层片打散 ⇒ 默认 traction-free）、
+   界面势语义（双障碍势要求 Delta f > W 才推进界面，不适合被驱动传播 ⇒ 默认双阱）、
+   显式格式超扩散稳定极限（⇒ 半隐式谱格式）、多相场 Sigma phi 归一与 clip 的先后。
+
+新增 / 重写：
+  windowB_ti64_variants.py  12 个 Burgers 变体 eps0_v 晶体学推导，6 条自检全过
+                            （体积变化 -2.677% 与每原子体积吻合 8e-15；主应变 [-0.113,+0.087]）
+  windowB_pf3d.py           三维 PF 引擎（FFT 微弹性 + 多相场成对形式 + 半隐式步）
+                            A0a/A0b(双约定)/A0c/A0d/A1/F1(双约定)/F2 全 PASS
+  windowB_bench3d.py        三维物理判据 P1/P2/P3 全 PASS
+                            （42/66 对变体 rank-1 相容；相容层片起伏弹性能精确为 0；
+                              外载择优 Pearson = 1.000000）
+  windowB_rve3d.py, windowB_fig3d.py, WINDOWB_PARAMS.md, WINDOWB_STATUS.md,
+  WINDOWB_VARIANTS.txt
+
+结论性发现：弥散界面在板条尺度存在硬矛盾（弹性混合收益 ~1e9 J/m^3，而势垒
+W = 13.18 gamma/w90；12 变体随机竞争必然混成「多变体混合」，Delta x 降到 1 nm
+仍只有 3.3% 纯胞）⇒ 板条界面需要「面」（Gibbs）表示。
+
+其它：.gitignore 排除大数组与构建产物（bench/**/*.npy、pf1d_moose/、*.npz/*.vtk…）；
+本次快照也含此前未提交的 docs/agent-notes、AGENTS.md、RESEARCH_INTENT 修改与 ExaCA 对照脚本。

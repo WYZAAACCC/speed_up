@@ -1,0 +1,6 @@
+{
+ "function": "table",
+ "table_file": "/root/bench/run/irf_ti64_table.csv",
+ "freezing_range": 17.974314503030985,
+ "velocity_cap": true
+}

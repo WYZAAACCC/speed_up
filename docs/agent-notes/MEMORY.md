@@ -1,6 +1,11 @@
-- [晶粒-溶质耦合加速课题](grain-solute-acceleration-project.md) — 研究方向、MOOSE 实测结论（拓扑事件不破坏守恒、AMR 才破坏）、文献核查结果
+- [晶粒-溶质耦合加速课题](grain-solute-acceleration-project.md) — 研究方向、MOOSE 实测结论（拓扑事件不破坏守恒）、文献核查结果
+- [AMR 段错误的真正原因](amr-crash-root-cause.md) — **是硬编码 elementid 后处理，不是 SplitCH**；1D+2D 生产配置均已实测可用
+- [Ω₀ 偏析参数标定](omega0-segregation-calibration.md) — Cahn 1962 映射、Γ 的单位是「米」要乘 ρ_mol、**当前值大了 100 倍**、分配项才是大头
+- [溶质截留的真根因](solute-trapping-root-cause.md) — 是 `kappa_c` 漏改 + 界面宽 ξ（`L_eff = δ_c + 1.5ξ`）；**生产微偏析被低估 350 倍**；三条修复已定
+- [A_ani 是形态放大的替身](ani-is-morphology-amplification-proxy.md) — 实测：物理量级上择优几乎为零；0.7 扛着全部织构信号，**不能当材料常数写**
 - [逐面神经算子管线状态](neural-operator-pipeline-state.md) — pipeline 管线、守恒已达机器精度、转移规则尚无差异、27-35% 方差未解释
-- [WSL + MOOSE 环境](wsl-moose-environment-setup.md) — 运行环境布局与六个坑的解法（C 盘、代理证书、libtool 残骸、-j 8 等）
+- [WSL + MOOSE 环境](wsl-moose-environment-setup.md) — **不激活 conda 会让 JIT 静默失败（rc=0、数值对、慢几十倍）**；二进制照样能启动
+- [**本机干活手册**](ENVIRONMENT.md) — WSL 怎么调 / conda 双环境 / JIT 静默失败 / 9p 缓存 / 卡死抢救 / 杀进程 / 行尾（2026-09-20 实测）
 - [MOOSE 输入文件十四个坑](moose-api-gotchas.md) — pi/symbol_values/dtmax/mu 属性名/Exodus 分块/跨块 IC 取小编号块/Checkpoint 默认按墙钟 等，都是实测踩出来的
 - [Artifact 发布不可用](artifact-publishing-unavailable.md) — 本机 Artifact 工具会因 ANTHROPIC_AUTH_TOKEN 失败，改用本地 HTML
 - [D 版不收敛排查现状](d-version-stall-debug.md) — 2b 导致牛顿残差停在非零地板；已排除 5 个假设（含实验证据）、发现 align4 的 0/0 bug、最小复现尚无效

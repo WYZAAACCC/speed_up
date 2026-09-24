@@ -1,49 +1,48 @@
 ---
 name: wsl-moose-environment-setup
-description: 本机 MOOSE 运行环境的搭建方式与踩过的坑（WSL 在 F 盘、代理、根证书、编译参数）
+description: 本机 MOOSE 运行环境：WSL 布局、conda 双环境、**JIT 静默失败**、9p 缓存、卡死抢救；完整手册在仓库 docs/agent-notes/ENVIRONMENT.md
 metadata: 
   node_type: memory
   type: project
   originSessionId: 5a8d92ac-94c6-4a23-856f-0d7a42daf5b8
-  modified: 2026-09-16T10:08:56.353Z
+  modified: 2026-09-19T21:09:09.254Z
 ---
 
-本机（Windows 11，i7-14700HX 12 核/20 线程，32 GB 内存）上 MOOSE 的运行环境。**2026-09-16 搭建完成并跑通。**
+**⚠ 完整手册已单独成文：`docs/agent-notes/ENVIRONMENT.md`（2026-09-20 实测）。**
+本笔记只留要点 + 这一轮新测出来的那条。
 
-## 最终布局
+## 🔴 新测出来的最重要一条：不激活 conda，JIT **静默失败**
 
-| 项目 | 位置 |
-|---|---|
-| WSL 发行版磁盘 | `F:\WSL\Ubuntu\ext4.vhdx`（**已从 C 盘迁出**） |
-| WSL swap | `F:\WSL\swap.vhdx`（8 GB） |
-| MOOSE 源码 | WSL 内 `/root/moose`，版本 `b892bff54e`（2026-08-22） |
-| conda 环境 | `/root/miniconda3/envs/moose`，`moose-dev=2026.08.23=mpich` |
-| 可执行文件 | `/root/moose/modules/phase_field/phase_field-opt` |
-| 实验目录 | `F:\speed_up\phase0a\`（结果同步回这里） |
+2026-09-20 用 `gb_jac-opt` 跑一个带 `ParsedMaterial` 的 1D 小算例，两档对照：
 
-`.wslconfig`（在 `C:\Users\mycomputer\.wslconfig`）：memory=24GB、processors=20、swapFile 指向 F 盘、**networkingMode=mirrored**。
-（注意：`autoMemoryReclaim` 在 WSL 2.7.14 不被识别，别写进去。）
+| | 退出码 | 日志 | `.jitcache` |
+|---|---|---|---|
+| **不激活 conda** | **0** ✅ | `JIT compile failed.` / `Failed to JIT compile expression, falling back to byte code interpretation.` | **不生成** |
+| `conda activate moose` | 0 ✅ | 无 | 生成 |
 
-## 关键坑与解法
+**⇒ 退出码 0、数值也对，只是所有 parsed 表达式退回字节码解释执行 —— 慢几十倍。**
+生产输入里有 2181 字符的 `L` 表达式，退化代价是数量级的。
 
-1. **C 盘只剩 7 GB 时跑了几 GB 下载** → C 盘写满 → WSL ext4 转 `emergency_ro` 只读 → conda 崩、编译残骸一堆。
-   **解法**：`wsl --manage Ubuntu --move F:\WSL\Ubuntu`。**永远不要在 C 盘空间紧张时往 WSL 里下载。**
+⚠ **反直觉的地方**：**不激活 conda，二进制本身照样能启动** ——
+`gb_jac-opt` 的 RPATH 直指 `/root/miniconda3/envs/moose/lib`，`ldd` 显示
+`libmesh_opt.so.0` / `libpetsc.so.3.25` 都能解析。**症状不在启动时，只在 JIT 那一步。**
 
-2. **WSL 里 GitHub 解析到 127.0.0.1**（本机 DNS 问题）→ 必须走代理。
-   本机跑的是 **Watt Toolkit（Steam++）**，端口 7897。它会对 github.com 做 **TLS 中间人**，用自己的自签根证书。
-   **解法**：导出 `Cert:\LocalMachine\Root` 里 CN=SteamTools Certificate 且在有效期内的那张 → 装进 WSL 的 `/usr/local/share/ca-certificates/` → `update-ca-certificates`。**不要去关 git 的 sslVerify。**
-   配合 `networkingMode=mirrored`，WSL 里直接用 `127.0.0.1:7897` 即可。
+**⇒ 跑完必须查**：`grep -c "JIT compile failed" run.log`（**必须是 0**）。
 
-3. **WSL 崩溃会留下 0 字节的 libtool 产物**（`.lo` / `.la`），导致后续报 `not a valid libtool object/archive`。**解法**：`find . -name '*.la' -delete; find . -name '*.lo' -delete; find . -name '*.o' -size 0 -delete` 后重编。
+## 其它要点（详见手册）
 
-4. **编译并行度不能太高**。MOOSE 用 unity build，单个编译单元 2–4 GB，`-j 12` 会 OOM 把 WSL 整个搞崩。**用 `-j 8`。**
+* **两个 conda 环境**：`moose`（跑 MOOSE、建 app，有 `mpicxx`）／`ml`（生成器 + torch）。
+  `run_nonad_prod.sh` 会来回切两次。
+* **算例跑在 ext4（`/root/work`）**，不要在 `/mnt/f` 上跑。
+* **生产二进制** `/root/projects/gb_jac/gb_jac-opt`（**不是** `phase_field-opt`，会报
+  `'ACGrGrPolyJ' is not a registered object`）。
+* **`--check-input` 实测 ≈120 s**，不是秒级，且它在 `executeExecutioner()` **之后**。
+* **WSL 卡死**判据是 `ps -e --no-headers | wc -l` 返回 0；`wsl --shutdown` 有时不够，
+  要 `wsl.exe --terminate Ubuntu` 再 `--shutdown`。
+* **Git Bash → wsl.exe 会吞掉多行/续行/变量** ⇒ 一律写 `.sh` 文件再 `sed 's/\r$//'` 后执行。
+* **`/mnt/f` 是 9p（`cache=0x5`）**，对正在追加的文件静默返回过期数据 ⇒ 读 CSV 走
+  `validated/robust_csv.py`。
+* **杀进程用 `pgrep -x`**，别用 `pkill -f`（会杀掉含该字符串的自己的 shell，退出码 9）。
+* 编译用 `-j 8`（unity build 单编译单元 2–4 GB，`-j 12` 会 OOM 搞崩 WSL）。
 
-5. **源码版本要和 conda 包匹配**。conda 是 `2026.08.23`，源码应切到 `b892bff54e`（2026-08-22）。会有"required version 2026.08.19"的警告，不影响编译。
-
-6. **命令传递**：Git Bash → PowerShell → WSL 多层引号极易把 `$变量`、`$()`、换行吞掉。**凡是多行或带变量的命令，一律写成 `.sh` 文件再用 `bash 文件` 执行**，并先 `sed 's/\r$//'` 转换行尾。
-
-## 本机代理信息
-
-Watt Toolkit 代理：`127.0.0.1:7897`（mirrored 网络模式下 WSL 可直接用）。
-
-相关：[[grain-solute-acceleration-project]]
+相关：[[grain-solute-acceleration-project]]、[[moose-api-gotchas]]

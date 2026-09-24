@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b6decc92-d1df-4297-b052-ad15b31c0547
-  modified: 2026-09-18T16:30:15.743Z
+  modified: 2026-09-19T12:06:40.371Z
 ---
 
 **背景**：生产算例 `stage1_meltpool_c.i` 的熔化开关是
@@ -69,11 +69,8 @@ f_新 = mu0·Σ(η⁴/4) − mu_T(T)·Σ(η²)/2 + mu0·γ Σ_{i<j} η_i²η_j²
 逐面数据表示，以及**算力**（本机 20 核/23 GB，同分辨率 3D 需 ~150×内存 ≈ 520 GB）。
 
 > ⚠ **2026-09-19 订正**：原文此处写「AMR 已被实测判定破坏守恒、不可用」——
-> **两条都不成立**：
-> ① 段错误的元凶是**硬编码 `elementid` 后处理**，不是 SplitCH（判决性实验见
-> `pipeline/validated/VALIDATION_STATUS.md` §1.6）；
-> ② 2D 生产配置上 AMR 的 `total_solute` 漂移实测 **0.00e+00**
-> （`pipeline/validated/run_t14_2d.sh`）。
+> **两条都不成立**：① 段错误的元凶是**硬编码 `elementid` 后处理**，不是 SplitCH；
+> ② 2D 生产配置上 AMR 的 `total_solute` 漂移实测 **0.00e+00**。
 > ⇒ **AMR 是 3D 内存问题的一条现实出路**，不是被排除的选项。
 
 详见 `pipeline/GATE1_PLAN.md` §十一。

@@ -1,0 +1,47 @@
+[
+ {
+  "n_grain": 87,
+  "frac_nuke": 0.19225,
+  "mean_size": 91.95402298850574,
+  "max_size": 1448,
+  "mean_size_nuke": 769.0,
+  "n_nuke": 2,
+  "seed": 0
+ },
+ {
+  "n_grain": 95,
+  "frac_nuke": 0.30225,
+  "mean_size": 84.21052631578948,
+  "max_size": 1258,
+  "mean_size_nuke": 1209.0,
+  "n_nuke": 2,
+  "seed": 1
+ },
+ {
+  "n_grain": 90,
+  "frac_nuke": 0.174375,
+  "mean_size": 88.88888888888889,
+  "max_size": 1097,
+  "mean_size_nuke": 697.5,
+  "n_nuke": 2,
+  "seed": 2
+ },
+ {
+  "n_grain": 93,
+  "frac_nuke": 0.491375,
+  "mean_size": 86.02150537634408,
+  "max_size": 1976,
+  "mean_size_nuke": 1965.5,
+  "n_nuke": 2,
+  "seed": 3
+ },
+ {
+  "n_grain": 95,
+  "frac_nuke": 0.285875,
+  "mean_size": 84.21052631578948,
+  "max_size": 2204,
+  "mean_size_nuke": 1143.5,
+  "n_nuke": 2,
+  "seed": 4
+ }
+]
