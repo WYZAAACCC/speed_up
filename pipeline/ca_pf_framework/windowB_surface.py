@@ -126,6 +126,46 @@ def herring_stiffness(ndot2, gamma0, Lam, herring=True):
     return gamma0 * (1.0 + Lam * s2)
 
 
+def iface_crossings(field, dx, axis):
+    """**亚胞射线交点**口径的界面位置：沿 `axis` 找 `field` 的相邻变号胞对，
+       线性插值出交点在该轴上的亚胞坐标（物理单位）。
+
+    ★ 记账（为什么要它 —— 本轮的直接动因，审计 §10）：
+      `region()` **计数法**在**均匀亚胞平移**下没有分辨力：
+        · 界面推进 < 0.5·dx 时**逐位不动**（实测 pair_kernel=True 的 P1 读数 0.000 ✗）；
+        · 平移恰好是整数胞时又**逐位精确**（旧 W2 的 40×0.1dx = 4dx 正是这种巧合）。
+      两个极端都是**构型依赖**的 ⇒ 判据本身不可用。
+      射线交点只用"相邻两胞 field 变号 + 线性插值"：O(dx²) 无偏、对任意亚胞平移
+      都连续可读，且**不依赖 |∇φ|**（与 S1 的 `radius_rays` 同一口径，可互相印证）。
+
+    返回 (n_cross, coords)；coords 为各交点坐标（一维数组，无交点则为空数组）。
+    """
+    field = np.asarray(field, float)
+    n = field.shape[axis]
+    if n < 2:
+        return 0, np.zeros(0)
+    lo = [slice(None)] * field.ndim
+    hi = [slice(None)] * field.ndim
+    lo[axis] = np.arange(n - 1)
+    hi[axis] = np.arange(1, n)
+    a = field[tuple(lo)]
+    b = field[tuple(hi)]
+    # ★ 记账（本轮实测踩到的退化）：`a*b < 0` 会**漏掉零点正好落在胞心**的情形
+    #   （初值 φ = (i−12)dx ⇒ 界面恰在 z 胞 12 的中心 ⇒ a*b = 0 ⇒ 判据返回"无交点"，
+    #   量出 z0 = nan ✗）。改用**非对称**变号判据 `(a<0≤b) | (a>0≥b)`：
+    #     · a=0 ⇒ t=0（交点就在 a 胞心）、b=0 ⇒ t=1（就在 b 胞心）——都精确；
+    #     · 零只在**前一对**被记一次（(a<0,b≥0) 与 (a>0,b≤0) 互斥）⇒ 不重复计数。
+    s = ((a < 0) & (b >= 0)) | ((a > 0) & (b <= 0))
+    if not s.any():
+        return 0, np.zeros(0)
+    ii = np.argwhere(s)
+    pa = a[tuple(ii.T)]
+    pb = b[tuple(ii.T)]
+    t = pa / (pa - pb)
+    coord = (ii[:, axis].astype(float) + t + 0.5) * dx
+    return int(s.sum()), coord
+
+
 def extend_along_normal(v, phi, dx, iters=12, dtau_fac=0.4):
     """把界面速度 v 沿**法向**延拓（标准 "extension velocity"：解
          v_τ + S(φ)·(n·∇v) = 0 ,  n = ∇φ/|∇φ|,  S(φ)=φ/√(φ²+dx²)
@@ -582,7 +622,14 @@ class LevelSetMulti(object):
         A = np.zeros_like(self.phi[0])
         for k in range(self.nreg):
             g = np.gradient(self.phi[k], self.dx)
-            gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+            # ★★ 记账（本轮修的真 bug，M3/A3 的 `nan` 就是它）：**不能给 gn 加 ε**。
+            #   旧写法 `gn = |∇φ| + 1e-30` ⇒ 带外（|∇φ| = 0）的胞也得到 A_c = 1e-48 > 0
+            #   ⇒ 掩模 `A_c > 0` **恒为真（全域）**、`A_c` 在带外是 1e-48 量级。
+            #   在 H6 把面扩散改成"保守边通量 + `Δq/A_c`"之后，真实带（A_c≈6.7e-19）与
+            #   "幽灵带"（1e-48）的交界处比值 ~1e29 ⇒ 显式更新**爆掉**（实测 M3：
+            #   `|Γ|` 1e-6 → 2.9e5 → 3.6e21 → nan）。⇒ 用**原始** |∇φ|：带外 A_c 严格为 0，
+            #   掩模 `A_c > 0` 就精确等于"该胞承载界面面积"（H6 想要的语义）。
+            gn = np.sqrt(sum(gi ** 2 for gi in g))
             band = (reg == k) & (np.abs(self.phi[k]) <= 1.5 * self.dx)
             A = np.where(band, gn * self.dx ** 2 / 3.0, A)
         return A
@@ -680,10 +727,21 @@ class LevelSetMulti(object):
             for ax in range(3):
                 Ac_j = np.roll(A_c, -1, axis=ax)
                 Ae = 0.5 * (A_c + Ac_j)
-                nj = np.roll(nhat, -1, axis=ax)
-                nb = 0.5 * (nhat + nj)
-                nb = nb / (np.linalg.norm(nb, axis=-1, keepdims=True) + 1e-30)
-                sin_t = np.sqrt(np.maximum(1.0 - nb[..., ax] ** 2, 0.0))
+                # ★★ 记账（本轮修的**真 bug**，A3/M3 的直接根因）：**绝不能对界面两侧的
+                #   法向取平均**。界面两侧的 winner 不同 ⇒ 两者的 n̂ 恰好**反向**
+                #   （+ẑ 与 −ẑ）⇒ 平均后**相消为 0** ⇒ 归一化退化 ⇒ `sinθ = 1` ⇒
+                #   系统把**跨界面（法向）连接**误判成**切向**连接 ⇒ Γ 沿法向泄漏。
+                #   实测：A3 的法向二阶矩 12dx → ~0（Γ 全跑到别的 z 层）、M3 的 Γ 被摊到
+                #   3 层、只能到 Γ_McLean 的 **0.477 倍**（都指向同一个 bug）。
+                #   修法：取**更靠内那一侧**（φ_winner 更负）的法向作为该连接的界面法向。
+                #   单界面光滑处两侧法向几乎相同（等价）✓；界面处恰好给出正确的界面法向 ✓。
+                #   （注意：sinθ 只用 `n_pair·ê` 的**平方** ⇒ 符号无关 ⇒ "取哪一侧"只影响
+                #     "不被相消"，不引入新的方向约定。）
+                phj = np.roll(phiw, -1, axis=ax)
+                take_i = phiw <= phj
+                npair = np.where(take_i[..., None], nhat,
+                                 np.roll(nhat, -1, axis=ax))
+                sin_t = np.sqrt(np.maximum(1.0 - npair[..., ax] ** 2, 0.0))
                 mj = np.roll(m, -1, axis=ax)
                 conn = m & mj
                 # ★ 记账（本轮由 F1 的**有效 D_s** 检验抓到的**量纲错误**）：
@@ -712,6 +770,21 @@ class LevelSetMulti(object):
         g = np.gradient(self.phi[k], self.dx)
         gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
         return [gi / gn for gi in g]
+
+    def iface_offset(self, k=1, l=0, axis=2, near=None):
+        """**亚胞射线交点**口径的界面位置：k 与 l 之间沿 `axis` 的交点均值。
+           量界面**速度**用它：v = (z_if^(1) − z_if^(0))/(nstep·dt)（符号按 k 收缩为负）。
+           ★ 记账：**不要**用 `region()` 计数法量速度 —— 亚胞平移下会失明/巧合精确
+             （见模块级 `iface_crossings` 的记账与审计 §10）。
+           `near` 给定时只取**离 near 最近的那一个交点**（每列一个，再取均值）
+           —— 用于一列里有多个界面（如周期 slab 有 2 个）时锁定要跟踪的那一个。
+           返回 (n_used, coord)；n=0 时 coord 为 nan。"""
+        n, coord = iface_crossings(self.phi[k] - self.phi[l], self.dx, axis)
+        if n == 0:
+            return 0, float('nan')
+        if near is not None:
+            return 1, float(coord[np.argmin(np.abs(coord - near))])
+        return n, float(coord.mean())
 
     def totals(self):
         """总溶质（mol）：体相 Σc·ρ·dV + 面 ΣΓ·A_c"""
@@ -769,8 +842,12 @@ class LevelSetMulti(object):
 
     # ---------- 界面推进（PDE）----------
     def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True,
-                adv_grad='upwind', extend='edt', band_cells=20, iface_band=1.0,
+                adv_grad='upwind', extend='edt', band_cells=20, iface_band=2.0,
                 drag=None, pair_kernel=False):
+        # ★ 记账（本轮 P1 重标定）：`iface_band=2.0` 而非 1.0 —— 界面种子必须是
+        #   **≥2 层胞**。实测 pair_kernel 下 `iface_band=1.0`（|∇d|≈2 ⇒ 种子只有
+        #   1 层）时，`extend_along_normal` 的迎风延拓**退化**（v/MΔf = 0.125 ✗）；
+        #   2.0/3.0 都给 1.0000 ✓（`_chk_p1.py` 全网格扫描，见审计 §10.1）。
         # ★ 记账（本轮）：`pair_kernel=True` 是"按配对核"的**实验性**实现（见审计 §10），
         #   尚未通过标定判据（平界面 |v|/MΔf 实测 0.00 ✗）⇒ **默认保持 False**，
         #   即停在已被 W2 验证的那条路径上（pair=False + EDT 扩展 + 20dx 带 ⇒ 1.0000 ✓）。
@@ -838,6 +915,14 @@ class LevelSetMulti(object):
             v_cell, _pin = solve_v(dG_cell, self.M, P0, vstar)
         else:
             v_cell = self.M * dG_cell
+        # ★★ （本轮修·关键）界面速度的**配对规范形**（跨界面连续化）。
+        #    `v_cell` 是"winner 长大为正"的约定 ⇒ 跨过界面时 winner 换成 runner-up
+        #    ⇒ 同一界面两侧的 `v_cell` **符号相反**。速度延拓要求被延拓的场在界面上
+        #    **连续**；否则最近点延拓会把一侧的符号搬到另一侧 / 两侧种子互相抵消 ✗。
+        #    规范形按 min(k,l) 定向 ⇒ 跨界面连续：V_c = M(df_min − df_max) = sigma·v_cell。
+        #    随后每胞用**同一标量**：φ_karr 取 +V_ab = +sigma·V_c，φ_larr 取 −sigma·V_c。
+        sigma = np.where(karr < larr, 1.0, -1.0)
+        vcanon = sigma * v_cell
         # ★★ 记账：和单畴一样，**必须做速度扩展**，而且多畴对带宽更敏感 ——
         #   实测（平界面 + 常数驱动 ΔG，40 步后的 v/MΔf，应 = 1.000）：
         #      无扩展 band=2dx → 0.250 ; band=6dx → 0.750 ; band=12dx → 2.000（乱）
@@ -847,46 +932,71 @@ class LevelSetMulti(object):
         #   ⇒ 多畴默认 `extend='edt', band_cells=20`（宽带 + 扩展才自洽）。
         #   ⚠ 这解释了为什么旧的 `_chk_w2.py`（阶跃初值 + 默认扩展）得到 1.0000：
         #     那是**退化构型**下的巧合；用真 SDF 初值必须靠宽带+扩展才复现 1.0000。
-        #    多畴的额外要求：扩展只能**在本区域内部**传播（否则会把邻居界面的速度
-        #    搬过来）⇒ 用 `karr == karr[最近界面胞]` 作约束 ✓。
+        #    多畴的额外要求（★ 本轮修正）：延拓必须**跨越界面两侧**（按**无序对**
+        #    {karr,larr} 判定配对身份），且被延拓的量必须是**跨界面连续**的规范形
+        #    `vcanon`。旧的 `karr == karr[最近界面胞]` 约束把界面的 runner-up 一侧
+        #    整个排除 —— 这是本轮用**亚胞射线交点**口径抓到的真 bug（见下）。
         if pair_kernel:
-            # ★★ 配对口径（本轮默认）：界面 = 差分场 d = φ_karr − φ_larr 的小值集，
-            #    速度沿 d 的法向延拓 ⇒ 界面两侧拿到的是**同一个标量速度**
-            #    ⇒ 差分 d 只会**平移**、不会被拉陡（对比：按区域延拓时 |∇φ| 0.5→530 ✗）。
+            # ★★ 配对口径：界面 = 差分场 d = φ_karr − φ_larr 的小值集，速度沿 d 的
+            #    法向延拓 ⇒ 界面两侧拿到**同一个标量速度** ⇒ 差分 d 只**平移**、不被拉陡
+            #    （对比：按区域延拓时 |∇φ| 0.5→530 ✗）。
+            #    ★ 本轮修两处：(i) 延拓**规范形** `vcanon`（`v_cell` 跨界面符号翻转，
+            #    把两侧种子放一起会**互相抵消** ✗）；(ii) 带按 `|∇d|` 折算（`d` 不是
+            #    距离函数、|∇d|≈2 ⇒ 旧写法 `|d| ≤ 1.0dx` 在 48³ 上只选到 **1 层**胞）。
             dfield = pha - phb
-            iface = (np.abs(dfield) <= iface_band * self.dx) & (np.abs(v_cell) > 0)
+            gdd = np.gradient(dfield, self.dx)
+            gdn = np.sqrt(sum(g ** 2 for g in gdd)) + 1e-30
+            iface = (np.abs(dfield) <= iface_band * self.dx * gdn) \
+                & (np.abs(v_cell) > 0)
+            band = np.abs(dfield) <= band_cells * self.dx * gdn
             if iface.any() and not iface.all():
-                v_ext = extend_along_normal(np.where(iface, v_cell, 0.0), dfield,
-                                            self.dx, iters=14)
-                band = np.abs(dfield) <= band_cells * self.dx
-                v_cell = np.where(band, v_ext, 0.0)
+                v_ext = extend_along_normal(np.where(iface, vcanon, 0.0), dfield,
+                                            self.dx, iters=int(band_cells / 0.4) + 6)
+                coef = np.where(band, sigma * v_ext, 0.0)
             else:
                 band = iface
-                v_cell = np.where(iface, v_cell, 0.0)
+                coef = np.where(iface, sigma * vcanon, 0.0)
         else:
             phiw = np.take_along_axis(self.phi, karr[None], 0)[0]
-            iface = (np.abs(phiw) <= iface_band * self.dx) & (np.abs(v_cell) > 0)
+            iface = (np.abs(phiw) <= iface_band * self.dx * (1.0 + 1e-9)) \
+                & (np.abs(v_cell) > 0)
             # ★ 守卫：`distance_transform_edt(~iface)` 要求 `~iface` 非空（否则索引为垃圾）
             if extend and iface.any() and not iface.all():
                 ind = distance_transform_edt(~iface, return_distances=False,
                                              return_indices=True)
                 dist = distance_transform_edt(~iface)
-                v_at = np.where(iface, v_cell, 0.0)
+                v_at = np.where(iface, vcanon, 0.0)
                 kat = karr[tuple(ind)]
-                band = (dist <= band_cells) & (karr == kat)
-                v_cell = np.where(band, v_at[tuple(ind)], 0.0)
+                lat = larr[tuple(ind)]
+                # ★★ 本轮修的真 bug（被亚胞射线交点口径抓到）：旧写法用
+                #   `karr == kat`（"与最近界面胞**同区域**"）。但 `iface` 往往
+                #   **只落在 winner 一侧**（实测：`dx = L/N` 的浮点尾差让
+                #   |φ_winner| = dx 的胞判为带外 ⇒ iface 只剩 winner=0 的胞）
+                #   ⇒ `kat ≡ 0` ⇒ **runner-up 一侧从不被推进**。实测后果（z 剖面）：
+                #   φ_1 只在 z>z0 侧平移、z<z0 侧冻结 ⇒ 差分场 d=φ_k−φ_l 不平移而只被
+                #   **拉陡** ⇒ 射线口径 40 步位移 6.31dx（应 4dx）、单步 0.0909dx
+                #   （应 0.1dx）；而 `region()` 计数法靠"符号翻转"**凑巧**给出 1.0000
+                #   —— 计数法掩盖结构错误的教科书案例（审计 §10 的 0.000 亦须重判）。
+                #   正确掩模按**界面的配对身份**（无序对 {k,l}），两侧一视同仁。
+                same_pair = ((karr == kat) & (larr == lat)) | \
+                            ((karr == lat) & (larr == kat))
+                band = (dist <= band_cells) & same_pair
+                coef = np.where(band, sigma * v_at[tuple(ind)], 0.0)
             else:
                 band = np.zeros(self.phi.shape[1:], bool)
                 for k in range(nreg):
                     band |= ((karr == k) | (larr == k)) & (np.abs(self.phi[k])
                                                            <= band_cells * self.dx)
                 band = band & (np.abs(v_cell) > 0)
-                v_cell = np.where(band, v_cell, 0.0)
+                coef = np.where(band, sigma * vcanon, 0.0)
         for k in range(nreg):
             # ④ 推进：默认 Godunov 迎风（鲁棒）；`adv_grad='central'` 用于"光滑 SDF +
             #   需要无偏各向异性幅度"的场合（W1/H1 判据实测：迎风把各向异性压低 ~8%，
             #   中心差分把 a2 复原到 1.0±0.02 —— 见 W1 的记账）
-            vnk = np.where(band & (karr == k), v_cell, 0.0) - np.where(band & (larr == k), v_cell, 0.0)
+            #   `coef = sigma·V_c`（带内延拓后的规范形速度）⇒ winner φ 拿 +V_ab、
+            #   runner-up φ 拿 −V_ab ⇒ **两侧同一个标量** ✓
+            vnk = coef * (np.where(karr == k, 1.0, 0.0)
+                          - np.where(larr == k, 1.0, 0.0))
             if np.any(vnk != 0):
                 if adv_grad == 'central':
                     g = np.gradient(self.phi[k], self.dx)
@@ -1000,7 +1110,9 @@ def M1_multiregion_conservation(N=48, nstep=20):
 
 
 def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0,
-                       Mob=1e-9, rfrac=0.22, adv_grad='upwind'):
+                       Mob=1e-9, rfrac=0.22, adv_grad='upwind',
+                       pair_kernel=False, iface_band=2.0, probe=0, cfl=0.15,
+                       plate_dx=2.0):
     """12 变体 RVE（level-set 表示）：看是否（i）不冻结晶核、（ii）给出板条形状。
        与格点 KMC 版（windowB_gibbs）对照：那里 Λ≳5 时转变被冻在 5–23% ✗。"""
     from windowB_pf3d import C_iso3, _lam_full
@@ -1022,7 +1134,7 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0
                 best, bn = val, n
         npref[v + 1] = bn
     R = rfrac * N * dx
-    t = 2.0 * dx
+    t = plate_dx * dx
     for v in range(nv):
         g.seed_plate(v + 1, (rng.random(3) * (N * dx - 2 * R) + R), npref[v + 1], R, t)
     g.init_parent()
@@ -1031,10 +1143,19 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0
     print('   [诊断] phi 的最小值: 母相 %.3e ; 变体1 %.3e ; 空变体13 %.3e'
           % (g.phi[0].min(), g.phi[1].min(), g.phi[g.nreg - 1].min()))
     v = Mob * abs(df) * 0.5                    # 前沿速度估计
-    dt = 0.3 * dx / v
+    # ★★ 记账（本轮修的真 bug）：前沿速度是 **M·|Δf|**，不是 0.5 倍。旧写法
+    #   `v = M|Δf|·0.5` 配 `dt = 0.3dx/v` ⇒ 实际每步位移是 **0.6 dx**（不是 0.3）。
+    #   后果（实测，隔离实验见审计 §10.2）：一阶迎风在 0.6dx/步下失真、6dx 厚的
+    #   板片 10 步被吃光、`band_health` 静默塌缩（带胞 12601→35、|∇φ_winner| 中位
+    #   0.73→6.0e5）；把每步位移降到 0.10–0.15dx 后同一算例 25 步内带胞只降到 ~1900、
+    #   |∇φ| 中位 ~4.9（仍退化，但量级完全不同 ⇒ dt 是**主导因素**）。
+    #   ⇒ 改用**显式 CFL**：`dt = cfl·dx/(M|Δf|)`。
+    v = Mob * abs(df)
+    dt = cfl * dx / v
     print('---- M2 12 变体 RVE（level-set）----')
-    print('   N=%d dx=%.1f nm 域=%.2f um | df=%.1e γ=%.2f Λ=%.1f | v≈%.3f m/s dt=%.2e'
-          % (N, dx * 1e9, N * dx * 1e6, df, gamma, aniso, v, dt))
+    print('   N=%d dx=%.1f nm 域=%.2f um | df=%.1e γ=%.2f Λ=%.1f | v=M|df|=%.3f m/s '
+          'dt=%.2e ⇒ 每步位移 %.3f dx' % (N, dx * 1e9, N * dx * 1e6, df, gamma,
+                                          aniso, v, dt, dt * v / dx))
     print('   %6s %9s %9s %9s' % ('step', 'f_trans', 'V_max/V', 'min(V)>0'))
     for k in range(nstep + 1):
         if k % 60 == 0 or k == nstep:
@@ -1044,7 +1165,12 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0
                                               str(bool((vt[1:] > 0).all()))))
         if k == nstep:
             break
-        g.advance(dt, aniso=aniso, npref=npref, adv_grad=adv_grad)
+        g.advance(dt, aniso=aniso, npref=npref, adv_grad=adv_grad,
+                  pair_kernel=pair_kernel, iface_band=iface_band)
+        if probe and (k + 1) % probe == 0:
+            nb, medg, okg = g.band_health()
+            print('   [带健康 probe step=%4d] 带胞=%6d 带内|∇φ_win|中位=%8.3f %s'
+                  % (k + 1, nb, medg, 'OK' if okg else '**退化**'))
     reg = g.region()
     vt = np.array([g.volume(j) for j in range(g.nreg)])
     # ★ P1 修复后必须用**几何（coarea）界面面积测度**：`g.area(k)` 是"异键数×dx²"的
@@ -1055,7 +1181,7 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0
     nb, medg, okg = g.band_health()
     if not okg:
         print('   ⚠⚠ 界面带已退化（带胞 %d、带内 |∇φ| 中位 %.2f）⇒ **下面的 S_v / 板条厚度'
-              '不得引用**：需先把多畴速度扩展改成"按配对"（见审计 §9.5）' % (nb, medg))
+              '不得引用**：多畴速度扩展/带掩模仍有问题（见审计 §9.5/§10）' % (nb, medg))
     print('   末态: 转变分数 %.4f ; 各变体体积分数 %s' %
           (1 - vt[0] / (N * dx) ** 3, np.round(vt[1:] / vt[1:].sum(), 3)))
     f_t = 1 - vt[0] / (N * dx) ** 3
@@ -1345,14 +1471,22 @@ def _plot_w1(hist, Lam, herring, path, ttf='/mnt/c/Windows/Fonts/simhei.ttf'):
 def M3_McLean(N=32, dx=2e-9, nstep=400):
     """面上场 Γ 的局部平衡：应收敛到 McLean/Langmuir 解析值（新表示下重做 H3）"""
     g = LevelSetMulti(N, N * dx, nv=1, gamma=0.0, Mob=0.0)
-    # 一个平面界面：区域1 占 z<L/2
-    g.phi[1] = np.where(np.arange(N)[None, None, :] * dx < 0.5 * N * dx,
-                        -1e-9, 1e-9) * np.ones((N, N, N))
+    # 一个平面界面：区域1 占 z<L/2。★ 记账（本轮修）：必须用**真 SDF** φ = z − L/2，
+    # 不能用 ±1e-9 的**阶跃**。阶跃场里 |∇φ| 只在 1 层胞非零 ⇒ `cell_area_geom` 的
+    # coarea 估计（Σ|∇φ|dx²/3，"/3" 对应 SDF 的 ±1.5dx 三层带）**偏小 3 倍**；
+    # 真 SDF 的带恰好是 3 层、每层 |∇φ|=1 ⇒ Σ = dx² 每列 = 正确面积 ✓。
+    g.phi[1] = (np.arange(N)[None, None, :] * dx - 0.5 * N * dx) * np.ones((N, N, N))
     g.init_parent()
     g.c[:] = 0.036
     for _ in range(nstep):
         g.update_Gamma(2e-11)
-    m = g.surface_band()
+    # ★ 记账（本轮修）：界面胞集合必须用**面积掩模** `cell_area_geom() > 0`
+    #   （= `update_Gamma` 内部用的同一个掩模），**不能**用 `surface_band()`：
+    #   后者按"邻胞区域号不同"取，在**周期 BC**下会把 `z=0` 的 wrap 层误判成界面
+    #   （实测量到 layer 0 与 layer 24 两层，各 384 胞）。那里 Γ 恒为 0 且会被
+    #   `update_Gamma` 的 (3') 清零 ⇒ 把它算进均值会**恰好把 Γ 砍半**
+    #   （实测 Γ_model/Γ_McLean = 0.477 ⇒ 就是这个假象，不是物理）。
+    m = g.cell_area_geom() > 0
     Geq = g.Gamma_eq(g.c[m])
     rel = float(np.abs(g.Gam[m] - Geq).max() / max(np.abs(Geq).max(), 1e-30))
     print('---- M3 面上场偏析平衡（level-set 表示，重做 H3）----')

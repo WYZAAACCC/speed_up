@@ -2,7 +2,11 @@
 # -*- coding: utf-8 -*-
 """A3 重做（② 的判据）：面扩散必须**只沿切向**。
    做法：平界面 + 带内一个**局部** Γ 斑块（不是均匀！上次写错成均匀 ⇒ 空转 ✗），
-   跑面扩散后量 (a) 法向二阶矩（不应增长）(b) 切向二阶矩（应增长）。"""
+   跑面扩散后量 (a) 法向二阶矩（不应增长）(b) 切向二阶矩（应增长）。
+   ★ 本轮修：初值必须用**真 SDF**（φ = z − L/2），不能用 ±1e-9 阶跃 ——
+     阶跃场 |∇φ| 只在 1 层胞非零 ⇒ `cell_area_geom` 的 coarea 估计偏小 3 倍，
+     且 H6 的保守通量要除以 A_c 时会在带边产生病态比值（实测把 |Γ| 推到 1e21 → nan ✗）。
+"""
 import numpy as np
 from windowB_surface import LevelSetMulti
 
@@ -10,12 +14,16 @@ N, dx = 48, 2e-9
 g = LevelSetMulti(N, N * dx, nv=1)
 z = np.arange(N)[None, None, :] * dx
 X = np.arange(N)[None, :, None] * dx
-g.phi[1] = np.where(z < 0.5 * N * dx, -1e-9, 1e-9) * np.ones((N, N, N))
+g.phi[1] = (z - 0.5 * N * dx) * np.ones((N, N, N))       # ★ 真 SDF
 g.init_parent()
 m = g.surface_band()
 cx = 0.5 * N * dx
 g.Gam = np.zeros_like(g.phi[0])
-patch = m & (np.abs(X - cx) < 4 * dx)               # 局部斑块（切向窄）
+# ★ 记账（本轮修）：用**面积掩模** `cell_area_geom() > 0`（与 `update_Gamma` 内部
+#   一致），**不能**用 `surface_band()`：后者在周期 BC 下把 z=0 的 wrap 层误判成界面
+#   （实测 layer 0 与 layer 24 两层）⇒ 该层 Γ 被 (3') 清零 ⇒ 量到的初始"法向宽度"
+#   12dx 其实是 **wrap 假象**，判据在看一个不存在的东西。
+patch = (g.cell_area_geom() > 0) & (np.abs(X - cx) < 4 * dx)   # 局部斑块（切向窄）
 g.Gam[patch] = 1e-6
 
 
