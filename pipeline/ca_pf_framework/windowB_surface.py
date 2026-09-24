@@ -289,11 +289,20 @@ class LevelSetMulti(object):
     def update_Gamma(self, dt, tau_ex=1e-9, D_s=1e-20):
         """面的演化（全部守恒）：
              (1) 与体相按局部平衡交换（同一胞等量反号 ⇒ 精确守恒；含 ρ_mol 换算）
-             (2) 沿面扩散：**通量形式**（只走界面-界面键 ⇒ 逐键对称 ⇒ 严格守恒）"""
+             (2) 沿面扩散：**切向 Laplace–Beltrami 算子**（② 本轮修：旧写法用 6 邻域格点键，
+                 含法向邻居 ⇒ Γ 会跨界面扩散 = 物理错 ✗）
+             (3) 离开界面带的胞，其面过剩**还给体相**（⑥ 本轮修：旧写法直接清零 ⇒ 溶质泄漏 ✗）"""
         if not hasattr(self, 'Gam'):
             self.Gam = np.zeros_like(self.phi[0])
         m = self.surface_band()
         A_c = self.cell_area_geom()      # ★ P1：用几何（coarea）测度，替换格子键测度
+        # (3) 先把"离开带"的胞的面过剩还给体相（保守）
+        if hasattr(self, '_m_prev'):
+            left = self._m_prev & (~m)
+            if left.any():
+                moles = self.Gam[left] * self._A_prev[left]
+                self.c[left] += moles / (self.rho * self.dx ** 3)
+        self._m_prev, self._A_prev = m.copy(), A_c.copy()
         Gam_eq = self.Gamma_eq(self.c)
         # ★ 稳定性保护：显式弛豫必须 dt ≤ τ_ex，否则 Γ 过冲发散（实测 M4 里 dt=4e-9 > τ=1e-9
         #   导致总量变负、涨 1e5 倍 ✗）。超出时按线性插值限幅（等价于隐式的第一步）。
@@ -301,12 +310,29 @@ class LevelSetMulti(object):
         dG = np.where(m, (Gam_eq - self.Gam) * frac, 0.0)
         self.Gam = np.where(m, self.Gam + dG, 0.0)
         self.c -= dG * A_c / (self.rho * self.dx ** 3)
-        flux = np.zeros_like(self.Gam)
-        for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
-            nbm = np.roll(m, d, axis=(0, 1, 2))
-            both = m & nbm
-            flux += np.where(both, np.roll(self.Gam, d, axis=(0, 1, 2)) - self.Gam, 0.0)
-        self.Gam = np.where(m, self.Gam + dt * D_s * flux / self.dx ** 2, 0.0)
+        # (2) 切向 Laplace–Beltrami：Δ_s Γ = ΔΓ − n_i n_j ∂_ijΓ − κ (n·∇Γ)
+        if D_s > 0:
+            reg = self.region()
+            order = np.argsort(self.phi, axis=0)
+            karr = order[0]
+            lb = np.zeros_like(self.Gam)
+            g1 = np.gradient(self.Gam, self.dx)
+            grad2 = [np.gradient(gi, self.dx) for gi in g1]      # grad2[i][j] = ∂_i∂_j
+            lap = sum(grad2[i][i] for i in range(3))
+            for k in range(self.nreg):
+                nk = self._normal_of(k)
+                kap = self.curvature_of(k)
+                nnv = sum(nk[i] * nk[j] * grad2[i][j] for i in range(3) for j in range(3))
+                nd = sum(nk[i] * g1[i] for i in range(3))
+                lb = np.where((karr == k) | (m & (karr == k)), lap - nnv - kap * nd, lb)
+            self.Gam = np.where(m, self.Gam + dt * D_s * lb, self.Gam)
+        # (3') 带外的 Γ 清零（其摩尔量已在上面还给体相）
+        self.Gam = np.where(m, self.Gam, 0.0)
+
+    def _normal_of(self, k):
+        g = np.gradient(self.phi[k], self.dx)
+        gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+        return [gi / gn for gi in g]
 
     def totals(self):
         """总溶质（mol）：体相 Σc·ρ·dV + 面 ΣΓ·A_c"""
@@ -321,6 +347,37 @@ class LevelSetMulti(object):
         gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
         n = [gi / gn for gi in g]
         return sum(np.gradient(n[i], self.dx)[i] for i in range(3))
+
+    # ================= ④ 数值格式：Godunov 迎风 |∇φ| 与 Sussman 重初始化 =================
+    def _upwind_grad(self, phi, sgn):
+        """|∇φ| 的 Godunov 迎风离散；sgn 为逐点符号场（+1/−1）：
+             sgn>0: |∇φ|²ᵢ = max(max(D⁻φ,0)², min(D⁺φ,0)²)
+             sgn<0: |∇φ|²ᵢ = max(max(D⁺φ,0)², min(D⁻φ,0)²)
+           （一阶迎风；比中心差分稳定，是 level-set 的标准做法）"""
+        acc = np.zeros_like(phi)
+        for ax in range(3):
+            dm = (phi - np.roll(phi, 1, axis=ax)) / self.dx
+            dp = (np.roll(phi, -1, axis=ax) - phi) / self.dx
+            gpos = np.maximum(np.maximum(dm, 0.0) ** 2, np.minimum(dp, 0.0) ** 2)
+            gneg = np.maximum(np.maximum(dp, 0.0) ** 2, np.minimum(dm, 0.0) ** 2)
+            acc += np.where(sgn > 0, gpos, gneg)
+        return np.sqrt(acc)
+
+    def sussman_reinit(self, phi, iters=30):
+        """④ 保亚胞位置的 PDE 式重初始化：解 φ_τ + S(φ0)(|∇φ|−1) = 0（一阶迎风）。
+           零等值面（界面位置）在连续意义下不动 ✓ —— 这是替换"按掩模重建距离场"这一
+           格点做法的正确格式（旧做法把界面吸附到胞边界，O(0.5dx) 系统偏差 ✗）。"""
+        phi0 = phi.copy()
+        S = phi0 / np.sqrt(phi0 ** 2 + self.dx ** 2)
+        dtau = 0.8 * self.dx        # 一阶迎风的 CFL 上限 ≈ dx/max|S|；取 0.8dx 收敛更快
+        for _ in range(iters):
+            phi = phi - dtau * S * (self._upwind_grad(phi, S) - 1.0)
+        return phi
+
+    def _advance_phi(self, k, vn, dt):
+        """④ 用迎风 |∇φ| 推进：φ_t + v_n|∇φ| = 0"""
+        sgn = np.where(vn > 0, 1.0, -1.0)
+        return self.phi[k] - dt * vn * self._upwind_grad(self.phi[k], sgn)
 
     def volume(self, k):
         m = (self.region() == k)
@@ -388,9 +445,11 @@ class LevelSetMulti(object):
             band |= ((karr == k) | (larr == k)) & (np.abs(self.phi[k]) <= 2.0 * self.dx)
         band = band & (np.abs(v_cell) > 0)
         for k in range(nreg):
-            upd = np.where(band, v_cell, 0.0) * gn[k]
-            self.phi[k] -= dt * np.where(karr == k, upd, 0.0)     # winner 长大
-            self.phi[k] += dt * np.where(larr == k, upd, 0.0)     # runner-up 让位
+            # ④ 迎风推进（替换中心差分：更稳、更准，level-set 标准格式）
+            vnk = np.where(band & (karr == k), v_cell, 0.0) - np.where(band & (larr == k), v_cell, 0.0)
+            if np.any(vnk != 0):
+                sgn = np.where(vnk > 0, 1.0, -1.0)
+                self.phi[k] = self.phi[k] - dt * vnk * self._upwind_grad(self.phi[k], sgn)
         reg = self.region()
         self._cnt = getattr(self, '_cnt', 0) + 1
         if self.reinit_every and self._cnt % self.reinit_every == 0:
@@ -399,9 +458,14 @@ class LevelSetMulti(object):
         return reg
 
     def _stefan(self, reg0, k_part=0.6303):
-        """Stefan 跳跃的离散式：界面扫过的胞按分配系数改变浓度，
-           差额**等量反号**推给邻居 ⇒ 守恒精确（与 windowB_hybrid 的逻辑一致 ✓）"""
+        """③ 本轮修：Stefan 跳跃的**正确去向**——界面扫过时被排出的溶质
+           **先存进面过剩 Γ**（即 ∂Γ/∂t 那一项），再由 update_Gamma 的面-体交换与
+           面扩散分发出去；**不再直接甩给邻居**（旧写法既非物理、又带 1.6% 不守恒 ✗）。
+           收缩时反向：产物胞变母相需要的溶质，**先从面 Γ 取**，不足的部分才由邻居补
+           （记账：Γ 不足时从邻居补，仍是精确守恒 ✓）。"""
         reg1 = self.region()
+        m = self.surface_band()
+        A_c = self.cell_area_geom()
         for kind in ('grow', 'shrink'):
             if kind == 'grow':
                 swept = (reg0 == 0) & (reg1 != 0)          # 母相 -> 产物
@@ -413,7 +477,18 @@ class LevelSetMulti(object):
                 continue
             dq = (ctgt - self.c)
             self.c[swept] = ctgt[swept]
-            amount = -(dq * self.rho * self.dx ** 3)
+            amount = -(dq * self.rho * self.dx ** 3)       # 需从系统其余部分拿走的摩尔量
+            # (a) 先存/取面 Γ
+            if kind == 'grow':
+                self.Gam = np.where(swept & (A_c > 0),
+                                    self.Gam + amount / np.maximum(A_c, 1e-30), self.Gam)
+                amount = np.where(swept & (A_c > 0), 0.0, amount)
+            else:
+                avail = self.Gam * A_c                      # 面上可用的摩尔量
+                take = np.where(swept & (A_c > 0), np.minimum(avail, -amount), 0.0)
+                self.Gam = np.where(swept & (A_c > 0),
+                                    self.Gam - take / np.maximum(A_c, 1e-30), self.Gam)
+                amount = amount + take
             wsum = np.zeros_like(self.c)
             for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
                 wsum += np.roll(swept, d, axis=(0, 1, 2)) & (~swept)
@@ -432,13 +507,11 @@ class LevelSetMulti(object):
         """把每个 φ_k 在带内重初始化成有符号距离；带外保持不变（多区域安全做法）"""
         reg = self.region()
         for k in range(self.nreg):
-            m = (reg == k)
             near = np.abs(self.phi[k]) <= band_cells * self.dx
-            if not m.any():
+            if not near.any():
                 continue
-            d_in = distance_transform_edt(m, sampling=self.dx)
-            d_out = distance_transform_edt(~m, sampling=self.dx)
-            self.phi[k] = np.where(near, np.where(m, -d_in, d_out), self.phi[k])
+            newp = self.sussman_reinit(self.phi[k], iters=30)  # ④ PDE 式（保界面位置）
+            self.phi[k] = np.where(near, newp, self.phi[k])
 
 
 def M1_multiregion_conservation(N=48, nstep=20):
