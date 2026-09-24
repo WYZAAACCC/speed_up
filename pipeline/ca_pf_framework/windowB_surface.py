@@ -22,19 +22,155 @@ from scipy import fft as sfft
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 
 
+def upwind_grad(phi, sgn, dx):
+    """|∇φ| 的 Godunov 迎风离散（一阶）；sgn 为逐点符号场（+1/−1）：
+         sgn>0: |∇φ|²ᵢ = max(max(D⁻φ,0)², min(D⁺φ,0)²)
+         sgn<0: |∇φ|²ᵢ = max(max(D⁺φ,0)², min(D⁻φ,0)²)
+       ★ 记账：这是 ④ 验证过的格式（`_chk_d4.py`）。**单畴与多畴共用同一份实现**
+       （旧写法在两个类里各写一份 ⇒ 极易分叉，是审计记下的一条教训）。"""
+    acc = np.zeros_like(phi)
+    for ax in range(3):
+        dm = (phi - np.roll(phi, 1, axis=ax)) / dx
+        dp = (np.roll(phi, -1, axis=ax) - phi) / dx
+        gpos = np.maximum(np.maximum(dm, 0.0) ** 2, np.minimum(dp, 0.0) ** 2)
+        gneg = np.maximum(np.maximum(dp, 0.0) ** 2, np.minimum(dm, 0.0) ** 2)
+        acc += np.where(sgn > 0, gpos, gneg)
+    return np.sqrt(acc)
+
+
+def _minmod(a, b):
+    """minmod 限制器：同号取绝对值小者，异号取 0（保单调）"""
+    return 0.5 * (np.sign(a) + np.sign(b)) * np.minimum(np.abs(a), np.abs(b))
+
+
+def upwind_grad2(phi, sgn, dx):
+    """**二阶 ENO(minmod)** Godunov 迎风 |∇φ|。一阶迎风写成
+         D⁻ᵢ = (φᵢ−φᵢ₋₁)/dx
+       的二阶版本用 3 点单边外推 + minmod 限制（同号才外推 ⇒ 光滑区二阶、拐点处退一阶）：
+         Dm2ᵢ = D⁻ᵢ + ½·minmod(D⁻ᵢ−D⁻ᵢ₋₁, D⁺ᵢ−D⁻ᵢ)
+         Dp2ᵢ = D⁺ᵢ − ½·minmod(D⁺ᵢ₊₁−D⁺ᵢ, D⁺ᵢ−D⁻ᵢ)
+       ★ 记账（为什么要它）：一阶迎风的单边差有 **O(dx) 的取向相关误差**，实测两个后果——
+         ① 推进时把有效各向异性压低 ~8%（W1：a2 比 0.90–0.93，且**不随 dx 收敛**）；
+         ② Sussman 迭代的不动点不是真 SDF ⇒ reinit **不幂等**，每次把界面内移
+            ~0.03–0.10 dx（越用越糟）⇒ 等于给界面加了一个系统性假收缩速度。
+        而"中心型/对称型" |∇φ| 虽然二阶、在圆上漂移为 0，却是**边际不稳定**的
+        （迭代 100 次后 ΔR 突然跳到 +0.40 dx、带内 |∇φ|→1.26 ✗）。
+       ⇒ 二阶 ENO 迎风同时满足：二阶精度 + 单调/稳定。"""
+    acc = np.zeros_like(phi)
+    for ax in range(3):
+        dm = (phi - np.roll(phi, 1, axis=ax)) / dx
+        dp = (np.roll(phi, -1, axis=ax) - phi) / dx
+        dmm = np.roll(dm, 1, axis=ax)
+        dpp = np.roll(dp, -1, axis=ax)
+        Dm2 = dm + 0.5 * _minmod(dm - dmm, dp - dm)
+        Dp2 = dp - 0.5 * _minmod(dpp - dp, dp - dm)
+        gpos = np.maximum(np.maximum(Dm2, 0.0) ** 2, np.minimum(Dp2, 0.0) ** 2)
+        gneg = np.maximum(np.maximum(Dp2, 0.0) ** 2, np.minimum(Dm2, 0.0) ** 2)
+        acc += np.where(sgn > 0, gpos, gneg)
+    return np.sqrt(acc)
+
+
+def grad_sym(phi, dx):
+    """**二阶**对称 |∇φ|：Σ_轴 ½[(D⁻φ)²+(D⁺φ)²]。
+       记账（本轮踩的坑）：一阶 Godunov 迎风 |∇φ| 在**曲面**界面处系统**高估** ~1.5%，
+       且误差随取向变化 ⇒ Sussman 迭代的**不动点不是真 SDF**：
+       对新鲜球面 SDF 反复 reinit，半径**单调内移且越走越快**
+       （-0.028, -0.048, -0.067, -0.084, -0.100 dx ✗，即 reinit 不是幂等的，
+       等于给界面加了一个系统性的假收缩速度）。
+       对称式把两侧单边差分的 O(dx) 误差对冲掉（余 O(dx²)）⇒ 不动点回到真 SDF ✓。"""
+    acc = 0.0
+    for ax in range(3):
+        dm = (phi - np.roll(phi, 1, axis=ax)) / dx
+        dp = (np.roll(phi, -1, axis=ax) - phi) / dx
+        acc = acc + 0.5 * (dm ** 2 + dp ** 2)
+    return np.sqrt(acc)
+
+
+def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2'):
+    """④ 保亚胞位置的 PDE 式重初始化：解 φ_τ + S(φ0)(|∇φ|−1) = 0（一阶迎风）。
+       零等值面在连续意义下不动 ✓（旧写法 `distance_transform_edt(mask)` 会把界面
+       吸附到胞边界，O(0.5dx) 系统偏差 ✗）。
+       ★ 记账（本轮修的一个真 bug）：步长必须满足**多维** Godunov 迎风的 CFL
+         `dτ·(|S_x|+|S_y|+|S_z|) ≤ dx` ⇒ `dτ ≤ dx/3`（3D；2D 薄板是 dx/2）。
+         旧默认 `dτ = 0.8dx` **越界 2.4 倍** ⇒ 这个"迭代"其实在发散：
+           症状 ① 界面被"钉"在按 dt 变化的伪不动点上（W1 定容弛豫实测：
+                dt 小 5 倍，收敛长径比从 1.35 掉到 1.15 ✗）；
+           症状 ② 跑几百步后带内 |∇φ| 从 1.0 突然涨到 5.5 ⇒ 界面炸掉 ✗。
+         现在默认 `dτ = 0.5·dx/3`（安全裕度 2 倍），收敛靠增加迭代数（iter=40）。"""
+    phi0 = phi.copy()
+    S = phi0 / np.sqrt(phi0 ** 2 + dx ** 2)
+    if dtau is None:
+        dtau = 0.5 * dx / 3.0   # 一阶迎风、多维 CFL：dτ ≤ dx/3（|S|≤1）
+    for _ in range(iters):
+        if grad == 'upwind':
+            gm = upwind_grad(phi, S, dx)
+        elif grad == 'upwind2':
+            gm = upwind_grad2(phi, S, dx)
+        elif grad == 'central':
+            g = np.gradient(phi, dx)
+            gm = np.sqrt(sum(gi ** 2 for gi in g))
+        else:
+            gm = grad_sym(phi, dx)
+        phi = phi - dtau * S * (gm - 1.0)
+    return phi
+
+
+def herring_stiffness(ndot2, gamma0, Lam, herring=True):
+    """各向异性界面刚度 γ_eff = γ + γ_θθ（Herring 项）。
+       输入 ndot2 = (n·n_pref)²；对 γ(θ)=γ0[1+Λ sin²θ]（θ = 法向与 n_pref 的夹角）:
+           herring=True :  γ+γ_θθ = γ0[1 + 2Λ − 3Λ sin²θ]  ← Gibbs–Thomson 的正确形式
+           herring=False:  只用 γ 本身 = γ0[1 + Λ sin²θ]     ← **刻意保留的错误对照**（W1 反向判据）"""
+    s2 = 1.0 - ndot2
+    if herring:
+        return gamma0 * (1.0 + 2.0 * Lam - 3.0 * Lam * s2)
+    return gamma0 * (1.0 + Lam * s2)
+
+
+def extend_along_normal(v, phi, dx, iters=12, dtau_fac=0.4):
+    """把界面速度 v 沿**法向**延拓（标准 "extension velocity"：解
+         v_τ + S(φ)·(n·∇v) = 0 ,  n = ∇φ/|∇φ|,  S(φ)=φ/√(φ²+dx²)
+       用一阶迎风）。为什么必须要它：**只**沿法向常数延拓才能让整个剖面的更新
+       成为**纯平移** ⇒ 保 SDF、保界面速度（见 `LevelSetSurface.advance` 的记账）。
+       ★ 相比 nearest-interface-point(distance_transform_edt) 延拓：局部、便宜
+         （EDT 在 96³ 上每步 ~2 s，这里 ~30 ms），且是**光滑**延拓（无最近点跳变）。"""
+    v = v.copy()
+    g = np.gradient(phi, dx)
+    gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+    S = phi / np.sqrt(phi ** 2 + dx ** 2)
+    dtau = dtau_fac * dx
+    for _ in range(iters):
+        cov = np.zeros_like(v)
+        for ax in range(3):
+            w = S * (g[ax] / gn)
+            dm = (v - np.roll(v, 1, axis=ax)) / dx
+            dp = (np.roll(v, -1, axis=ax) - v) / dx
+            cov += w * np.where(w > 0, dm, dp)
+        v = v - dtau * cov
+    return v
+
+
 class LevelSetSurface(object):
     """level-set 面场（单相/单畴版；多畴身份由 label 场平流携带，下一步接）"""
 
     def __init__(self, N, L, gamma=0.15, Mob=1.0, kappa_omega=1.0, ic='sphere',
-                 R0=None, workers=4, reinit_every=50):
+                 R0=None, workers=4, reinit_every=50, nz=None, ndim=3,
+                 reinit_dtau=None, reinit_iters=60, reinit_grad='upwind2'):
+        """ndim=2 时用 (N,N,nz) 的薄板 + z 方向平移不变 ⇒ **与真 2D 逐位等价**
+           （SDF 不依赖 z、np.gradient 的 z 分量为 0）但便宜 nz 倍。nz 缺省 4。"""
         self.N, self.L = N, L
+        self.ndim = ndim
+        self.Nz = int(nz) if nz is not None else (4 if ndim == 2 else N)
         self.dx = L / N
         self.gamma = gamma
         self.M = Mob               # 含 Ω（记账：M 已含摩尔体积）
         self.workers = workers
         self.reinit_every = reinit_every
+        self.reinit_dtau = reinit_dtau          # None ⇒ 用 sussman_reinit 的安全默认
+        self.reinit_iters = reinit_iters
+        self.reinit_grad = reinit_grad          # 'sym'(二阶,默认) | 'upwind' | 'central'
         x = (np.arange(N) + 0.5) * self.dx
-        X, Y, Z = np.meshgrid(x, x, x, indexing='ij')
+        xz = (np.arange(self.Nz) + 0.5) * self.dx
+        X, Y, Z = np.meshgrid(x, x, xz, indexing='ij')
         c0 = 0.5 * L
         if R0 is None:
             R0 = 0.25 * L
@@ -72,6 +208,128 @@ class LevelSetSurface(object):
     def radius(self):
         return (3 * self.volume() / (4 * np.pi)) ** (1 / 3)
 
+    # ---------- 2D（薄板）专用：横截面半径 / 定容投影 / 界面点提取 ----------
+    def Lz(self):
+        return self.Nz * self.dx
+
+    def volume_2d(self):
+        """横截面积 = 3D 体积 / 板厚"""
+        return self.volume() / self.Lz()
+
+    def radius_2d(self):
+        """等效半径 R = sqrt(A_cross/π)（柱体的横截面）"""
+        return np.sqrt(max(self.volume_2d(), 0.0) / np.pi)
+
+    def project_volume(self, V_target, iters=12, warn_many_dx=1.0):
+        """**定容投影**：把 φ 整体平移一个常数 c（|∇φ|=1 不受影响）使**三维**体积回到 V_target。
+           体积对平移的导数 dV/dc = −A（A = 三维界面积）⇒ 牛顿步 c = (V − V_target)/A。
+           ★ 记账（本轮踩到的单位陷阱）：**必须用同一套测度** —— 若拿 `volume_2d()`
+             （m²）配 `area()`（m²，但是整根柱体的侧面积）就会差一个 Lz ⇒ 修正量被放大
+             1/Lz*... 倍。实测：三维/三维 给出正确的 0.115 nm 步长，而 2D/3D 混用一步把
+             φ 平移了 **14 mm** ⇒ 界面直接被推出计算域（band=0，"形状消失"）。
+             加了下面的守卫：单步修正量超过 `warn_many_dx·dx` 就告警（说明测度没配平）。
+           ★ 这是"体积守恒弛豫"的**投影实现**，与 Lagrange 乘子 `df = γ⟨κ⟩_A` 等价
+             （两者都只允许形状自由度演化）；投影实现**没有临界核不稳定性** ⇒ 鲁棒。"""
+        for _ in range(iters):
+            V = self.volume()
+            dV = V - V_target
+            if abs(dV) < 1e-8 * abs(V_target):
+                break
+            A = self.area()
+            if A <= 0:
+                break
+            c = dV / A
+            if abs(c) > warn_many_dx * self.dx:
+                print('   [project_volume 告警] 单步平移 %.3e m = %.2f dx —— 测度可能没配平'
+                      % (c, c / self.dx))
+            self.phi = self.phi + c
+        return self.volume()
+
+    def region_center(self):
+        """区域（φ<0）的形心 —— Wulff 形状量测的中心"""
+        m = self.phi < 0
+        if not m.any():
+            return np.zeros(3)
+        idx = np.argwhere(m).astype(float) + 0.5
+        return (idx.mean(0)) * self.dx
+
+    def radius_iface(self, band=1.5):
+        """从**亚胞界面点**量等效半径（球的 R）：λ = mean|x_if − x_c|。
+           ★ 记账（本轮修的量测偏差）：`radius()` 用的 tanh 体积测度对**限制在带内**的
+             界面平移只有 **90.5%** 灵敏度（0.5sech² 的尾巴被带边截掉）⇒ 用它量界面
+             速度会**系统性低估 ~9.5%**（实测：真实更新量给 -0.0200 nm/步，tanh 测度
+             只报 -0.0182 nm/步；两者之比 0.918 与 0.905 完全吻合）。
+             对**全域平移**（φ+c）才回到 99.86%。所以界面速度必须用**几何点**量，
+             不能用带截断的体积测度。"""
+        P, _ = self.interface_points(band=band)
+        if len(P) < 8:
+            return np.nan
+        c = self.region_center()
+        return float(np.linalg.norm(P - c[None, :], axis=1).mean())
+
+    def radius_rays(self):
+        """**射线交点**口径的界面半径：沿三个轴向找 φ 变号的相邻胞对，线性插值出
+           亚胞交点位置，再对 |x_cross − x_c| 取平均（面积均匀加权）。
+           ★ 为什么需要它：界面**速度**的量测必须避开两类偏置 ——
+             (i) tanh 体积测度对"限制在带内"的界面平移只有 90.5% 灵敏度（带边截断）✗；
+             (ii) `interface_points` 的**投影** x−φ∇φ/|∇φ|² 在 |∇φ|≠1 时带偏 ✗。
+           射线交点只用"相邻两胞的 φ 变号 + 线性插值"，O(dx²) 无偏、也不依赖 |∇φ|。"""
+        c = self.region_center()
+        rad = []
+        for ax in range(3):
+            n = self.phi.shape[ax]
+            a = np.take(self.phi, np.arange(n - 1), axis=ax)
+            b = np.take(self.phi, np.arange(1, n), axis=ax)
+            s = (a * b) < 0
+            if not s.any():
+                continue
+            ii = np.argwhere(s)
+            pa = a[tuple(ii.T)]
+            pb = b[tuple(ii.T)]
+            t = pa / (pa - pb)
+            pos = (ii.astype(float) + 0.5) * self.dx
+            pos[:, ax] = ((ii[:, ax] + t) + 0.5) * self.dx
+            rad.append(np.linalg.norm(pos - c[None, :], axis=1))
+        if not rad:
+            return np.nan
+        return float(np.concatenate(rad).mean())
+
+    def interface_points(self, band=1.5, zslice=None):
+        """界面点 x_if 与法向 n（一阶投影到零等值面）：
+             x_if = x − φ ∇φ/|∇φ|² ,  n = ∇φ/|∇φ|
+           返回 (P (M,3), N (M,3))。zslice 给定时只在那一层取点（2D 柱体用）。"""
+        g = np.gradient(self.phi, self.dx)
+        gn2 = sum(gi ** 2 for gi in g) + 1e-300
+        if zslice is not None:
+            sl = (slice(None), slice(None), int(zslice))
+            p = self.phi[sl]
+            m = np.abs(p) <= band * self.dx
+            idx = np.argwhere(m)
+            gg = [gi[sl] for gi in g]
+            gn2s = gn2[sl]
+        else:
+            m = np.abs(self.phi) <= band * self.dx
+            idx = np.argwhere(m)
+            gg, gn2s = g, gn2
+        if len(idx) == 0:
+            return np.zeros((0, 3)), np.zeros((0, 3))
+        pv = self.phi[tuple(idx.T)] if zslice is None else self.phi[sl][tuple(idx.T)]
+        pts = np.zeros((len(idx), 3))
+        nrm = np.zeros((len(idx), 3))
+        # zslice 情形 idx 只有 2 列 ⇒ z 方向导数为 0（真 2D 问题的精确简化）
+        axes = [0, 1] if zslice is not None else [0, 1, 2]
+        for a in axes:
+            ga = gg[a][tuple(idx.T)]
+            pts[:, a] = (idx[:, a].astype(float) + 0.5) * self.dx
+            nrm[:, a] = ga / np.sqrt(gn2s[tuple(idx.T)])
+            pts[:, a] -= pv * ga / gn2s[tuple(idx.T)]
+        if zslice is not None:
+            pts[:, 2] = (int(zslice) + 0.5) * self.dx
+            nrm[:, 2] = 0.0
+            nn = np.linalg.norm(nrm, axis=1, keepdims=True) + 1e-300
+            nrm = nrm / nn
+        return pts, nrm
+
     # ---------- 速度扩展（nearest-interface-point）----------
     def extend_velocity(self, vn_iface, band_cells=4):
         """把界面上的 v_n 扩展为带上处处可用的速度场（标准做法）"""
@@ -85,30 +343,85 @@ class LevelSetSurface(object):
         return np.where(near, vn_ext, 0.0)
 
     # ---------- 界面推进（PDE，不是翻转）----------
-    def advance(self, dt, df=0.0, gamma_eff=None):
-        gam = self.gamma if gamma_eff is None else gamma_eff
+    def advance(self, dt, df=0.0, gamma_eff=None, aniso=0.0, npref=None,
+                herring=True, band=1.5, adv_grad='upwind2', band_cells=6,
+                extend='edt', ext_iters=14, ext_refresh=5):
+        """∂φ/∂t + v_n|∇φ| = 0，v_n = M[Δf − γ_eff(n) κ]（γ_eff = γ+γ_θθ）。
+           ★ 记账（本轮移植 ④ 的两处改动）：
+             1) 空间导数换成 **Godunov 迎风 |∇φ|**（模块级 `upwind_grad`），
+                旧写法用中心差分 `|∇φ|` ⇒ 不稳、且大形变下失真；
+             2) 重初始化换成 **Sussman PDE 式**（保亚胞界面位置），
+                旧写法 `distance_transform_edt(φ<0 掩模)` 把界面吸附到胞边界 ✗。
+           ★ 另外**不再做速度扩展**：v_n 由带上的局部 κ 直接给出（处处光滑），
+             而 nearest-interface-point 扩展是 O(dx) 的分段常数近似 ⇒ 无必要且更差。
+           —— 顺带记账：本函数旧版还有一个 `ininside := inside` 的笔误（无害但已删）。"""
+        # ★★ 记账（本轮最重要的一个修正）：**必须**把界面速度沿法向**扩展到一条较宽的带**
+        #    （nearest-interface-point 扩展 ⇒ 速度沿法向为常数 ⇒ 整个剖面的更新是**纯平移**
+        #    ⇒ φ 保持 SDF、界面速度精确）。我此前把扩展删掉、只用 1.5dx 窄带，导致：
+        #      · 窄带：带外剖面"不动" ⇒ 带边出现折点并随时间累积 ⇒ 界面速度塌掉
+        #        （实测 d(R²)/dt 只有理论的 **0.138** ✗，带内 |∇φ| 从 1.00 掉到 0.87）；
+        #      · 不扩展的宽带：vn 在带内随 κ∝1/r 变化 ⇒ 剖面被**非均匀拉伸** ⇒ |∇φ| 爆到 4–5 ✗。
+        #    修复后（扩展 + 6dx 带）实测 d(R²)/dt = **1.014** ✓、|∇φ| 稳定 ✓。
+        gam0 = self.gamma if gamma_eff is None else gamma_eff
         kap = self.curvature()
-        m = self.interface_mask()
+        m = self.interface_mask(band)
         # ★ 符号约定（记账）：v_n = M[ Δf_bulk − Ω γ κ ]，κ 对**凸的产物**取正。
         #   ⇒ 正曲率使凸体收缩（Gibbs–Thomson）；Δf<0 表示产物相稳定 ⇒ 长大。
-        vn = self.M * (df - gam * kap)
-        vn_if = np.where(m, vn, 0.0)
-        vn_ext = self.extend_velocity(vn_if, band_cells=4)
-        _, gnorm = self.normal()
-        self.phi -= dt * vn_ext * gnorm        # ∂φ/∂t + v_n|∇φ| = 0
-        # ★ 重初始化不能每步做：它会用"φ<0 掩模"重建距离场 ⇒ **抹掉亚胞界面位置** ✗，
-        #   使界面运动被量化到整胞（实测 R(t) 在头 100 步完全不动）。
+        gk = gam0
+        if aniso > 0 and npref is not None:
+            n, _ = self.normal()
+            nd = np.asarray(npref, float)
+            nd = nd / (np.linalg.norm(nd) + 1e-300)
+            ndot2 = sum(n[i] * nd[i] for i in range(3)) ** 2
+            gk = herring_stiffness(np.clip(ndot2, 0.0, 1.0), gam0, aniso, herring)
+        vn_if = np.where(m, self.M * (df - gk * kap), 0.0)
+        if extend == 'edt' and (~m).any():
+            # 最近界面点扩展：把界面上的 v_n 复制到"到界面距离 ≤ band_cells"内的所有胞
+            # ⇒ 沿法向常数 ⇒ 剖面的更新是纯平移（保 SDF、保界面速度）
+            # ★ 成本记账：EDT 在 96³ 上 ~2×100 ms ⇒ 每步都算会让步时 +330 ms。
+            #   最近界面点的**索引图**变化很慢（界面每步只走 0.02 dx）⇒ 缓存 `ext_refresh`
+            #   步复用一次（默认 5 步 ⇒ 步时降到 ~40 ms，速度判据不受影响）。
+            age = getattr(self, '_ext_age', 0)
+            if age <= 0 or getattr(self, '_ext_band', None) != band_cells:
+                self._ext_ind = distance_transform_edt(~m, return_distances=False,
+                                                       return_indices=True)
+                self._ext_near = distance_transform_edt(~m) <= band_cells
+                self._ext_band = band_cells
+                self._ext_age = ext_refresh - 1
+            else:
+                self._ext_age = age - 1
+            ind, near = self._ext_ind, self._ext_near
+            vn = np.where(near, vn_if[tuple(ind)], 0.0)
+        elif extend:
+            # ★ 默认：沿法向的 PDE 延拓（局部、便宜、光滑）
+            vn = extend_along_normal(vn_if, self.phi, self.dx, iters=ext_iters)
+            vn = np.where(np.abs(self.phi) <= band_cells * self.dx, vn, 0.0)
+        else:
+            vn = vn_if
+        if adv_grad == 'central':
+            # 对照用：中心差分 |∇φ|（对光滑 SDF 是二阶；迎风是一阶单边）
+            _, gn_c = self.normal()
+            gmag = gn_c
+        else:
+            sgn = np.where(vn > 0, 1.0, -1.0)
+            if adv_grad == 'upwind':
+                gmag = upwind_grad(self.phi, sgn, self.dx)      # 一阶迎风（最保守）
+            else:
+                gmag = upwind_grad2(self.phi, sgn, self.dx)     # ★ 二阶 ENO 迎风（默认）
+        self.phi -= dt * vn * gmag
         self._cnt = getattr(self, '_cnt', 0) + 1
         if self.reinit_every and self._cnt % self.reinit_every == 0:
             self.reinitialize()
-        return vn_ext
+        return vn
 
-    def reinitialize(self):
-        """把 φ 重新初始化成有符号距离（到界面的距离 + 原符号），保持界面位置"""
-        inside = self.phi < 0
-        dist = distance_transform_edt(ininside := inside, sampling=self.dx)
-        self.phi = np.where(inside, -distance_transform_edt(inside, sampling=self.dx),
-                            distance_transform_edt(~inside, sampling=self.dx))
+    def reinitialize(self, band_cells=6):
+        """④ Sussman PDE 式重初始化：把带内的 φ 拉回 |∇φ|=1，**不动零等值面** ✓
+           （带外不动 ⇒ 多区域/多岛情形安全）。"""
+        near = np.abs(self.phi) <= band_cells * self.dx
+        if near.any():
+            newp = sussman_reinit(self.phi, self.dx, iters=self.reinit_iters,
+                                  dtau=self.reinit_dtau, grad=self.reinit_grad)
+            self.phi = np.where(near, newp, self.phi)
 
 
 # ============================================================ 判据
@@ -126,16 +439,21 @@ def S0_curvature(N=64, dx=2e-9, R0=3e-8):
 
 
 def S1_GibbsThomson(N=96, dx=1e-9, R0=2.4e-8, M=1e-9, gamma=0.15, nstep=400):
-    """孤球收缩：d(R²)/dt 应 = -4Mγ（level-set 无台阶伪影，收敛应干净）"""
+    """孤球收缩：d(R²)/dt 应 = -4Mγ（level-set 无台阶伪影，收敛应干净）
+       ★ 半径用**亚胞界面点**量（`radius_iface`），不用 tanh 体积测度 ——
+         后者对带内平移只有 90.5% 灵敏度，会把斜率系统性拉低 ~9.5% ✗（见该方法记账）。"""
     g = LevelSetSurface(N, N * dx, gamma=gamma, Mob=M, R0=R0)
     dt = 0.02 * dx / (M * 2 * gamma / R0)
     ts, Rs = [], []
     for k in range(nstep):
         if k % 20 == 0:
             ts.append(k * dt)
-            Rs.append(g.radius())
+            Rs.append(g.radius_rays())     # ★ 用无偏的射线交点口径（见该方法的记账）
         g.advance(dt, df=0.0)
     ts, Rs = np.array(ts), np.array(Rs)
+    Rs = np.where(np.isfinite(Rs), Rs, np.nan)
+    good = np.isfinite(Rs)
+    ts, Rs = ts[good], Rs[good]
     keep = (Rs > 0.55 * Rs[0]) & (Rs < 0.99 * Rs[0])   # 收缩方向
     if keep.sum() < 3:                                  # 若反向（长大），则用上侧窗口
         keep = (Rs > 1.01 * Rs[0]) & (Rs < 1.45 * Rs[0])
@@ -350,29 +668,12 @@ class LevelSetMulti(object):
 
     # ================= ④ 数值格式：Godunov 迎风 |∇φ| 与 Sussman 重初始化 =================
     def _upwind_grad(self, phi, sgn):
-        """|∇φ| 的 Godunov 迎风离散；sgn 为逐点符号场（+1/−1）：
-             sgn>0: |∇φ|²ᵢ = max(max(D⁻φ,0)², min(D⁺φ,0)²)
-             sgn<0: |∇φ|²ᵢ = max(max(D⁺φ,0)², min(D⁻φ,0)²)
-           （一阶迎风；比中心差分稳定，是 level-set 的标准做法）"""
-        acc = np.zeros_like(phi)
-        for ax in range(3):
-            dm = (phi - np.roll(phi, 1, axis=ax)) / self.dx
-            dp = (np.roll(phi, -1, axis=ax) - phi) / self.dx
-            gpos = np.maximum(np.maximum(dm, 0.0) ** 2, np.minimum(dp, 0.0) ** 2)
-            gneg = np.maximum(np.maximum(dp, 0.0) ** 2, np.minimum(dm, 0.0) ** 2)
-            acc += np.where(sgn > 0, gpos, gneg)
-        return np.sqrt(acc)
+        """★ 委托给**模块级** `upwind_grad`（单畴/多畴共用一份 ⇒ 不会分叉）"""
+        return upwind_grad(phi, sgn, self.dx)
 
     def sussman_reinit(self, phi, iters=30):
-        """④ 保亚胞位置的 PDE 式重初始化：解 φ_τ + S(φ0)(|∇φ|−1) = 0（一阶迎风）。
-           零等值面（界面位置）在连续意义下不动 ✓ —— 这是替换"按掩模重建距离场"这一
-           格点做法的正确格式（旧做法把界面吸附到胞边界，O(0.5dx) 系统偏差 ✗）。"""
-        phi0 = phi.copy()
-        S = phi0 / np.sqrt(phi0 ** 2 + self.dx ** 2)
-        dtau = 0.8 * self.dx        # 一阶迎风的 CFL 上限 ≈ dx/max|S|；取 0.8dx 收敛更快
-        for _ in range(iters):
-            phi = phi - dtau * S * (self._upwind_grad(phi, S) - 1.0)
-        return phi
+        """★ 委托给**模块级** `sussman_reinit`"""
+        return sussman_reinit(phi, self.dx, iters=iters)
 
     def _advance_phi(self, k, vn, dt):
         """④ 用迎风 |∇φ| 推进：φ_t + v_n|∇φ| = 0"""
@@ -406,7 +707,8 @@ class LevelSetMulti(object):
         return out
 
     # ---------- 界面推进（PDE）----------
-    def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True):
+    def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True,
+                adv_grad='upwind', extend=True, band_cells=5, iface_band=1.0):
         """★ ⑤（本轮修）配对一致推进：界面 (winner k, runner-up l) 用**同一个** v_n，
            两侧 φ 一致更新（φ_k 减、φ_l 增）。旧写法让每个 φ_k 各用自己 v_k ⇒
            实测界面有效速度只有 **v/2** ✗（因为 VDF 里 |∇(φ_k−φ_l)|=2）。
@@ -424,10 +726,12 @@ class LevelSetMulti(object):
             gk = self.gamma if gamma0 is None else gamma0
             if aniso > 0 and npref is not None and npref.get(k) is not None:
                 n = np.stack([gi / gn[k] for gi in g], -1)
-                c2 = np.clip((n @ np.asarray(npref[k], float)) ** 2, 0, 1)
-                s2 = 1.0 - c2
-                gk = gk * ((1.0 + 2.0 * aniso - 3.0 * aniso * s2) if herring
-                           else (1.0 + aniso * s2))
+                # ★ 各向异性刚度：**统一走 `herring_stiffness`**（原来这里内联的写法与
+                #   `LevelSetSurface` 各写一份 ⇒ 已合并，避免两处分叉）
+                nd = np.asarray(npref[k], float)
+                nd = nd / (np.linalg.norm(nd) + 1e-300)
+                c2 = np.clip((n @ nd) ** 2, 0.0, 1.0)
+                gk = herring_stiffness(c2, gk, aniso, herring)
             stiff[k] = gk
             kap_all[k] = kap_k
         # winner / runner-up
@@ -439,17 +743,50 @@ class LevelSetMulti(object):
         stk = np.take_along_axis(stiff, karr[None], 0)[0]
         kap_cell = np.take_along_axis(kap_all, karr[None], 0)[0]     # 用 winner 的曲率
         v_cell = self.M * ((self.df[karr] - self.df[larr]) + (edk - edl) - stk * kap_cell)
-        # 界面带 = winner 的 |φ| 或 runner-up 的 |φ| 处于带内
-        band = np.zeros(self.phi.shape[1:], bool)
+        # ★★ 记账：和单畴一样，**必须做速度扩展**（否则窄带会把界面速度打到 ~0.14×，
+        #    宽带会把剖面拉变形 ⇒ 见 `LevelSetSurface.advance` 的同一段记账）。
+        #    多畴的额外要求：扩展只能**在本区域内部**传播（否则会把邻居界面的速度
+        #    搬过来）⇒ 用 `karr == karr[最近界面胞]` 作约束 ✓。
+        phiw = np.take_along_axis(self.phi, karr[None], 0)[0]
+        iface = (np.abs(phiw) <= iface_band * self.dx) & (np.abs(v_cell) > 0)
+        # ★ 守卫（本轮踩的坑）：`distance_transform_edt(~iface)` 要求 `~iface` **非空**，
+        #   否则"最近零点索引"无定义、返回垃圾 ⇒ `karr == kat` 会把一半的界面更新切掉。
+        #   症状：W2（平界面 + 阶跃初值，全场 |φ|=0.5dx ⇒ iface=全场）速度掉到 0.25×theory ✗。
+        #   ⇒ 退化时退回"局部带"分支（旧行为）即可。
+        if extend and iface.any() and not iface.all():
+            if extend == 'edt':
+                ind = distance_transform_edt(~iface, return_distances=False, return_indices=True)
+                dist = distance_transform_edt(~iface)
+                v_at = np.where(iface, v_cell, 0.0)
+                kat = karr[tuple(ind)]
+                band = (dist <= band_cells) & (karr == kat)
+                v_use = np.where(band, v_at[tuple(ind)], 0.0)
+            else:
+                # 沿法向 PDE 延拓（用 winner 的 φ 作为法向参照）
+                vn_tmp = np.where(iface, v_cell, 0.0)
+                v_ext = extend_along_normal(vn_tmp, phiw, self.dx, iters=12)
+                band = np.abs(phiw) <= band_cells * self.dx
+                v_use = np.where(band, v_ext, 0.0)
+        else:
+            band = np.zeros(self.phi.shape[1:], bool)
+            for k in range(nreg):
+                band |= ((karr == k) | (larr == k)) & (np.abs(self.phi[k]) <= 2.0 * self.dx)
+            band = band & (np.abs(v_cell) > 0)
+            v_use = np.where(band, v_cell, 0.0)
+        v_cell = v_use
         for k in range(nreg):
-            band |= ((karr == k) | (larr == k)) & (np.abs(self.phi[k]) <= 2.0 * self.dx)
-        band = band & (np.abs(v_cell) > 0)
-        for k in range(nreg):
-            # ④ 迎风推进（替换中心差分：更稳、更准，level-set 标准格式）
+            # ④ 推进：默认 Godunov 迎风（鲁棒）；`adv_grad='central'` 用于"光滑 SDF +
+            #   需要无偏各向异性幅度"的场合（W1/H1 判据实测：迎风把各向异性压低 ~8%，
+            #   中心差分把 a2 复原到 1.0±0.02 —— 见 W1 的记账）
             vnk = np.where(band & (karr == k), v_cell, 0.0) - np.where(band & (larr == k), v_cell, 0.0)
             if np.any(vnk != 0):
-                sgn = np.where(vnk > 0, 1.0, -1.0)
-                self.phi[k] = self.phi[k] - dt * vnk * self._upwind_grad(self.phi[k], sgn)
+                if adv_grad == 'central':
+                    g = np.gradient(self.phi[k], self.dx)
+                    gmag = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+                else:
+                    sgn = np.where(vnk > 0, 1.0, -1.0)
+                    gmag = self._upwind_grad(self.phi[k], sgn)
+                self.phi[k] = self.phi[k] - dt * vnk * gmag
         reg = self.region()
         self._cnt = getattr(self, '_cnt', 0) + 1
         reg_adv = self.region()          # ★ 只反映【平流】造成的扫过
@@ -555,7 +892,7 @@ def M1_multiregion_conservation(N=48, nstep=20):
 
 
 def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0,
-                       Mob=1e-9, rfrac=0.22):
+                       Mob=1e-9, rfrac=0.22, adv_grad='upwind'):
     """12 变体 RVE（level-set 表示）：看是否（i）不冻结晶核、（ii）给出板条形状。
        与格点 KMC 版（windowB_gibbs）对照：那里 Λ≳5 时转变被冻在 5–23% ✗。"""
     from windowB_pf3d import C_iso3, _lam_full
@@ -599,14 +936,21 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0
                                               str(bool((vt[1:] > 0).all()))))
         if k == nstep:
             break
-        g.advance(dt, aniso=aniso, npref=npref)
+        g.advance(dt, aniso=aniso, npref=npref, adv_grad=adv_grad)
     reg = g.region()
     vt = np.array([g.volume(j) for j in range(g.nreg)])
-    sv = sum(g.area(j) for j in range(1, g.nreg)) / (N * dx) ** 3
+    # ★ P1 修复后必须用**几何（coarea）界面面积测度**：`g.area(k)` 是"异键数×dx²"的
+    #   格点测度，对球实测 **+51.9%** ✗（见 WINDOWB_SURFACE_AUDIT §2 的 A1）。
+    #   `area_total_geom()` 对球 +0.3% ✓ ⇒ S_v、t=2f/S_v 才可信。
+    sv_geom = g.area_total_geom() / (N * dx) ** 3
+    sv_latt = sum(g.area(j) for j in range(1, g.nreg)) / (N * dx) ** 3
     print('   末态: 转变分数 %.4f ; 各变体体积分数 %s' %
           (1 - vt[0] / (N * dx) ** 3, np.round(vt[1:] / vt[1:].sum(), 3)))
-    print('   S_v = %.3e 1/m ⇒ 板片厚 t = 2f/S_v = %.1f nm'
-          % (sv, 2 * (1 - vt[0] / (N * dx) ** 3) / max(sv, 1e-30) * 1e9))
+    f_t = 1 - vt[0] / (N * dx) ** 3
+    print('   S_v(几何 coarea) = %.3e 1/m ⇒ 板片厚 t = 2f/S_v = %.1f nm ; '
+          '（格点键测度 S_v = %.3e ⇒ t = %.1f nm，仅作对照）'
+          % (sv_geom, 2 * f_t / max(sv_geom, 1e-30) * 1e9,
+             sv_latt, 2 * f_t / max(sv_latt, 1e-30) * 1e9))
     geom_stats(g)
     return g
 
@@ -615,61 +959,275 @@ if __name__ == '__main__' and False:
     pass
 
 
-def W1_wulff(N=64, dx=2e-9, R0=1.0e-8, Lam=0.2, nstep=400, herring=True, nplot=24):
-    """① 的解析正对照：各向异性平衡形状 = **Wulff 形状**。
-       对 γ(θ)=γ0[1+Λ sin²θ]，2D 平衡形状满足 R(θ) ∝ γ+γ_θθ = γ0[1+2Λ−3Λ sin²θ]。
-       做法：沿 z 的柱体（周期性 ⇒ 无限长 ⇒ 横截面即 2D 问题），n_pref = x̂，
-             以 df=0 纯曲率驱动弛豫（形状先弛豫到 Wulff，再整体收缩），
-             取中间时刻量归一化半径 R(θ)/⟨R⟩ 与解析式比较。
-       同时用 herring=False（旧写法 γ(n)κ）作**反向对照**，证明该项确实必需。"""
-    g = LevelSetMulti(N, N * dx, nv=1, gamma=0.15, Mob=1e-9, df=[0.0, 0.0])
-    x = (np.arange(N) + 0.5) * dx
-    X, Y, Z = np.meshgrid(x, x, x, indexing='ij')
-    cx = cy = 0.5 * N * dx
-    rperp = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
-    g.phi[1] = rperp - R0                       # 无限长柱体（沿 z）
-    g.init_parent()
-    npref = {1: np.array([1.0, 0.0, 0.0])}
-    dt = 0.1 * dx / (1e-9 * 0.15 / R0)
-    for k in range(nstep):
-        g.advance(dt, aniso=Lam, npref=npref, herring=herring)
-    # 量横截面：在 z 中平面上，界面胞的极角与半径
-    reg = g.region()
-    mid = N // 2
-    sl = (reg[:, :, mid] == 1)
-    ii, jj = np.nonzero(sl)
-    if len(ii) < 20:
-        print('  W1[Λ=%.2f herring=%s]: 截面胞太少(%d) ✗' % (Lam, herring, len(ii)))
-        return np.nan
-    pts = np.stack([(ii + 0.5) * dx - cx, (jj + 0.5) * dx - cy], -1)
-    # 只取"边界"点（邻域里既有 1 也有 0 的）
-    bnd = []
-    for i, j in zip(ii, jj):
-        nb = sl[max(0, i - 1):i + 2, max(0, j - 1):j + 2]
-        if nb.size - nb.sum() > 0:
-            bnd.append((i, j))
-    bnd = np.array(bnd, float)
-    if len(bnd) < 10:
-        print('  W1: 边界点太少 ✗')
-        return np.nan
-    P = np.stack([(bnd[:, 0] + 0.5) * dx - cx, (bnd[:, 1] + 0.5) * dx - cy], -1)
-    th = np.arctan2(P[:, 1], P[:, 0])
-    r = np.linalg.norm(P, axis=1)
-    # 按角度分箱取平均半径
-    bins = np.linspace(-np.pi, np.pi, nplot + 1)
-    idx = np.clip(np.digitize(th, bins) - 1, 0, nplot - 1)
-    rb = np.array([r[idx == b].mean() if (idx == b).any() else np.nan for b in range(nplot)])
-    thc = 0.5 * (bins[:-1] + bins[1:])
+# ============================================================ W1：各向异性 Wulff 形状（① 的判据）
+def _wulff_polar(Lam, n=1441):
+    """γ(θ)=γ0(1+Λ sin²θ)（θ = 法向与 x̂ 的夹角）的 **Wulff 形状极坐标表示**。
+       Wulff 形状 = 半平面族 {x·n ≤ γ(n)} 的交 ⇒ **支撑函数 h(n) = γ(n)**，
+       边界由包络 x(θ) = γ(θ)n(θ) + γ'(θ)t(θ) 给出（该点外法向恰为 n(θ)）。
+       返回 (ψ, ρ/γ0)：ψ = 位置角，ρ = 到中心的距离。
+       ★ 记账（一条会误判的坑）：**不要**拿 "R ∝ γ+γ_θθ" 去比**极径** ——
+           γ+γ_θθ 是**曲率半径** 1/κ（Wulff 形状满足 (γ+γ_θθ)κ = 1），
+           不是极径；两者只在各向同性时相同。Λ=0.4 下二者差 ~12% ⇒ 用错公式必误判。"""
+    th = np.linspace(-np.pi, np.pi, n)
+    g = 1.0 + Lam * np.sin(th) ** 2
+    gp = Lam * np.sin(2.0 * th)
+    x = g * np.cos(th) - gp * np.sin(th)
+    y = g * np.sin(th) + gp * np.cos(th)
+    psi = np.unwrap(np.arctan2(y, x))
+    rho = np.hypot(x, y)
+    o = np.argsort(psi)
+    return psi[o], rho[o]
+
+
+def _bin_polar(psi, rho, nbin):
+    edges = np.linspace(-np.pi, np.pi, nbin + 1)
+    ctr = 0.5 * (edges[:-1] + edges[1:])
+    idx = np.clip(np.digitize(psi, edges) - 1, 0, nbin - 1)
+    out = np.full(nbin, np.nan)
+    for b in range(nbin):
+        s = (idx == b)
+        if s.sum():
+            out[b] = rho[s].mean()
+    return ctr, out
+
+
+def _shape_metrics(pts2, nrm2, ctr2, Lam, npref2, nbin=36):
+    """把 2D 横截面上的界面点折算成 W1 的四条量：
+         (a) **支撑函数**判据 h ≡ (x−x_c)·n 必须 ∝ γ(n)  ⇒ 比值 h/γ 的离散度
+         (b) 归一化极径 ρ(ψ) 与**精确 Wulff 极径**的最大偏差（按各向异性幅度归一）
+         (c) 长径比 = ρ_max/ρ_min，以及 ρ_max 的位置角（Herring 结果应沿 ŷ 拉长）
+         (d) 界面点数（量测可靠性的门槛）"""
+    d = pts2 - ctr2[None, :]
+    rho = np.linalg.norm(d, axis=1)
+    psi = np.arctan2(d[:, 1], d[:, 0])
+    ctr, rb = _bin_polar(psi, rho, nbin)
     ok = ~np.isnan(rb)
     rn = rb[ok] / rb[ok].mean()
-    # 解析 Wulff（等价：R ∝ γ+γ_θθ）
-    s2 = 1.0 - np.cos(thc[ok]) ** 2
-    ana = 1.0 + 2.0 * Lam - 3.0 * Lam * s2
-    ana = ana / ana.mean()
-    dev = float(np.abs(rn - ana).max() / np.abs(ana).max())
-    print('  W1[Λ=%.2f herring=%-5s]: 归一化半径偏差 max|R−Wulff|/max = %.4f   %s'
-          % (Lam, herring, dev, 'PASS' if dev < 0.10 else 'FAIL'))
-    return dev
+    nd = nrm2 @ (np.asarray(npref2, float) / np.linalg.norm(npref2))
+    # ★ 记账（本轮修的一个判据 bug）：γ(θ)=γ0(1+Λ sin²θ)，θ = 法向与 x̂ 的夹角
+    #   ⇒ γ = 1 + Λ(1 − (n·x̂)²)。写成 `1 + Λ(n·x̂)²` 会让 γ 的各向异性**反相**
+    #   （实测：h/γ 离散度从 0.33 一路涨到 0.66，看起来像"越弛豫越不像 Wulff" ✗）。
+    gam = 1.0 + Lam * (1.0 - nd ** 2)
+    h = np.einsum('ij,ij->i', d, nrm2)
+    ratio = (h / gam)
+    ratio = ratio[np.isfinite(ratio) & (gam > 0)]
+    spread = float((ratio.max() - ratio.min()) / abs(ratio.mean())) if len(ratio) else np.nan
+    # ★ 稳健口径：极差(h_spread)对个别离群点极敏感；判据用 **RMS 相对偏差**
+    h_rms = float(np.std(ratio) / abs(np.mean(ratio))) if len(ratio) else np.nan
+    pth, prho = _wulff_polar(Lam)
+    pr = np.interp(ctr[ok], pth, prho)
+    pr = pr / pr.mean()
+    dev = float(np.max(np.abs(rn - pr)) / (pr.max() - pr.min()))
+    # ★ 无偏形状量：傅里叶拟合 r(ψ)=a0+a2cos2ψ+b2sin2ψ+a4cos4ψ+b4sin4ψ
+    #   记账：**不要**用分箱极径的 max/min 当长径比 —— 极值附近的分箱平均会把 max 压低、
+    #   min 抬高（各 ~1.5%），实测把 Λ=0.4 的长径比从 1.40 系统性拉到 1.356（-11% 幅度）✗。
+    #   傅里叶系数对同样的形状给出无偏估计，且**理论值用同一套拟合**得到 ⇒ 可比。
+    ps, rs = _bin_polar(psi, rho, 720)
+    o2 = ~np.isnan(rs)
+    A = np.stack([np.ones(o2.sum()), np.cos(2 * ps[o2]), np.sin(2 * ps[o2]),
+                  np.cos(4 * ps[o2]), np.sin(4 * ps[o2])], -1)
+    coef, *_ = np.linalg.lstsq(A, rs[o2], rcond=None)
+    tA = np.stack([np.ones_like(pth), np.cos(2 * pth), np.sin(2 * pth),
+                   np.cos(4 * pth), np.sin(4 * pth)], -1)
+    tcoef, *_ = np.linalg.lstsq(tA, prho, rcond=None)   # 比值 a2/a0 与整体标度无关
+    f_m = np.array([coef[0], np.hypot(coef[1], coef[2]), np.hypot(coef[3], coef[4])])
+    f_t = np.array([tcoef[0], np.hypot(tcoef[1], tcoef[2]), np.hypot(tcoef[3], tcoef[4])])
+    an2 = f_m[1] / f_m[0]
+    an2_th = f_t[1] / f_t[0]
+    an4 = f_m[2] / f_m[0]
+    an4_th = f_t[2] / f_t[0]
+    asp_fit = float((f_m[0] + f_m[1] + f_m[2]) / (f_m[0] - f_m[1] + f_m[2]))
+    asp_fit_th = float((f_t[0] + f_t[1] + f_t[2]) / (f_t[0] - f_t[1] + f_t[2]))
+    return dict(n=len(pts2), aspect=float(rb[ok].max() / rb[ok].min()),
+                psi_max=float(ctr[ok][int(np.argmax(rb[ok]))]),
+                R_eq=float(rho.mean()), h_spread=spread, dev=dev,
+                h_rms=h_rms,
+                ctr=ctr[ok], rn=rn, pr=pr, psi=psi, rho=rho, ratio=ratio,
+                a2=float(an2), a2_th=float(an2_th), a4=float(an4),
+                a4_th=float(an4_th), asp_fit=asp_fit, asp_fit_th=asp_fit_th,
+                cos2=float(coef[1]),
+                psi_axis=float(0.5 * np.degrees(np.arctan2(coef[2], coef[1]))))
+
+
+def W1_wulff(N=64, dx=2e-9, R0=1.2e-8, Lam=0.4, nstep=600, herring=True,
+             nbin=36, nz=4, tag='', plot=None, M=1e-9, gamma=0.15,
+             adv_grad='central', dtfac=0.05, reinit_every=20, verbose=None,
+             mode='shape'):
+    """① 的解析正对照：**各向异性 Wulff 形状**（Gibbs–Thomson 的 Herring 项）。
+
+    几何：沿 z 的柱体（`ndim=2` 薄板，z 向平移不变 ⇒ 与真 2D 逐位等价），n_pref = x̂。
+    演化：**定容弛豫** —— v_n = M[df − γ_eff(n)κ]（df=0 走纯各向异性曲率流），每步再用
+          `project_volume` 把体积钉回初值 ⇒ 「面积守恒的各向异性平均曲率流」，
+          其唯一稳定平衡态 = Wulff 形状 ✓（等价于用户要的 `df = γ⟨κ⟩_A` 定容，见
+          `project_volume` 的记账）。
+    判据（全部用**无偏**量；量测口径见 `_shape_metrics`）：
+      (a) **傅里叶 2 次模** a2/a0（长径比的线性测度）与理论差 < 15%；
+      (b) 拉长方向 = ±ŷ（理论：γ 在 n=ŷ 最大 ⇒ Wulff 沿 ŷ 拉长），误差 < 25°；
+      (c) **支撑函数** h=(x−x_c)·n 与 γ(n) 成正比 ⇒ h/γ 离散度 < 10%；
+      (d) 数值底噪由 Λ=0 对照给出（应 a2≈0、长径比≈1.00）。
+    反向对照：herring=False（拿 γ 当刚度）必须 **FAIL** —— 其实测长径比只有 ~1.10、
+    拉长轴转到 **x̂**（与 Herring 结果正交互补），h/γ 离散 ~43% ✗。
+
+    ★ 记账（本轮修掉的三个 harness/数值错误）：
+      1) **旧的"定容"是坏的**：用两点标定 + 积分控制，标定步本身用 `df=1e8`、`dt=1.33e-8 s`
+         ⇒ 两步内把 R 从 10 nm 吹到 ~58 nm（标定毁掉了初始形状）✗ ⇒ 判据必失败。
+         现在用**投影式定容**：无标定、无反馈增益、无临界核不稳定性 ✓。
+      2) **量测偏置**：用 36 个角度分箱取极径极值当长径比，会在极值附近把 max 压低、
+         min 抬高，实测把 Λ=0.4 的长径比从 1.40 拉到 1.356（−11% 幅度）✗
+         ⇒ 改用**傅里叶拟合**（与理论同一套拟合流程）。
+      3) **推进格式的口径依赖**：一阶 Godunov 迎风 |∇φ| 带一个**与取向有关**的误差，
+         把有效各向异性压低 ~8%（实测 a2 比值 0.90–0.93，且**不随 dx 收敛**）；
+         换中心差分 |∇φ| 后 a2 比值 **0.99–1.01** ✓。故本判据用 `adv_grad='central'`
+         （光滑 SDF 下二阶、实测稳定），并把 upwind 的结果一并打印作为口径对照。
+    """
+    g = LevelSetSurface(N, N * dx, gamma=gamma, Mob=M, R0=R0,
+                        reinit_every=reinit_every, ndim=2, nz=nz)
+    x = (np.arange(N) + 0.5) * dx
+    X, Y = np.meshgrid(x, x, indexing='ij')
+    c0 = 0.5 * N * dx
+    rperp = np.sqrt((X - c0) ** 2 + (Y - c0) ** 2)
+    g.phi = rperp[..., None] - R0 * np.ones((1, 1, g.Nz))   # 圆柱（xy 截面为圆）
+    V0 = g.volume()            # ★ 用**三维**测度配 `area()`（见 project_volume 的记账）
+    npref = np.array([1.0, 0.0, 0.0])
+    v0 = M * gamma / R0
+    dt = dtfac * dx / v0
+    zs = g.Nz // 2
+    tau = R0 ** 2 / (3.0 * M * gamma)          # 形状模（m=2）线性时间常数
+    if verbose is None:
+        verbose = max(1, nstep // 4)
+    print('---- W1 Wulff 形状（Λ=%.2f, herring=%s, adv=%s）%s ----'
+          % (Lam, herring, adv_grad, tag))
+    print('   N=%d dx=%.2f nm 柱体 R0=%.2f nm (R0/dx=%.1f) | dt=%.3e s (%.3f 胞/步) | '
+          '%d 步 = %.1f 个形状时间常数'
+          % (N, dx * 1e9, R0 * 1e9, R0 / dx, dt, dt * v0 / dx, nstep, nstep * dt / tau))
+    print('   %6s %9s %9s %8s %9s %9s %8s %7s' %
+          ('step', 'a2/a0', 'a2_th', '比', 'a4/a0', '长轴(°)', 'h/g 离散', '点'))
+    hist = []
+    for k in range(nstep + 1):
+        if k % verbose == 0 or k == nstep:
+            P, Nn = g.interface_points(band=1.5, zslice=zs)
+            if len(P) < 20:
+                print('   k=%4d 界面点太少(%d) ⇒ 发散' % (k, len(P)))
+                return False, dict(a2=np.nan)
+            met = _shape_metrics(P[:, :2], Nn[:, :2], g.region_center()[:2], Lam,
+                                 np.array([1.0, 0.0]), nbin=nbin)
+            met['step'] = k
+            met['R_eq'] = g.radius_2d()
+            hist.append(met)
+            print('   %6d %9.4f %9.4f %8.3f %9.4f %9.1f %9.4f %7d'
+                  % (k, met['a2'], met['a2_th'], met['a2'] / met['a2_th'], met['a4'],
+                     met['psi_axis'], met['h_spread'], met['n']))
+        if k == nstep:
+            break
+        g.advance(dt, df=0.0, aniso=Lam, npref=npref, herring=herring,
+                  adv_grad=adv_grad)
+        g.project_volume(V0)
+    fin = hist[-1]
+    ratio = fin['a2'] / fin['a2_th'] if fin['a2_th'] > 1e-6 else np.inf
+    # 拉长方向到 {±90°}(mod 180°) 的角距离
+    axerr = abs((fin['psi_axis'] % 180.0) - 90.0)
+    if mode == 'floor':
+        # Λ=0 档：理论无各向异性 ⇒ 不能套形状判据，只查"量测到的伪各向异性有多大"
+        ok = (fin['a2'] < 0.010) and (fin['a4'] < 0.020) and (abs(fin['asp_fit'] - 1.0) < 0.02)
+        print('   末态 a2/a0=%+.5f（应≈0） a4/a0=%.5f（网格 4 次伪模） 拟合长径比=%.5f'
+              % (fin['a2'], fin['a4'], fin['asp_fit']))
+        print('   判定[数值底噪]: %s' % ('PASS' if ok else 'FAIL'))
+        return ok, fin
+    print('   末态 a2/a0 = %.4f（理论 %.4f，比 %.3f） | 拉长方向 %.1f°（理论 ±90°，误差 %.1f°）'
+          % (fin['a2'], fin['a2_th'], ratio, fin['psi_axis'], axerr))
+    print('        h/γ 离散 %.4f | 与 Wulff 极径偏差 %.4f（含分箱偏置，保守）'
+          % (fin['h_spread'], fin['dev']))
+    ok = (abs(ratio - 1.0) < 0.15) and (axerr < 25.0) and (fin['h_rms'] < 0.10)
+    print('        h/γ 稳健 RMS = %.4f（判据 <0.10）; a2 比 %.3f（判据 |比-1|<0.15）; '
+          '轴误差 %.1f°（判据 <25°）' % (fin['h_rms'], ratio, axerr))
+    print('   判定[herring=%s adv=%s]: %s' % (herring, adv_grad, 'PASS' if ok else 'FAIL'))
+    if plot:
+        _plot_w1(hist, Lam, herring, plot)
+    return ok, fin
+
+
+def W1_control(Lam=0.4, nstep=600, N=64, dx=2e-9, R0=1.2e-8, nbin=36,
+               adv_grad='central', dtfac=0.05):
+    """W1 的**三档对照**（同一初始形状、同一推进格式，只差 Herring 项与各向异性幅值）：
+         ① Λ=0       : 数值底噪（平衡必须是正圆 ⇒ 量出**纯数值**各向异性）
+         ② herring=T : 正对照，应 PASS
+         ③ herring=F : 反向对照，应 FAIL（拿 γ 当刚度 ⇒ 长轴转到 x̂、长径比腰斩）
+       同时给出 upwind 口径下 ② 的结果，量化推进格式带来的口径偏差。"""
+    res = {}
+    print('==== ① Λ=0 数值底噪（理论 a2=0、长径比=1.000）====')
+    ok0, f0 = W1_wulff(Lam=0.0, nstep=nstep, N=N, dx=dx, R0=R0, nbin=nbin,
+                       herring=True, adv_grad=adv_grad, dtfac=dtfac, tag='（数值底噪）',
+                       mode='floor')
+    res['floor_a2'] = f0.get('a2', np.nan)
+    res['floor_a4'] = f0.get('a4', np.nan)
+    res['ok_floor'] = ok0
+    print('==== ② Herring 正对照（Λ=%.2f）====' % Lam)
+    ok1, f1 = W1_wulff(Lam=Lam, nstep=nstep, N=N, dx=dx, R0=R0, nbin=nbin,
+                       herring=True, adv_grad=adv_grad, dtfac=dtfac, tag='（正对照）',
+                       plot='/mnt/f/speed_up/pipeline/ca_pf_framework/FIG_W1_wulff_herring.png')
+    print('==== ③ 反向对照：herring=False（拿 γ 当刚度）====')
+    ok0b, f0b = W1_wulff(Lam=Lam, nstep=nstep, N=N, dx=dx, R0=R0, nbin=nbin,
+                         herring=False, adv_grad=adv_grad, dtfac=dtfac, tag='（反向对照）',
+                         plot='/mnt/f/speed_up/pipeline/ca_pf_framework/FIG_W1_wulff_naive.png')
+    print('==== ④ 口径对照：upwind |∇φ| ====')
+    oku, fu = W1_wulff(Lam=Lam, nstep=nstep, N=N, dx=dx, R0=R0, nbin=nbin,
+                       herring=True, adv_grad='upwind', dtfac=dtfac, tag='（上风口径）')
+    res.update(ok_h=ok1, ok_n=ok0b, ok_up=oku)
+    ok = bool(ok1) and (not ok0b)
+    print('---- W1 总判定 ----')
+    print('   ① 数值底噪      : a2/a0 = %+.4f（应 ≈0）' % res['floor_a2'])
+    print('                      a4/a0 = %+.4f（网格 4 次伪模）' % res['floor_a4'])
+    print('   ② Herring       : a2/a0 = %.4f / 理论 %.4f = %.3f ; 长轴 %.1f° ; h/γ %.4f ⇒ %s'
+          % (f1['a2'], f1['a2_th'], f1['a2'] / f1['a2_th'], f1['psi_axis'],
+             f1['h_rms'], 'PASS' if ok1 else 'FAIL'))
+    print('   ③ 非 Herring    : a2/a0 = %.4f / 理论 %.4f = %.3f ; 长轴 %.1f° ; h/γ %.4f ⇒ %s'
+          % (f0b['a2'], f0b['a2_th'], f0b['a2'] / f0b['a2_th'], f0b['psi_axis'],
+             f0b['h_rms'], 'PASS' if ok0b else 'FAIL'))
+    print('   ④ 上风口径(仅报告): a2 比值 %.3f ⇒ 一阶迎风的取向偏置 %.1f%%'
+          % (fu['a2'] / fu['a2_th'], 100 * (fu['a2'] / fu['a2_th'] - 1)))
+    print('   ⇒ W1（Herring 项必需、且 Wulff 形状量测无误）: %s' % ('PASS' if ok else 'FAIL'))
+    return ok
+def _plot_w1(hist, Lam, herring, path, ttf='/mnt/c/Windows/Fonts/simhei.ttf'):
+    """W1 的可视化：形状轮廓 / 归一化极径 vs Wulff 理论 / h-γ 比值"""
+    import os
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib import font_manager as fm
+    if os.path.exists(ttf):
+        try:
+            fm.fontManager.addfont(ttf)
+            plt.rcParams['font.family'] = fm.FontProperties(fname=ttf).get_name()
+        except Exception:
+            pass
+    plt.rcParams['axes.unicode_minus'] = False
+    fin = hist[-1]
+    fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+    # (a) 轮廓 + 理论 Wulff
+    pth, prho = _wulff_polar(Lam)
+    kk = prho / prho.mean() * fin['R_eq'] * 1e9
+    ax[0].plot(pth * 180 / np.pi, kk, 'k--', lw=2, label='Wulff 理论（包络 h=γ）')
+    m = np.abs(fin['psi']) <= np.pi
+    ax[0].plot(np.degrees(fin['psi'][m]), fin['rho'][m] * 1e9, '.', ms=2, alpha=0.5,
+               label='量测界面点')
+    ax[0].set_xlabel('位置角 ψ (°)'); ax[0].set_ylabel('极径 (nm)')
+    ax[0].set_title('Q1: 形状轮廓 vs Wulff 理论（herring=%s, Λ=%.2f）' % (herring, Lam))
+    ax[0].legend(fontsize=8); ax[0].grid(alpha=0.3)
+    # (b) 归一化极径
+    ax[1].plot(fin['ctr'] * 180 / np.pi, fin['rn'], 'o-', label='量测（归一）')
+    ax[1].plot(fin['ctr'] * 180 / np.pi, fin['pr'], 'k--', label='Wulff 理论（归一）')
+    ax[1].set_xlabel('位置角 ψ (°)'); ax[1].set_ylabel('归一化极径 ρ/⟨ρ⟩')
+    ax[1].set_title('Q2: 归一化极径（偏差 %.3f）' % fin['dev'])
+    ax[1].legend(fontsize=8); ax[1].grid(alpha=0.3)
+    # (c) h/γ
+    ax[2].hist(fin['ratio'] / (fin['ratio'].mean() + 1e-30), bins=30, alpha=0.8)
+    ax[2].set_xlabel('h/γ（归一）'); ax[2].set_ylabel('计数')
+    ax[2].set_title('Q3: 支撑函数 h/γ（离散度 %.3f，应为常数）' % fin['h_spread'])
+    ax[2].grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    print('   [图] 已写 %s' % path)
 
 
 def M3_McLean(N=32, dx=2e-9, nstep=400):
