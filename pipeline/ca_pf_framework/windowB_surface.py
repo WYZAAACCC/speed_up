@@ -462,7 +462,7 @@ class LevelSetMulti(object):
         self._stefan(reg0, reg_adv)
         return reg
 
-    def _stefan(self, reg0, reg1, k_part=0.6303):
+    def _stefan(self, reg0, reg1, k_part=0.6303, dbg=None):
         """③ 本轮修：Stefan 跳跃的**正确去向**——界面扫过时被排出的溶质
            **先存进面过剩 Γ**（即 ∂Γ/∂t 那一项），再由 update_Gamma 的面-体交换与
            面扩散分发出去；**不再直接甩给邻居**（旧写法既非物理、又带 1.6% 不守恒 ✗）。
@@ -470,6 +470,9 @@ class LevelSetMulti(object):
            （记账：Γ 不足时从邻居补，仍是精确守恒 ✓）。"""
         m = self.surface_band()
         A_c = self.cell_area_geom()
+        if dbg is not None:
+            b0, s0 = self.totals()
+            dbg['t0'] = b0 + s0
         for kind in ('grow', 'shrink'):
             if kind == 'grow':
                 swept = (reg0 == 0) & (reg1 != 0)          # 母相 -> 产物
@@ -478,10 +481,19 @@ class LevelSetMulti(object):
                 swept = (reg0 != 0) & (reg1 == 0)          # 产物 -> 母相
                 ctgt = self.c / max(k_part, 1e-6)
             if not swept.any():
+                if dbg is not None:
+                    b1, s1 = self.totals()
+                    dbg['log'].append((dbg['step'], kind + '(空)', (b1 + s1) - dbg['t0'],
+                                       int(swept.sum())))
+                    dbg['t0'] = b1 + s1
                 continue
             dq = (ctgt - self.c)
             self.c[swept] = ctgt[swept]
             amount = -(dq * self.rho * self.dx ** 3)       # 需从系统其余部分拿走的摩尔量
+            if dbg is not None:
+                b2, s2 = self.totals()
+                dbg['log'].append((dbg['step'], kind + ' a)置c后', (b2 + s2) - dbg['t0'], 0))
+                dbg['t0'] = b2 + s2
             # (a) 先存/取面 Γ
             if kind == 'grow':
                 self.Gam = np.where(swept & (A_c > 0),
@@ -493,6 +505,10 @@ class LevelSetMulti(object):
                 self.Gam = np.where(swept & (A_c > 0),
                                     self.Gam - take / np.maximum(A_c, 1e-30), self.Gam)
                 amount = amount + take
+            if dbg is not None:
+                b2, s2 = self.totals()
+                dbg['log'].append((dbg['step'], kind + ' b)取面后', (b2 + s2) - dbg['t0'], 0))
+                dbg['t0'] = b2 + s2
             wsum = np.zeros_like(self.c)
             # ★ 记账（本轮修）：以前把"被扫过的胞"从邻居里排除 ⇒ 若某胞 6 个邻居全都
             #   被扫过，它的那份量**无人接收 ⇒ 直接丢失** ✗（这正是 M4 残 1.16e-2 的来源之一）。
@@ -512,6 +528,14 @@ class LevelSetMulti(object):
                 self.c += np.where(nb, src / np.maximum(wsrc, 1e-30) / (self.rho * self.dx ** 3), 0.0)
             # 自己那份
             self.c += np.where(swept, amount / np.maximum(wsum, 1e-30) / (self.rho * self.dx ** 3), 0.0)
+            if dbg is not None:
+                b2, s2 = self.totals()
+                dbg['log'].append((dbg['step'], kind + ' c)分发后', (b2 + s2) - dbg['t0'], 0))
+                dbg['t0'] = b2 + s2
+            if dbg is not None:
+                b1, s1 = self.totals()
+                dbg['log'].append((dbg['step'], kind, (b1 + s1) - dbg['t0'], int(swept.sum())))
+                dbg['t0'] = b1 + s1
 
     def reinitialize(self, band_cells=6):
         """把每个 φ_k 在带内重初始化成有符号距离；带外保持不变（多区域安全做法）"""
