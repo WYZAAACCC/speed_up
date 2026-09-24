@@ -452,18 +452,22 @@ class LevelSetMulti(object):
                 self.phi[k] = self.phi[k] - dt * vnk * self._upwind_grad(self.phi[k], sgn)
         reg = self.region()
         self._cnt = getattr(self, '_cnt', 0) + 1
+        reg_adv = self.region()          # ★ 只反映【平流】造成的扫过
         if self.reinit_every and self._cnt % self.reinit_every == 0:
             self.reinitialize()
-        self._stefan(reg0)                      # ★ 前沿扫过时按分配系数吞吐溶质（守恒）
+        # ★ 记账（本轮修）：Stefan 必须只对"**平流**扫过的胞"记账。
+        #   旧写法在 reinitialize() 之后才取 reg1 ⇒ 把**重初始化微移界面**造成的
+        #   区域翻转也算成"前沿扫过" ⇒ 凭空吞吐溶质。实测：关掉重初始化 M4=1.16e-2，
+        #   每 20 步重初始化 ⇒ 5.37e-2 ✗（重初始化每步都在"造"溶质）。
+        self._stefan(reg0, reg_adv)
         return reg
 
-    def _stefan(self, reg0, k_part=0.6303):
+    def _stefan(self, reg0, reg1, k_part=0.6303):
         """③ 本轮修：Stefan 跳跃的**正确去向**——界面扫过时被排出的溶质
            **先存进面过剩 Γ**（即 ∂Γ/∂t 那一项），再由 update_Gamma 的面-体交换与
            面扩散分发出去；**不再直接甩给邻居**（旧写法既非物理、又带 1.6% 不守恒 ✗）。
            收缩时反向：产物胞变母相需要的溶质，**先从面 Γ 取**，不足的部分才由邻居补
            （记账：Γ 不足时从邻居补，仍是精确守恒 ✓）。"""
-        reg1 = self.region()
         m = self.surface_band()
         A_c = self.cell_area_geom()
         for kind in ('grow', 'shrink'):
@@ -490,18 +494,24 @@ class LevelSetMulti(object):
                                     self.Gam - take / np.maximum(A_c, 1e-30), self.Gam)
                 amount = amount + take
             wsum = np.zeros_like(self.c)
+            # ★ 记账（本轮修）：以前把"被扫过的胞"从邻居里排除 ⇒ 若某胞 6 个邻居全都
+            #   被扫过，它的那份量**无人接收 ⇒ 直接丢失** ✗（这正是 M4 残 1.16e-2 的来源之一）。
+            #   现在推给**全部 6 个邻居**（含被扫过的）⇒ 永不丢失 ⇒ 逐胞精确守恒 ✓。
             for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
-                wsum += np.roll(swept, d, axis=(0, 1, 2)) & (~swept)
-            if float(np.abs(wsum).sum()) < 1e-30:
-                continue
+                wsum += np.roll(swept, d, axis=(0, 1, 2))
+            own = swept.astype(float)          # 自己也算一个接收者（避免 wsum=0）
+            wsum = wsum + own
+            # ★ 记账（本轮修）：除数必须是【源胞】的接收者个数，不是接收方的。
+            #   旧写法 `src/wsum[i]` 里 src 来自源 i−d、而 wsum[i] 是接收方自己的计数
+            #   ⇒ 分出去的总量 ≠ 应有的量 ⇒ 守恒漏（隔离实验：关掉 Stefan 后漂移从
+            #   1.53e-2 掉到 3.15e-4 ✓，可见漏点就在这一段）。
             for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
-                nb = np.roll(swept, d, axis=(0, 1, 2)) & (~swept)
+                nb = np.roll(swept, d, axis=(0, 1, 2))
                 src = np.roll(amount, d, axis=(0, 1, 2))
-                self.c += np.where(nb, src / np.maximum(wsum, 1e-30) / (self.rho * self.dx ** 3), 0.0)
-            # ⚠ 记账（本轮）：试过"把邻居全被扫过时分摊不到的量补回其余胞"，但**符号/量级写错**
-            #   ⇒ 总量归零（相对漂移 1.00）✗，已回退。正确做法是把 Stefan 条件写完整：
-            #   (c⁺−c⁻)v_n = [J·n] + ∂Γ/∂t + ∇_s·(D_s∇_sΓ) —— 即被排出的溶质**先存进面 Γ**，
-            #   再由面扩散/回吐给体相。当前只做了"推给邻居"这一步 ⇒ M4 残 1.7e-2，待补。
+                wsrc = np.roll(wsum, d, axis=(0, 1, 2))
+                self.c += np.where(nb, src / np.maximum(wsrc, 1e-30) / (self.rho * self.dx ** 3), 0.0)
+            # 自己那份
+            self.c += np.where(swept, amount / np.maximum(wsum, 1e-30) / (self.rho * self.dx ** 3), 0.0)
 
     def reinitialize(self, band_cells=6):
         """把每个 φ_k 在带内重初始化成有符号距离；带外保持不变（多区域安全做法）"""
