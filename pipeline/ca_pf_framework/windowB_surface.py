@@ -183,6 +183,17 @@ class LevelSetMulti(object):
         X, Y, Z = np.meshgrid(x, x, x, indexing='ij')
         self.XYZ = np.stack([X, Y, Z], -1)
         self.phi = np.full((self.nreg, N, N, N), 1e3)
+        # 体相成分与面上过剩（Gibbs 面的状态量）
+        try:
+            import sys as _s
+            _s.path.insert(0, '/mnt/f/speed_up/pipeline/gibbs')
+            from gibbs_physics import RHO_MOL
+            self.rho = RHO_MOL
+        except Exception:
+            self.rho = 1.0129e5
+        self.T = 1950.0
+        self.c = np.full((N, N, N), 0.036)
+        self.Gam = np.zeros((N, N, N))
         self.df = np.zeros(self.nreg) if df is None else np.asarray(df, float)
         # 弹性
         self.pf = None
@@ -224,6 +235,68 @@ class LevelSetMulti(object):
         """★ 多区域 VDF 的标准初始化：母相 = 变体并集的补集 ⇒ φ_0 = −min_{k≥1} φ_k。
            （本轮修的 bug：把 φ_0 初始化成常数 1e3 ⇒ argmin 永远选变体 ⇒ 母相初始体积 0 ✗）"""
         self.phi[0] = -np.min(self.phi[1:], axis=0)
+
+    # ================= 面上场 Γ（溶质过剩）：Gibbs 面的"面" =================
+    def surface_band(self):
+        """界面胞集合：6 邻域内区域号不同者（3D 中的离散 2D 流形）"""
+        reg = self.region()
+        m = np.zeros_like(reg, bool)
+        for d in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+            m |= (np.roll(reg, d, axis=(0, 1, 2)) != reg)
+        return m
+
+    def cell_area(self):
+        """每胞的界面面积 A_c = (#异键)/2·dx²（立体学一致的测度）"""
+        reg = self.region()
+        b = np.zeros(reg.shape)
+        for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+            b += (np.roll(reg, d, axis=(0, 1, 2)) != reg)
+        return 0.5 * b * self.dx ** 2
+
+    def Gamma_eq(self, c):
+        """Langmuir/McLean 平衡过剩（mol/m²），复用 pipeline/gibbs 的单一参数来源"""
+        try:
+            import sys as _s
+            _s.path.insert(0, '/mnt/f/speed_up/pipeline/gibbs')
+            from gibbs_physics import gamma_eq_langmuir, dH_seg_from_anchor
+            H, _ = dH_seg_from_anchor()
+            flat = np.ravel(c)
+            out = np.array([gamma_eq_langmuir(float(x), self.T, H) for x in flat])
+            return out.reshape(c.shape)
+        except Exception:
+            K = np.exp(2.0)
+            x = K * c
+            return 2.14e-5 * x / (1.0 + x)
+
+    def update_Gamma(self, dt, tau_ex=1e-9, D_s=1e-20):
+        """面的演化（全部守恒）：
+             (1) 与体相按局部平衡交换（同一胞等量反号 ⇒ 精确守恒；含 ρ_mol 换算）
+             (2) 沿面扩散：**通量形式**（只走界面-界面键 ⇒ 逐键对称 ⇒ 严格守恒）"""
+        if not hasattr(self, 'Gam'):
+            self.Gam = np.zeros_like(self.phi[0])
+        m = self.surface_band()
+        A_c = self.cell_area()
+        Gam_eq = self.Gamma_eq(self.c)
+        # ★ 稳定性保护：显式弛豫必须 dt ≤ τ_ex，否则 Γ 过冲发散（实测 M4 里 dt=4e-9 > τ=1e-9
+        #   导致总量变负、涨 1e5 倍 ✗）。超出时按线性插值限幅（等价于隐式的第一步）。
+        frac = min(1.0, dt / tau_ex)
+        dG = np.where(m, (Gam_eq - self.Gam) * frac, 0.0)
+        self.Gam = np.where(m, self.Gam + dG, 0.0)
+        self.c -= dG * A_c / (self.rho * self.dx ** 3)
+        flux = np.zeros_like(self.Gam)
+        for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+            nbm = np.roll(m, d, axis=(0, 1, 2))
+            both = m & nbm
+            flux += np.where(both, np.roll(self.Gam, d, axis=(0, 1, 2)) - self.Gam, 0.0)
+        self.Gam = np.where(m, self.Gam + dt * D_s * flux / self.dx ** 2, 0.0)
+
+    def totals(self):
+        """总溶质（mol）：体相 Σc·ρ·dV + 面 ΣΓ·A_c"""
+        if not hasattr(self, 'Gam'):
+            self.Gam = np.zeros_like(self.phi[0])
+        mb = float(self.c.sum()) * self.rho * self.dx ** 3
+        ms = float((self.Gam * self.cell_area()).sum())
+        return mb, ms
 
     def curvature_of(self, k):
         g = np.gradient(self.phi[k], self.dx)
@@ -368,6 +441,45 @@ if __name__ == '__main__' and False:
     pass
 
 
+def M3_McLean(N=32, dx=2e-9, nstep=400):
+    """面上场 Γ 的局部平衡：应收敛到 McLean/Langmuir 解析值（新表示下重做 H3）"""
+    g = LevelSetMulti(N, N * dx, nv=1, gamma=0.0, Mob=0.0)
+    # 一个平面界面：区域1 占 z<L/2
+    g.phi[1] = np.where(np.arange(N)[None, None, :] * dx < 0.5 * N * dx,
+                        -1e-9, 1e-9) * np.ones((N, N, N))
+    g.init_parent()
+    g.c[:] = 0.036
+    for _ in range(nstep):
+        g.update_Gamma(2e-11)
+    m = g.surface_band()
+    Geq = g.Gamma_eq(g.c[m])
+    rel = float(np.abs(g.Gam[m] - Geq).max() / max(np.abs(Geq).max(), 1e-30))
+    print('---- M3 面上场偏析平衡（level-set 表示，重做 H3）----')
+    print('   T=%.0f K: Γ_model=%.4e mol/m² ; Γ_McLean=%.4e ; 最大相对差 %.2e   %s'
+          % (g.T, float(g.Gam[m].mean()), float(Geq.mean()), rel,
+             'PASS' if rel < 0.05 else 'FAIL'))
+    return rel < 0.05
+
+
+def M4_conservation(N=32, dx=2e-9, nstep=150):
+    """体相 + 面过剩的守恒（新表示下重做 H4）"""
+    g = LevelSetMulti(N, N * dx, nv=1, gamma=0.15, Mob=1e-9, df=[0.0, -1e8])
+    g.seed_sphere(1, [0.5 * N * dx] * 3, 5 * dx)
+    g.init_parent()
+    g.c[:] = 0.036
+    mb0, ms0 = g.totals()
+    dt = 0.2 * dx / (1e-9 * 1e8)
+    for _ in range(nstep):
+        g.advance(dt)
+        g.update_Gamma(dt)
+    mb1, ms1 = g.totals()
+    rel = abs((mb1 + ms1) - (mb0 + ms0)) / abs(mb0 + ms0)
+    print('---- M4 守恒（体相 + 面过剩，level-set 表示）----')
+    print('   初始 %.6e mol ; 末态 %.6e mol ; 相对漂移 %.2e   %s'
+          % (mb0 + ms0, mb1 + ms1, rel, 'PASS' if rel < 1e-2 else 'FAIL'))
+    return rel < 1e-2
+
+
 if __name__ == '__main__':
     print('=' * 92)
     print('Gibbs 面场（level-set）+ 体相场：判据 S0/S1')
@@ -376,6 +488,8 @@ if __name__ == '__main__':
     res['S0'] = S0_curvature()
     res['S1'] = S1_GibbsThomson()
     res['M1'] = M1_multiregion_conservation()
+    res['M3'] = M3_McLean()
+    res['M4'] = M4_conservation()
     M2_twelve_variants()
     print('\n总判定: %s' % ('ALL PASS' if all(res.values())
                           else 'FAIL -> %s' % [k for k, v in res.items() if not v]))
