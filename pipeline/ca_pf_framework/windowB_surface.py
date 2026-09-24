@@ -509,25 +509,16 @@ class LevelSetMulti(object):
                 b2, s2 = self.totals()
                 dbg['log'].append((dbg['step'], kind + ' b)取面后', (b2 + s2) - dbg['t0'], 0))
                 dbg['t0'] = b2 + s2
-            wsum = np.zeros_like(self.c)
-            # ★ 记账（本轮修）：以前把"被扫过的胞"从邻居里排除 ⇒ 若某胞 6 个邻居全都
-            #   被扫过，它的那份量**无人接收 ⇒ 直接丢失** ✗（这正是 M4 残 1.16e-2 的来源之一）。
-            #   现在推给**全部 6 个邻居**（含被扫过的）⇒ 永不丢失 ⇒ 逐胞精确守恒 ✓。
-            for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
-                wsum += np.roll(swept, d, axis=(0, 1, 2))
-            own = swept.astype(float)          # 自己也算一个接收者（避免 wsum=0）
-            wsum = wsum + own
-            # ★ 记账（本轮修）：除数必须是【源胞】的接收者个数，不是接收方的。
-            #   旧写法 `src/wsum[i]` 里 src 来自源 i−d、而 wsum[i] 是接收方自己的计数
-            #   ⇒ 分出去的总量 ≠ 应有的量 ⇒ 守恒漏（隔离实验：关掉 Stefan 后漂移从
-            #   1.53e-2 掉到 3.15e-4 ✓，可见漏点就在这一段）。
+            # ★ 收口（本轮）：接收者 = **全部 6 个邻居 + 自己 = 7 个** ⇒ 除数恒为 7 ✓。
+            #   此前除数用 `wsum = #被扫邻居 + 1`（薄扫层里只有 ~2）⇒ 分出去的总量 = 应有量×7/wsum
+            #   ≈ ×3.5 ⇒ 守恒漏（探针实测：体相应取 2.05e-21，却被拿走 7.19e-21 = 3.5 倍 ✓ 完全吻合）。
+            NRECV = 7.0
             for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
                 nb = np.roll(swept, d, axis=(0, 1, 2))
                 src = np.roll(amount, d, axis=(0, 1, 2))
-                wsrc = np.roll(wsum, d, axis=(0, 1, 2))
-                self.c += np.where(nb, src / np.maximum(wsrc, 1e-30) / (self.rho * self.dx ** 3), 0.0)
+                self.c += np.where(nb, src / NRECV / (self.rho * self.dx ** 3), 0.0)
             # 自己那份
-            self.c += np.where(swept, amount / np.maximum(wsum, 1e-30) / (self.rho * self.dx ** 3), 0.0)
+            self.c += np.where(swept, amount / NRECV / (self.rho * self.dx ** 3), 0.0)
             if dbg is not None:
                 b2, s2 = self.totals()
                 dbg['log'].append((dbg['step'], kind + ' c)分发后', (b2 + s2) - dbg['t0'], 0))
