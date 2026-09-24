@@ -530,6 +530,105 @@ L_B\ll L_{\mathrm{macro}}
 
 ---
 
+### 5.8 Window B′：板条界面的【Gibbs 面 / 锐界面】表示（2026-09-24 新增）
+
+#### 5.8.1 为什么必须加这一节（实测结论，不是偏好）
+
+弥散界面 PF 在板条尺度有一个**结构性矛盾**：@(W = 13.18\gamma/w_{90})@
+把"界面宽"与"势垒"绑在一起，而"同一格点混合多个变体"的弹性收益实测
+@\sim 9\times10^8\ \mathrm{J/m^3}@。要压制它需 @w_{90}\lesssim 1\text{–}2@ nm
+@\Rightarrow \Delta x\lesssim0.5@ nm；而装下板条排列需要 @2\text{–}3\ \mu m@
+（@5000^3\sim10^{11}@ 格）。**两者不可同时满足**。
+实测（`WINDOWB_STATUS.md` §4）：12 变体随机竞争在 @\Delta x=20@ nm 与 @1@ nm
+下都退化成"多变体微观混合"（纯胞 0% 与 3.3%），**板条这个概念消失**。
+
+@\Rightarrow@ 板条界面必须按**面**（零厚度）表示；每个胞唯一属于一个变体。
+这条与 §6 的晶界 Gibbs 面是**同一套表示原则**（界面量按单位面积记账），
+区别只是界面上的物理量：晶界管溶质过剩 @\Gamma@（mol/m²），板条管界面能 @\gamma@（J/m²）。
+
+#### 5.8.2 与 §5.1–5.4 的对应（自洽性的形式化）
+
+同一套体自由能泛函，两个表示：
+
+@@
+\underbrace{E_{\rm PF}=\int\Big[f_{\rm bulk}+\sum_\alpha \tfrac{W_\alpha}{2}\varphi_\alpha^2(1-\varphi_\alpha)^2+\tfrac{\kappa_\alpha}{2}|\nabla\varphi_\alpha|^2+f_{\rm el}\Big]{\rm d}V}_{\text{弥散界面}}
+\;\xrightarrow[\;w\to0\;]{}\;
+\underbrace{E_{\rm Gib}=\int f_{\rm bulk}{\rm d}V+\gamma\,A[\mathcal I]+\int f_{\rm el}{\rm d}V}_{\text{锐界面 / Gibbs 面}}
+@@
+
+对应关系（逐项）：
+
+| 量 | 弥散 PF | Gibbs 面 | 关系 |
+|---|---|---|---|
+| 界面位置 | @\varphi=1/2@ 等值面 | 标签跳变面 @\mathcal I@ | 同一几何 |
+| 界面能 | @\gamma=\sqrt{2\kappa W}/6@ | @\gamma@ 直接给出 | **同一 @\gamma@** |
+| 界面宽 | @w_{90}=4.394\sqrt{\kappa/2W}@ | @0@ | @w\to0@ 极限 |
+| 体自由能 | @f_{\rm bulk}(\{\varphi\})@ | 分段常数的 @f_{\rm bulk}@ | 相同 |
+| 弹性 | @\varepsilon^0=\sum_\alpha\varphi_\alpha\varepsilon^0_\alpha@ | @\varepsilon^0@ 分段常数 | 相同泛函 |
+| 互斥性 | 由势垒 @W@ **近似**保证 | **由构造保证**（每胞一个标签） | Gibbs 面严格 |
+
+**推论（关键）**：@\gamma@ 是同一根标定链的产物，所以
+*"@\gamma@ 取多少"* 与 *"界面多宽"* 在 PF 里是**同一件事**，而在 Gibbs 面里**解耦**；
+这正是 Gibbs 面能同时满足"物理正确"与"装得下板条尺度"的原因。
+
+#### 5.8.3 Gibbs 面的能量与动力学（已实现：`windowB_gibbs.py`）
+
+@@
+E[\mathcal I]=E_{\rm el}[\varepsilon^0(\mathcal I)]+\gamma\,A[\mathcal I]-\Delta f\,V_{\rm trans}[\mathcal I],
+\qquad
+A[\mathcal I]=\Delta x^2\cdot\frac{\#\{\text{异标签近邻键}\}}{2}
+@@
+
+动力学取**非热**（马氏体）极限：界面重标号由**精确总能单调下降**接受，
+局部一阶场 @-\Delta x^3(\varepsilon^0_{\rm new}-\varepsilon^0_{\rm old}):\sigma@
+只用于**提议**。@\sigma@ 由 §5.4 的谱法给出（与 PF **共用同一套 @\Lambda(n)@ 实现**）。
+
+> ⚠ **离散化的两个已知坑**（都已在代码里记账）：
+> 1. 面能**不能**放进逐胞提议：单胞翻转必然长出凸包（@+2@ 个异键 @=+2\gamma\Delta x^2@），
+>    界面会被永久冻结（实测接受数恒为 0）。面能必须交给精确总能（它等价于
+>    Gibbs–Thomson 曲率项），提议只用体驱动力 + **按意愿排序的前缀接受**。
+> 2. 面积测度 @\#@异键 @\times\Delta x^2@ 对斜面有 @\le15\%@ 的立方网格偏差；
+>    对平坦界面（板条的主要界面）几乎精确。
+
+#### 5.8.4 形核物必须"有形状"（实测）
+
+单胞翻转的弹性代价 @\sim10^9\ \mathrm{J/m^3}@ 远大于化学驱动 @\Delta f\sim5\times10^7@，
+所以**单点形核在能量上被禁止**，动力学完全不动（实测）。这与马氏体必须以
+**板条/自协调集团**形核的经典图像一致 ⇒ 初始化必须是**有法向的薄板晶核**。
+
+晶核取向的判据来自 PTMC（见 `windowB_ptmc.py` 的实测）：
+
+@@
+\text{不变平面存在}\iff \lambda_2(U)=1,\qquad U=\sqrt{F^{\rm T}F}
+@@
+
+**本项目实测**：12 个变体的贝恩应变给出
+
+@@
+\lambda_1=0.89124,\quad \boxed{\lambda_2=1.00042},\quad \lambda_3=1.09154
+\qquad(|\lambda_2-1|=4.2\times10^{-4})
+@@
+
+即 @\beta\to\alpha'@ **几乎是不变平面应变**（"几乎"的来源与 §1 的
+@c_\alpha/2\approx a_\beta/\sqrt2@ 是同一个偶然），对应的不变平面法向 @\approx[110]_\beta@。
+@\Rightarrow@ 板条可以以极低的弹性代价在该面内长大。
+
+> ⚠ **[未核实]** 文献里 @\alpha'@ 的惯习面常报 @\{334\}_\beta/\{344\}_\beta@ 型，
+> 与"单变体 IPS"给出的 @(110)_\beta@ 不一致。两种可能：(i) 实际板条是**孪晶配对**的
+> PTMC 解（孪晶面+孪晶分数+刚体转动使 @\lambda_2=1@）；(ii) 我方 @(a,c)@ 取值或
+> 对应关系需要复核。**写进论文前必须查证。**
+
+#### 5.8.5 与其它窗口的接口
+
+* **窗口尺寸**：@\Delta x@ 由板条间距定（@10\text{–}50@ nm），于是 §5.6 的
+  @20\text{–}50\ \mu m@ 窗口**重新变得可行**（这正是 §5.6 原本的意图）。
+* **与 Window C（晶界 Gibbs 面）共用一套离散面机制**：`\Gamma_i@ 的面上输运
+  与这里的 @A[\mathcal I]@、面法向、面扩散是同一套数据结构 ⇒ 可复用。
+* **与学习层（§8）**：Gibbs 面版本天然给出"面上算子"的训练数据（面法向、面通量、
+  面能），与逐面神经算子的目标一致。
+
+---
+
 ## 6. L1-C Window C：Gibbs 面（按用户要求最后做，但接口现在就定死）
 
 Window C 不是独立相态，而是**挂在活跃界面上的二维求解区**。定义界面状态
@@ -862,4 +961,3 @@ u_\Omega(t)\big|_{B_r}\;\longrightarrow\;u_\Omega(t+\Delta t)\big|_{B_{r_0}},\qq
 - **F1/F2**：等 CALPHAD 数据。
 - **V4（PF @@\leftrightarrow@@ LKT 渐近匹配）**：强制项，未做。它是两级之间唯一的可检验接口条件（§7.2）。
 - **V6（横向 halo 的 domain-size convergence）**：未做（§4.1 的 RULE）。
-

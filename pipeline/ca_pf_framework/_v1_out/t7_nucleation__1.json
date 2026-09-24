@@ -1,0 +1,13 @@
+{
+ "pred": "形核数 ∝ N_max（连续形核谱饱和值 ≈ N_max·体积）",
+ "Nmax": 100000000000000.0,
+ "n_bulk": 135,
+ "n_total": 151,
+ "V_cold_frac": 0.9993009259259259,
+ "pred_sat": 172.79999999999998,
+ "ratio": 0.7812500000000001,
+ "verdict": "PASS",
+ "task": "t7_nucleation",
+ "idx": 1,
+ "wall_s": 5.5
+}

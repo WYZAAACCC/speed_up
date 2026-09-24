@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""windowB_gibbs_rve.py --- Gibbs 面版板条 RVE + 金相学几何测量
+
+用法: python windowB_gibbs_rve.py N=96 dx=1.0e-8 nstep=300 df=5.0e7 k0=clamped tag=_c
+
+几何测量（都用金相学标准量）:
+  * 变体体积分数 f_v
+  * 界面积 A = dx^2 * (# 异标签近邻键)   （离散面积测度；立方网格对斜面 <=15% 偏差）
+  * **平均截距长度** L3 = 4 f_v / (A_v/V)（Smith-Guttman: 平均截距 = 4V_v/S_v；对板条
+    这种片状组织, 沿三个轴分别做弦长统计给出片厚）
+  * 界面法向直方图（每个异键的方向统计）—— 与晶体学预测的 rank-1 相容法向对照
+  * 变体对统计（哪些变体对占据界面）—— 应与相容对一致
+"""
+import os
+import sys
+import time
+import numpy as np
+
+from windowB_gibbs import GibbsLath, pairs6
+from windowB_pf3d import C_iso3
+from windowB_ti64_variants import variants
+
+OUT = '/mnt/f/speed_up/bench/windowB_gibbs'
+
+
+def mean_intercept_per_axis(lab, v):
+    """沿 x/y/z 三个方向对变体 v 做弦长统计（周期边界），返回三个方向的平均弦长"""
+    N = lab.shape[0]
+    out = []
+    for ax in range(3):
+        m = np.moveaxis(lab == v + 1, ax, 0)
+        # 弦长: 每一条线上连续 True 的长度
+        lens = []
+        for i in range(m.shape[1]):
+            pass
+        flat = m.reshape(m.shape[0], -1)
+        # 用差分找 run 边界（周期）
+        for c in range(flat.shape[1]):
+            col = flat[:, c]
+            if not col.any():
+                continue
+            d = np.diff(np.concatenate([[col[-1]], col.astype(int), [col[0]]]))
+            starts = np.where(d == 1)[0]
+            ends = np.where(d == -1)[0]
+            for s0, e0 in zip(starts, ends):
+                lens.append((e0 - s0) % len(col) or len(col))
+        out.append(float(np.mean(lens)) if lens else np.nan)
+    return out
+
+
+def iface_normals(lab):
+    """界面法向直方图：按 26 个方向统计异键（权重 dx^2）"""
+    N = lab.shape[0]
+    dirs = {}
+    for dx_ in (-1, 0, 1):
+        for dy_ in (-1, 0, 1):
+            for dz_ in (-1, 0, 1):
+                if (dx_, dy_, dz_) == (0, 0, 0):
+                    continue
+                c = int(np.count_nonzero(np.roll(lab, (dx_, dy_, dz_), axis=(0, 1, 2)) != lab))
+                dirs[(dx_, dy_, dz_)] = c / 2.0
+    return dirs
+
+
+def do_geometry(lab, dx, eps0, C, tag, fh):
+    nv = len(eps0)
+    N = lab.shape[0]
+    V = (N * dx) ** 3
+    tot = lab.size
+    fh.write('  --- 几何测量 (N=%d, dx=%.2f nm, 域=%.3f um) ---\n'
+             % (N, dx * 1e9, N * dx * 1e6))
+    frac = np.array([np.count_nonzero(lab == v + 1) for v in range(nv)]) / tot
+    fh.write('  变体体积分数: %s\n' % np.round(frac, 4))
+    fh.write('    max/min = %.3f（1.0 = 完全均分 = 自协调）\n'
+             % (frac.max() / max(frac.min(), 1e-12)))
+    f_parent = np.count_nonzero(lab == 0) / tot
+    fh.write('  母相分数 = %.4f\n' % f_parent)
+    A = 0.0
+    for d in pairs6():
+        A += int(np.count_nonzero(np.roll(lab, d, axis=(0, 1, 2)) != lab)) / 2.0
+    A *= dx ** 2
+    fh.write('  界面积 A = %.4e m^2 ; 单位体积界面积 S_v = %.4e 1/m\n'
+             % (A, A / V))
+    fh.write('  等效"板条厚" 6V/A = %.1f nm\n' % (6 * V / A * 1e9))
+    for v in range(nv):
+        if frac[v] < 0.01:
+            continue
+        mi = mean_intercept_per_axis(lab, v)
+        sv = 4 * frac[v] / (6 * V / A) if A > 0 else np.nan
+        fh.write('    V%2d: f=%.3f  平均截距(x,y,z) = %s 格 = %s nm\n'
+                 % (v + 1, frac[v], np.round(mi, 1), np.round(np.array(mi) * dx * 1e9, 1)))
+    nd = iface_normals(lab)
+    tot_b = sum(nd.values())
+    top = sorted(nd.items(), key=lambda kv: -kv[1])[:8]
+    fh.write('  界面法向（26 邻域）占比前 8:\n')
+    for k, c in top:
+        fh.write('    dir=%-12s %.4f\n' % (str(k), c / max(tot_b, 1e-30)))
+    # 变体对统计
+    pc = {}
+    for d in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+        nb = np.roll(lab, d, axis=(0, 1, 2))
+        m = (nb != lab)
+        a = lab[m].astype(int)
+        b = nb[m].astype(int)
+        for x, y in zip(a, b):
+            k = (min(x, y), max(x, y))
+            pc[k] = pc.get(k, 0) + 1
+    tt = sum(pc.values())
+    top2 = sorted(pc.items(), key=lambda kv: -kv[1])[:10]
+    fh.write('  界面上的变体对（前三轴）占前 10:\n')
+    for k, c in top2:
+        fh.write('    (%d,%d): %.4f\n' % (k[0], k[1], c / max(tt, 1)))
+    return frac, A
+
+
+def main(N=96, dx=1e-8, nstep=300, df=5e7, gamma=0.15, k0='clamped',
+         nsel=4000, tag='', seed=7, monitor=25):
+    os.makedirs(OUT, exist_ok=True)
+    C = C_iso3(113e9, 0.34)
+    eps0, Fs, meta = variants()
+    L = N * dx
+    g = GibbsLath(N, L, C, eps0, gamma, df, workers=8, k0_mode=k0)
+    nrm = []
+    for v in range(g.nv):
+        nv_, ev_ = g.favorable_normal(v)
+        nrm.append(nv_)
+    npl = 0
+    for v in range(g.nv):
+        npl += g.seed_plates(v, nrm[v], thick_cells=2, nplate=3, rng=seed + v)
+    print('=' * 96)
+    print('Gibbs 面板条 RVE: N=%d dx=%.1f nm 域=%.2f um | gamma=%.3f df=%.2e k0=%s'
+          % (N, dx * 1e9, L * 1e6, gamma, df, k0))
+    print('  板条形核: 每变体 3 片 x 2 胞厚, 沿各自最省能法向 ; 实际放置 %d 片' % npl)
+    print('  每遍提议 %d 个位点' % nsel)
+    print('=' * 96)
+    rng = np.random.default_rng(1)
+    t0 = time.time()
+    hist = []
+    for k in range(nstep + 1):
+        if k % monitor == 0 or k == nstep:
+            Eb = g.E_el(); Es = g.E_surf(); Ec = g.E_chem()
+            frac = np.array([np.count_nonzero(g.lab == v + 1) for v in range(g.nv)]) / g.lab.size
+            hist.append((k, Eb, Es, Ec, Eb + Es + Ec, g.n_unlike(), frac.max()))
+            print('  it %4d/%d  E_el=%.4e  E_surf=%.4e  E_chem=%.4e  E_tot=%.4e  '
+                  'A键=%d  f_parent=%.3f  f_max=%.3f  墙上%.0fs'
+                  % (k, nstep, Eb, Es, Ec, Eb + Es + Ec, g.n_unlike(),
+                     1 - frac.sum(), frac.max(), time.time() - t0), flush=True)
+        if k == nstep:
+            break
+        g.sweep(rng, nsel=nsel)
+    g.save(tag)
+    np.save(os.path.join(OUT, 'hist%s.npy' % tag), np.array(hist))
+    with open(os.path.join(OUT, 'geom%s.txt' % tag), 'w') as fh:
+        do_geometry(g.lab, dx, eps0, C, tag, fh)
+    print(open(os.path.join(OUT, 'geom%s.txt' % tag)).read())
+    return g
+
+
+if __name__ == '__main__':
+    kw = {}
+    for a in sys.argv[1:]:
+        k, v = a.split('=')
+        try:
+            kw[k] = int(v)
+        except ValueError:
+            try:
+                kw[k] = float(v)
+            except ValueError:
+                kw[k] = v
+    main(**kw)

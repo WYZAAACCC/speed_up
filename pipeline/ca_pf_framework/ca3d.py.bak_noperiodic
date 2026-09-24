@@ -1,0 +1,574 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+ca3d.py --- Window A: 三维元胞自动机（prior-beta 凝固晶粒骨架）
+
+对应 MATH_FRAMEWORK.md 第 4 节（L1-G 层）。
+
+职责（与本文件严格对应）：
+  * 4.2 形核：基底/外延形核 + 体形核（连续形核谱）
+  * 4.3 生长：界面响应函数 V(dT)（读 irf_ti64.csv 插值表）
+  * 4.4 取向与捕获：decentered octahedron + 26 邻居（三维）
+  * 4.5 凝固化学：Scheil（本文件给出逐胞闭式，供 Window B/C 用）
+  * 4.1 滑动窗口：只在前沿邻域推进（active region）
+  * 输出：冻结的 grain ID / 取向 / t_s / c（这就是「冻结的晶粒骨架 + 晶界网络几何」）
+
+**本实现以三维为准。** ny=1 的二维模式只用于代码交叉校验，不是仿真结果。
+
+术语（不要搞混，见 RESEARCH_INTENT.md 2.1）：
+  本文件推进的是**固液界面**；晶界是 grain ID 场的间断集合，是**涌现**的，不在这里被推进。
+"""
+
+import math
+import os
+import numpy as np
+
+# ------------------------------------------------------------------ 默认参数
+R_GAS = 8.314462618
+
+T_LIQ = 1911.1          # K   由 (k, c0) 闭式推出（MATH_FRAMEWORK 5.2）
+T_SOL = 1893.2          # K   同上
+K_V = 0.6303            # -   分配系数
+C0_V = 0.036            # -   V 的摩尔分数
+M_L = -818.4            # K  液相线斜率 (mol frac)  van t Hoff
+F_LAST = 0.99           # -   [A] 末态残余液相分数（旧口径，仅作参照）
+F_MIN = 0.05            # -   [A] 不可约残余液相分数（枝晶间液膜）
+                        #     用来正则化 Scheil 奇点: c_l -> c0 (1-f)^(k-1) 在 f->1 发散,
+                        #     物理上被「枝晶间液膜孤立」截断。见 MATH_FRAMEWORK 4.5/6.1。
+                        #     敏感度: f_min=0.02/0.05/0.10 -> c_l,max=0.155/0.112/0.084
+
+# 26 邻居（三维）
+OFFSETS = [(a, b, c) for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1, 0, 1)
+           if not (a == 0 and b == 0 and c == 0)]
+OFFSETS = [(o, math.sqrt(o[0] ** 2 + o[1] ** 2 + o[2] ** 2)) for o in OFFSETS]
+
+
+def quat_to_axes(q):
+    """四元数 (w,x,y,z) -> 3x3, 列为晶体主轴 p1,p2,p3 (实验室系)。"""
+    w, x, y, z = q
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    w, x, y, z = w / n, x / n, y / n, z / n
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def rand_quat(rng):
+    u1, u2, u3 = rng.random(3)
+    return (math.sqrt(1 - u1) * math.sin(2 * math.pi * u2),
+            math.sqrt(1 - u1) * math.cos(2 * math.pi * u2),
+            math.sqrt(u1) * math.sin(2 * math.pi * u3),
+            math.sqrt(u1) * math.cos(2 * math.pi * u3))
+
+
+class IRF(object):
+    """界面响应函数 V(dT): 直接查表（ExaCA 做法），不是多项式拟合。
+
+    **严禁外推。** LKT/KGT 的解只在有限区间内存在:
+      * dT < dT_lo(~4.75 K): 平面界面稳定, 没有枝晶尖端解 -> 取 dT_lo 处的速度
+        (保守: 不假装知道更快或更慢)
+      * dT > dT_hi(~17.97 K): 尖端过冷度预算饱和。物理含义是
+        「多出来的过冷度不可用于尖端生长」=> 把 dT 截断在 dT_hi, 并【计数】。
+        第一版把它写成常数外推是错的 —— 数值上一样, 但丢失了「越界」这个物理报警。
+    理由详见 MATH_FRAMEWORK 4.3 与 CA3D_REPORT 4/#6。
+    """
+
+    def __init__(self, path=None):
+        if path is None:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "irf_ti64.csv")
+        if os.path.exists(path):
+            tab = np.loadtxt(path, delimiter=",", skiprows=1)
+            o = np.argsort(tab[:, 0])
+            self.dT, self.V = tab[o, 0], tab[o, 1]
+            self.R_tip = tab[o, 2]
+        else:
+            self.dT, self.V = np.array([0.0, 30.0]), np.array([0.0, 3.0])
+            self.R_tip = np.zeros(2)
+        self.dT_lo = float(self.dT.min())
+        self.dT_hi = float(self.dT.max())
+        self.V_lo = float(self.V.min())
+        self.V_at_lo = float(np.interp(self.dT_lo, self.dT, self.V))
+        self.V_at_hi = float(np.interp(self.dT_hi, self.dT, self.V))
+
+    def __call__(self, dT):
+        """不截断的查表（保留给需要原始值的场合）。"""
+        dT = np.asarray(dT, dtype=float)
+        return np.interp(dT, self.dT, self.V, left=self.V_at_lo, right=self.V_at_hi)
+
+    def capped(self, dT):
+        """返回 (V, dT_used, n_low, n_high)。n_* 是落在有效区间外的胞数。"""
+        dT = np.asarray(dT, dtype=float)
+        n_low = int(np.count_nonzero(dT < self.dT_lo))
+        n_high = int(np.count_nonzero(dT > self.dT_hi))
+        dTu = np.clip(dT, self.dT_lo, self.dT_hi)
+        return np.interp(dTu, self.dT, self.V), dTu, n_low, n_high
+
+class CA3D(object):
+    def __init__(self, nx, ny, nz, dx, irf=None, seed=12345, n_halo=2):
+        self.nx, self.ny, self.nz, self.dx = nx, ny, nz, dx
+        self.shape = (nx, ny, nz)
+        self.irf = irf if irf is not None else IRF()
+        self.rng = np.random.default_rng(seed)
+        self.n_halo = n_halo
+
+        self.gid = np.zeros(self.shape, np.int32)      # 0 = 液相
+        self.L = np.zeros(self.shape, np.float64)      # 八面体半对角（m）
+        self.ts = np.full(self.shape, np.nan)          # 凝固(被捕获)时刻 s
+        self.Tc = np.full(self.shape, np.nan)          # 被捕获时的温度 K
+        self.c = np.full(self.shape, C0_V)             # 逐胞 V 摩尔分数（Scheil 闭式）
+        self.axes = [None]                             # axes[gid] = 3x3
+        self.t = 0.0
+        self.n_captured_steps = 0
+        self._fs_hist = [(0.0, 0.0)]
+
+    # ---------------------------------------------------------- 坐标与温度
+    def coords(self):
+        x = (np.arange(self.nx) + 0.5) * self.dx
+        y = (np.arange(self.ny) + 0.5) * self.dx
+        z = (np.arange(self.nz) + 0.5) * self.dx
+        return np.meshgrid(x, y, z, indexing="ij")
+
+    def T_iso(self, dT_uniform):
+        """全场均匀过冷：用于包络几何/取向竞争的纯正对照。"""
+        return np.full(self.shape, T_LIQ - dT_uniform)
+
+    def T_directional(self, G, v_pull, z0=0.0):
+        """定向凝固：T = T_LIQ + G*(z - (z0 + v_pull*t))，下方为过冷。"""
+        X, Y, Z = self.coords()
+        return T_LIQ + G * (Z - (z0 + self.t * v_pull))
+
+    def T_inclined(self, G, v_pull, n_hat, x0=None):
+        """倾斜梯度的定向凝固: T = T_LIQ + G (n.(x-x0) - v t)。
+        用于验证【倾斜梯度下的晶粒淘汰】(Walton-Chalmers 的多晶版本)。"""
+        X, Y, Z = self.coords()
+        n = np.array(n_hat, float); n /= np.linalg.norm(n)
+        if x0 is None:
+            x0 = np.array([0.0, 0.0, 0.0])
+        s_ = (X - x0[0]) * n[0] + (Y - x0[1]) * n[1] + (Z - x0[2]) * n[2]
+        return T_LIQ + G * (s_ - v_pull * self.t)
+
+    def T_meltpool(self, T_peak, sigma, tau, T_bath=353.0, x0=0.0, y0=-0.0, z_top=True):
+        """静态熔池（激光关掉）：T(x,t)=T_bath+(T_field-T_bath)*exp(-t/tau)。
+        热场与 thermal_layer.py 同一设定（决策 D3）。"""
+        X, Y, Z = self.coords()
+        xc, yc, zc = X.mean(), Y.mean(), Z.max() if z_top else Z.mean()
+        zs = sigma * 3.0
+        Tf = T_bath + (T_peak - T_bath) * np.exp(
+            -((X - xc - x0) ** 2 + (Y - yc - y0) ** 2 + (Z - zc) ** 2) / (2 * sigma ** 2))
+        return T_bath + (Tf - T_bath) * math.exp(-self.t / tau)
+
+    # -------------------------------------------- 初始固相区（基底/已凝固材料）
+    def seed_solid_from_substrate(self, T, T_thresh, max_iter=500):
+        """把 T < T_thresh 的胞划为固相, 并从已有基底晶粒【外延】传播晶粒身份。
+
+        物理: 熔池之外（底部基底、两侧已凝固的熔道）本来就不是液体。
+        第一版把这些 353 K 的区域当成 ΔT~1558 K 的过冷液体, 是错的。
+        返回被划为固相的胞数。"""
+        cold = T < T_thresh
+        n0 = int(((self.gid == 0) & cold).sum())
+        full = (0, self.nx, 0, self.ny, 0, self.nz)
+        for _ in range(max_iter):
+            mask = (self.gid == 0) & cold
+            if not mask.any():
+                break
+            newg = self.gid.copy()
+            changed = False
+            for o, _ in OFFSETS:
+                pr = self._pair(o, full)
+                if pr is None:
+                    continue
+                sx, tx = pr
+                need = (self.gid[sx] > 0) & (newg[tx] == 0) & mask[tx]
+                if need.any():
+                    newg[tx] = np.where(need, self.gid[sx], newg[tx])
+                    changed = True
+            self.gid = newg
+            if not changed:
+                break
+        done = (self.gid > 0) & cold
+        self.ts[done] = -1.0            # 负时间 = t=0 之前就是固相
+        self.L[done] = 0.0
+        if hasattr(self, "fs"):
+            self.fs[done] = 1.0
+            self.c_sol[done] = C0_V
+            if hasattr(self, "A_liq"):
+                self.A_liq[done] = 0.0
+                self.c_liq = self.A_liq / np.maximum(1.0 - self.fs, 1e-6)
+        return int(n0 - ((self.gid == 0) & cold).sum())
+
+
+    # ---------------------------------------------------------------- 形核
+    def add_grain(self, i, j, k, quat=None):
+        g = len(self.axes)
+        q = quat if quat is not None else rand_quat(self.rng)
+        self.axes.append(quat_to_axes(q))
+        self.gid[i, j, k] = g
+        self.L[i, j, k] = 0.0
+        self.ts[i, j, k] = self.t
+        return g
+
+    def nucleate_substrate(self, n_grains, layer=1, jitter=0.0):
+        """熔池底部/侧壁的外延形核：在底面若干胞上布种子（取向随机或给定）。"""
+        idx = [(i, j, 0) for i in range(self.nx) for j in range(self.ny)]
+        self.rng.shuffle(idx)
+        for (i, j, k) in idx[:n_grains]:
+            self.add_grain(i, j, k)
+        return n_grains
+
+    def nucleate_substrate_grid(self, nx_g, ny_g, quats=None):
+        """规则布种（便于与解析解对照）：底面 nx_g x ny_g 个种子。"""
+        li = np.linspace(0, self.nx - 1, nx_g).astype(int)
+        lj = np.linspace(0, self.ny - 1, ny_g).astype(int)
+        out = []
+        m = 0
+        for i in li:
+            for j in lj:
+                q = None if quats is None else quats[m % len(quats)]
+                out.append(self.add_grain(i, j, 0, q))
+                m += 1
+        return out
+
+    def nucleate_bulk(self, T, dT_mean, dT_sigma, N_max, dt):
+        """体形核（CET）：连续形核谱 dN/ddT = Gaussian，中心 dT_mean，总密度 N_max [1/m3]。"""
+        from scipy.special import erf as _erf
+        dT = np.clip(T_LIQ - T, 0.0, None)
+        cdf = 0.5 * (1.0 + _erf((dT - dT_mean) / (dT_sigma * math.sqrt(2.0))))
+        Nv = N_max * cdf                                  # 累积数密度 1/m3
+        expect = Nv * self.dx ** 3
+        if not hasattr(self, "_Nv_done"):
+            self._Nv_done = np.zeros(self.shape)
+        inc = np.clip(expect - self._Nv_done, 0.0, None)
+        self._Nv_done = np.maximum(self._Nv_done, expect)
+        cand = (self.gid == 0) & (inc > 0)
+        if not cand.any():
+            return 0
+        draws = self.rng.random(self.shape) < inc
+        ii, jj, kk = np.where(cand & draws)
+        for i, j, k in zip(ii, jj, kk):
+            self.add_grain(int(i), int(j), int(k))
+        return len(ii)
+
+    # ---------------------------------------------------------- 取向阈值表
+    def _thr_tables(self):
+        """对每个偏移量 o，给出 thr[g] = dx * sum_a |p_a . o|。
+        这正是八面体 {|u1|+|u2|+|u3| <= L} 在方向 o 上的支撑距离。"""
+        ng = len(self.axes)
+        if getattr(self, "_tabs_ng", None) == ng and hasattr(self, "_tabs"):
+            return self._tabs
+        tabs = {}
+        for o, _ in OFFSETS:
+            t = np.zeros(ng + 8)          # 预留新增晶粒
+            for g in range(1, ng):
+                P = self.axes[g]
+                t[g] = self.dx * sum(abs(float(P[:, a] @ np.array(o))) for a in range(3))
+            tabs[o] = t
+        self._tabs, self._tabs_ng = tabs, ng
+        return tabs
+
+    # ------------------------------------------------- 偏移配对（统一入口）
+    def _pair(self, o, box):
+        """返回 (src_slices, tgt_slices)，使得 src 处的胞与 tgt=src+o 处的胞配对。
+        box = (i0,i1,j0,j1,k0,k1) 是当前活动窗口（滑动窗口的落点）。"""
+        i0, i1, j0, j1, k0, k1 = box
+        rr = []
+        for (a0, a1, d, n) in ((i0, i1, o[0], self.nx),
+                               (j0, j1, o[1], self.ny),
+                               (k0, k1, o[2], self.nz)):
+            s0 = max(a0, -d)
+            s1 = min(a1, n - d)
+            if s1 <= s0:
+                return None
+            rr.append((s0, s1, s0 + d, s1 + d))
+        src = tuple(slice(r[0], r[1]) for r in rr)
+        tgt = tuple(slice(r[2], r[3]) for r in rr)
+        return src, tgt
+
+
+    # ------------------------------------------------------------ 单步推进
+    def step(self, dt, T, window=None):
+        """推进一步。T 为当前温度场（K）。
+
+        window: 可选 (i0,i1,j0,j1,k0,k1) 限制计算区（滑动窗口的 active region）。
+        """
+        gid = self.gid
+        dT = np.clip(T_LIQ - T, 0.0, None)
+        V, dT_used, _, _ = self.irf.capped(dT)
+        # 越界计数: 只有【前沿固相胞】(有液相邻居的固相胞) 的 V 才真正驱动生长。
+        # 已凝固的冷区 dT 必然很大但那里不生长; 纯液相胞的 V 也从不被使用。
+        front = self._front_solid()
+        self.n_front_steps = getattr(self, "n_front_steps", 0) + int(front.sum())
+        self.n_dT_below = getattr(self, "n_dT_below", 0) + int(
+            np.count_nonzero(front & (dT > 0.0) & (dT < self.irf.dT_lo)))
+        self.n_dT_high = getattr(self, "n_dT_high", 0) + int(np.count_nonzero(front & (dT > self.irf.dT_hi)))
+        self.n_dT_super = getattr(self, "n_dT_super", 0) + int(np.count_nonzero(front & (dT <= 0.0)))
+
+        solid = gid > 0
+        liquid = ~solid
+
+        # ---- 1) 只在前沿邻域推进包络（active region） ----
+        if window is None:
+            window = self.active_box()
+        elif window == "full":    # 关掉滑动窗口（用于一致性对照）
+            window = (0, self.nx, 0, self.ny, 0, self.nz)
+        i0, i1, j0, j1, k0, k1 = window
+        sl = (slice(i0, i1), slice(j0, j1), slice(k0, k1))
+        Ls = self.L[sl]
+        Ls += V[sl] * dt * solid[sl]
+        self.L[sl] = Ls
+
+        # ---- 2) 捕获：26 邻居，decentered octahedron ----
+        tabs = self._thr_tables()
+        flat = np.arange(gid.size).reshape(gid.shape)
+        best = np.full(gid.shape, -1.0)
+        bsrc = np.full(gid.shape, -1, np.int64)
+        bthr = np.zeros(gid.shape)
+
+        for o, _ in OFFSETS:
+            pr = self._pair(o, window)
+            if pr is None:
+                continue
+            sx, tx = pr
+            gS = gid[sx]
+            # 源必须实心且落在窗口内的实心集合里
+            ok_src = gS > 0
+            if not ok_src.any():
+                continue
+            thr = tabs[o][gS]
+            ratio = np.where(ok_src, self.L[sx] / np.maximum(thr, 1e-300), -1.0)
+            free = gid[tx] == 0
+            cand = (ratio >= 1.0) & free
+            if not cand.any():
+                continue
+            prev = best[tx]
+            upd = cand & (ratio > prev)
+            best[tx] = np.where(upd, ratio, prev)
+            bsrc[tx] = np.where(upd, flat[sx], bsrc[tx])
+            bthr[tx] = np.where(upd, thr, bthr[tx])
+
+        cap = bsrc >= 0
+        n_new = int(cap.sum())
+        if n_new:
+            si = bsrc[cap]
+            ti = flat[cap]
+            self.gid.flat[ti] = self.gid.flat[si]
+            # decentering: 新胞继承【剩余】半对角 = L - 已用掉的距离
+            self.L.flat[ti] = np.maximum(self.L.flat[si] - bthr[cap], 0.0)
+            self.ts.flat[ti] = self.t + dt
+            self.Tc.flat[ti] = T.flat[ti]
+            self.n_captured_steps += 1
+
+        self.t += dt
+        # 热力学约束: T < T_SOL 的液相必须为固相（外延并入 / 隔离则自发形核）
+        self.thermal_capture(T, spontaneous=getattr(self, "allow_spont", True))
+        self._fs_hist.append((self.t, float((self.gid > 0).mean())))
+        return n_new
+
+    # --------------------------- 热力学约束（T < T_SOL 必须为固相）
+    def _front_solid(self):
+        """有液相邻居的固相胞 —— 只有这些胞的 V 真正驱动包络推进。"""
+        solid = self.gid > 0
+        liquid = ~solid
+        nb = np.zeros_like(solid)
+        full = (0, self.nx, 0, self.ny, 0, self.nz)
+        for o, _ in OFFSETS:
+            pr = self._pair(o, full)
+            if pr is None:
+                continue
+            sx, tx = pr
+            nb[tx] |= liquid[sx]
+        return solid & nb
+
+
+    def thermal_capture(self, T, spontaneous=True):
+        """物理依据: T < T_SOL 时合金【热力学上必须】是固相, 不该由尖端动力学律处理。
+
+        第一版把这些胞交给（被截断的）尖端速度律, 相当于假装"它还在按枝晶尖端长"。
+        正确做法:
+          (a) 与固相相邻的过冷液相 -> 按【外延】直接并入相邻晶粒（连续生长, 无新晶粒）;
+          (b) 被隔离的过冷液相（没有固相邻居）-> **自发形核**（新晶粒, 随机取向）。
+        返回 (n_thermal, n_spont)。"""
+        full = (0, self.nx, 0, self.ny, 0, self.nz)
+        cold = T < T_SOL
+        n_th = 0
+        for _ in range(6):
+            mask = (self.gid == 0) & cold
+            if not mask.any():
+                break
+            newg = self.gid.copy()
+            changed = 0
+            for o, _ in OFFSETS:
+                pr = self._pair(o, full)
+                if pr is None:
+                    continue
+                sx, tx = pr
+                need = (self.gid[sx] > 0) & (newg[tx] == 0) & mask[tx]
+                if need.any():
+                    newg[tx] = np.where(need, self.gid[sx], newg[tx])
+                    changed += int(need.sum())
+            self.gid = newg
+            n_th += changed
+            if changed == 0:
+                break
+        done = (self.gid > 0) & cold & (~np.isfinite(self.ts))
+        self.ts[done] = self.t
+        self.Tc[done] = T[done]
+        self.L[done] = 0.0
+        n_sp = 0
+        if spontaneous:
+            left = (self.gid == 0) & cold
+            ii, jj, kk = np.where(left)
+            for i, j, k in zip(ii, jj, kk):
+                self.add_grain(int(i), int(j), int(k))
+                self.Tc[i, j, k] = T[i, j, k]
+                n_sp += 1
+        self.n_thermal = getattr(self, "n_thermal", 0) + n_th
+        self.n_spont = getattr(self, "n_spont", 0) + n_sp
+        return n_th, n_sp
+
+
+    def active_box(self, margin=None):
+        """前沿（有液相邻居的实心胞）的包围盒 + margin。
+        这就是「滑动窗口」在本实现中的落点：只在前沿邻域计算。"""
+        if margin is None:
+            margin = 2
+        solid = self.gid > 0
+        liquid = ~solid
+        if not solid.any():
+            return (0, self.nx, 0, self.ny, 0, self.nz)
+        # 与液相相邻的实心胞
+        nb_liq = np.zeros_like(solid)
+        full = (0, self.nx, 0, self.ny, 0, self.nz)
+        for o, _ in OFFSETS:
+            pr = self._pair(o, full)
+            if pr is None:
+                continue
+            sx, tx = pr
+            nb_liq[tx] |= liquid[sx]
+        front = solid & nb_liq
+        if not front.any():
+            front = solid
+        idx = np.where(front)
+        return (max(0, idx[0].min() - margin), min(self.nx, idx[0].max() + 1 + margin),
+                max(0, idx[1].min() - margin), min(self.ny, idx[1].max() + 1 + margin),
+                max(0, idx[2].min() - margin), min(self.nz, idx[2].max() + 1 + margin))
+
+    # ---------------------------------------------------------------- 化学
+    def fs_at(self, t):
+        th = np.array(self._fs_hist)
+        return float(np.interp(t, th[:, 0], th[:, 1]))
+
+    def scheil_chemistry(self):
+        """逐胞 Scheil 闭式（模型声明见 MATH_FRAMEWORK 4.5）。
+
+        设 f = 该胞被捕获时刻的【全局固相分数】，沿全局 Scheil 路径：
+            c_liquid(f)    = c0 (1-f)^(k-1)            <- 该时刻液相成分
+            c_solid_avg(f) = c0 [1-(1-f)^k]/f          <- 已形成固相的平均成分
+        质量守恒恒等式（逐点精确，check_scheil_conservation 会数值验证）：
+            f*c_solid_avg + (1-f)*c_liquid = c0
+
+        逐胞取出：
+            cl[c] = c_liquid(f(t_capture))    <- Window C 的输入（胞界/枝晶间）
+            c[c]  = k * cl[c]                 <- 该胞在凝固前沿刚沉积那一层的成分
+        胞内完整剖面由 Pi 给出（下一步, MATH_FRAMEWORK 4.6）。
+        """
+        cap = np.isfinite(self.ts)
+        self.fcap = np.zeros(self.shape)
+        self.cl = np.full(self.shape, C0_V)
+        self.cl_max = C0_V * F_MIN ** (K_V - 1.0)   # 正则化上限: (1-f_eff)=F_MIN
+        if not cap.any():
+            return None
+        th = np.array(self._fs_hist)
+        f = np.clip(np.interp(self.ts[cap], th[:, 0], th[:, 1]), 0.0, 1.0)
+        self.fcap[cap] = f
+        # 正则化: 截断 Scheil 奇点 (f -> 1 时 c_l 发散), 物理上是枝晶间液膜孤立
+        f_eff = np.minimum(f, 1.0 - F_MIN)
+        c_l = C0_V * (1.0 - f_eff) ** (K_V - 1.0)
+        self.cl[cap] = c_l
+        self.c[cap] = K_V * c_l
+        self.c_last = C0_V * (1.0 - F_MIN) ** (K_V - 1.0)
+        return self.c_last
+
+    def check_scheil_conservation(self, fs=None):
+        """质量守恒恒等式 f*c_solid_avg + (1-f)*c_liquid = c0（逐点精确）。"""
+        if fs is None:
+            fs = np.array([0.0, 0.2, 0.5, 0.8, 0.95, 0.99])
+        out = []
+        for f in fs:
+            cs = C0_V * (1.0 - (1.0 - f) ** K_V) / max(f, 1e-12)
+            cl = C0_V * (1.0 - f) ** (K_V - 1.0)
+            out.append((float(f), float(f * cs + (1.0 - f) * cl)))
+        return out
+
+    # -------------------------------------------------------------- 诊断量
+    def solid_fraction(self):
+        return float((self.gid > 0).mean())
+
+    def grain_ids(self):
+        u = np.unique(self.gid)
+        return u[u > 0]
+
+    def gb_area(self):
+        """晶界网络面积：只统计【面邻居】(6 个方向) 且 grain ID 不同。棱/角邻不共享面，计入会高估。"""
+        A = 0.0
+        full = (0, self.nx, 0, self.ny, 0, self.nz)
+        for o, _ in OFFSETS:
+            if sum(abs(v) for v in o) != 1:      # 只有面邻居贡献面积（棱/角邻不共享面）
+                continue
+            pr = self._pair(o, full)
+            if pr is None:
+                continue
+            sx, tx = pr
+            a, b = self.gid[sx], self.gid[tx]
+            m = (a > 0) & (b > 0) & (a != b)
+            A += m.sum() * self.dx ** 2
+        return float(A)
+
+    def grain_volume_frac(self):
+        s = (self.gid > 0).sum()
+        out = {}
+        for g in self.grain_ids():
+            out[int(g)] = float((self.gid == g).sum() / max(s, 1))
+        return out
+
+    # ---------------------------------------------------------------- 输出
+    def save(self, path):
+        np.savez_compressed(path, gid=self.gid, L=self.L, ts=self.ts, Tc=self.Tc,
+                            c=self.c, t=self.t, dx=self.dx, shape=np.array(self.shape))
+        return path
+
+    def write_vtk(self, path, fields=("gid", "c", "ts")):
+        """极简 legacy VTK（structured points），可直接用 ParaView 看 3D 结果。"""
+        nx, ny, nz = self.shape
+        with open(path, "w") as f:
+            f.write("# vtk DataFile Version 3.0\nCA3D\nASCII\n")
+            f.write("DATASET STRUCTURED_POINTS\nDIMENSIONS %d %d %d\n" % (nx, ny, nz))
+            f.write("ORIGIN 0 0 0\nSPACING %g %g %g\n" % (self.dx, self.dx, self.dx))
+            f.write("POINT_DATA %d\n" % (nx * ny * nz))
+            for name in fields:
+                arr = getattr(self, name).astype(np.float64)
+                f.write("SCALARS %s double 1\nLOOKUP_TABLE default\n" % name)
+                np.savetxt(f, arr.ravel(order="F"), fmt="%.6g")
+        return path
+
+
+def run(ca, T_func, t_end, dt, bulk=None, verbose=True, every=None):
+    """时间推进。T_func(t) -> 温度场。bulk=(dT_mean,dT_sigma,N_max) 打开体形核。"""
+    n = int(round(t_end / dt))
+    hist = []
+    for s in range(n):
+        ca.t = s * dt
+        T = T_func(ca.t)
+        nnew = ca.step(dt, T)
+        nbulk = 0
+        if bulk is not None:
+            nbulk = ca.nucleate_bulk(T, bulk[0], bulk[1], bulk[2], dt)
+        if every and (s % every == 0 or s == n - 1):
+            hist.append(dict(t=ca.t, fs=ca.solid_fraction(),
+                             ng=len(ca.grain_ids()), new=nnew, bulk=nbulk))
+            if verbose:
+                print("  t={:.3e} s  fs={:.3f}  grains={}  new={} bulk={}".format(
+                    ca.t, hist[-1]["fs"], hist[-1]["ng"], nnew, nbulk))
+    ca.scheil_chemistry()
+    return hist

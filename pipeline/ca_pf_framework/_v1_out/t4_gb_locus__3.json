@@ -1,0 +1,10 @@
+{
+ "pred": "晶界位置 = {sup_A = sup_B}（误差 <2 胞）",
+ "n": 64,
+ "mean_err_cells": 0.2522536628303529,
+ "p95_err_cells": 0.47640035968162336,
+ "verdict": "PASS",
+ "task": "t4_gb_locus",
+ "idx": 3,
+ "wall_s": 11.9
+}

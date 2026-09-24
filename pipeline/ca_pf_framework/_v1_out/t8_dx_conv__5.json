@@ -1,0 +1,14 @@
+{
+ "pred": "体积误差 ∝ dx（对随取向与对齐取向都要成立）",
+ "ori": "aligned",
+ "dx_um": 1.0,
+ "ell_cells": 15.0,
+ "vol": 4089,
+ "vol_pred": 4499,
+ "err_pct": -9.133333333333315,
+ "err_cells": -3.0444444444444376e-07,
+ "verdict": "INFO",
+ "task": "t8_dx_conv",
+ "idx": 5,
+ "wall_s": 1.9
+}
