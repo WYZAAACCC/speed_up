@@ -349,24 +349,49 @@ class LevelSetMulti(object):
         return out
 
     # ---------- 界面推进（PDE）----------
-    def advance(self, dt, aniso=0.0, npref=None, gamma0=None):
-        """aniso>0 时用近奇异各向异性 γ_k(n) = γ0[1+Λ(1−(n·n_pref)²)]（n=∇φ_k/|∇φ_k|）"""
+    def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True):
+        """★ ⑤（本轮修）配对一致推进：界面 (winner k, runner-up l) 用**同一个** v_n，
+           两侧 φ 一致更新（φ_k 减、φ_l 增）。旧写法让每个 φ_k 各用自己 v_k ⇒
+           实测界面有效速度只有 **v/2** ✗（因为 VDF 里 |∇(φ_k−φ_l)|=2）。
+           判据 W2 用"平界面 + 常数驱动"直接量界面速度验证。"""
         reg0 = self.region()
         ed = self.elastic_driving()
-        reg = self.region()
-        for k in range(self.nreg):
+        nreg = self.nreg
+        gn = np.zeros_like(self.phi)
+        kap_all = np.zeros_like(self.phi)
+        stiff = np.ones((nreg,) + self.phi.shape[1:])
+        for k in range(nreg):
             g = np.gradient(self.phi[k], self.dx)
-            gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
-            kap = self.curvature_of(k)
+            gn[k] = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+            kap_k = self.curvature_of(k)
             gk = self.gamma if gamma0 is None else gamma0
             if aniso > 0 and npref is not None and npref.get(k) is not None:
-                n = np.stack([gi / gn for gi in g], -1)
+                n = np.stack([gi / gn[k] for gi in g], -1)
                 c2 = np.clip((n @ np.asarray(npref[k], float)) ** 2, 0, 1)
-                gk = gk * (1.0 + aniso * (1.0 - c2))
-            vn = self.M * (self.df[k] + ed[k] - gk * kap)
-            # 只在界面带内推进（|φ_k| <= 2 dx）
-            band = np.abs(self.phi[k]) <= 2.0 * self.dx
-            self.phi[k] -= dt * np.where(band, vn, 0.0) * gn
+                s2 = 1.0 - c2
+                gk = gk * ((1.0 + 2.0 * aniso - 3.0 * aniso * s2) if herring
+                           else (1.0 + aniso * s2))
+            stiff[k] = gk
+            kap_all[k] = kap_k
+        # winner / runner-up
+        order = np.argsort(self.phi, axis=0)
+        karr, larr = order[0], order[1]
+        # 每胞的配对速度（正 = winner 长大）
+        edk = np.take_along_axis(ed, karr[None], 0)[0]
+        edl = np.take_along_axis(ed, larr[None], 0)[0]
+        stk = np.take_along_axis(stiff, karr[None], 0)[0]
+        kap_cell = np.take_along_axis(kap_all, karr[None], 0)[0]     # 用 winner 的曲率
+        v_cell = self.M * ((self.df[karr] - self.df[larr]) + (edk - edl) - stk * kap_cell)
+        # 界面带 = winner 的 |φ| 或 runner-up 的 |φ| 处于带内
+        band = np.zeros(self.phi.shape[1:], bool)
+        for k in range(nreg):
+            band |= ((karr == k) | (larr == k)) & (np.abs(self.phi[k]) <= 2.0 * self.dx)
+        band = band & (np.abs(v_cell) > 0)
+        for k in range(nreg):
+            upd = np.where(band, v_cell, 0.0) * gn[k]
+            self.phi[k] -= dt * np.where(karr == k, upd, 0.0)     # winner 长大
+            self.phi[k] += dt * np.where(larr == k, upd, 0.0)     # runner-up 让位
+        reg = self.region()
         self._cnt = getattr(self, '_cnt', 0) + 1
         if self.reinit_every and self._cnt % self.reinit_every == 0:
             self.reinitialize()
@@ -490,6 +515,63 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0
 
 if __name__ == '__main__' and False:
     pass
+
+
+def W1_wulff(N=64, dx=2e-9, R0=1.0e-8, Lam=0.2, nstep=400, herring=True, nplot=24):
+    """① 的解析正对照：各向异性平衡形状 = **Wulff 形状**。
+       对 γ(θ)=γ0[1+Λ sin²θ]，2D 平衡形状满足 R(θ) ∝ γ+γ_θθ = γ0[1+2Λ−3Λ sin²θ]。
+       做法：沿 z 的柱体（周期性 ⇒ 无限长 ⇒ 横截面即 2D 问题），n_pref = x̂，
+             以 df=0 纯曲率驱动弛豫（形状先弛豫到 Wulff，再整体收缩），
+             取中间时刻量归一化半径 R(θ)/⟨R⟩ 与解析式比较。
+       同时用 herring=False（旧写法 γ(n)κ）作**反向对照**，证明该项确实必需。"""
+    g = LevelSetMulti(N, N * dx, nv=1, gamma=0.15, Mob=1e-9, df=[0.0, 0.0])
+    x = (np.arange(N) + 0.5) * dx
+    X, Y, Z = np.meshgrid(x, x, x, indexing='ij')
+    cx = cy = 0.5 * N * dx
+    rperp = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+    g.phi[1] = rperp - R0                       # 无限长柱体（沿 z）
+    g.init_parent()
+    npref = {1: np.array([1.0, 0.0, 0.0])}
+    dt = 0.1 * dx / (1e-9 * 0.15 / R0)
+    for k in range(nstep):
+        g.advance(dt, aniso=Lam, npref=npref, herring=herring)
+    # 量横截面：在 z 中平面上，界面胞的极角与半径
+    reg = g.region()
+    mid = N // 2
+    sl = (reg[:, :, mid] == 1)
+    ii, jj = np.nonzero(sl)
+    if len(ii) < 20:
+        print('  W1[Λ=%.2f herring=%s]: 截面胞太少(%d) ✗' % (Lam, herring, len(ii)))
+        return np.nan
+    pts = np.stack([(ii + 0.5) * dx - cx, (jj + 0.5) * dx - cy], -1)
+    # 只取"边界"点（邻域里既有 1 也有 0 的）
+    bnd = []
+    for i, j in zip(ii, jj):
+        nb = sl[max(0, i - 1):i + 2, max(0, j - 1):j + 2]
+        if nb.size - nb.sum() > 0:
+            bnd.append((i, j))
+    bnd = np.array(bnd, float)
+    if len(bnd) < 10:
+        print('  W1: 边界点太少 ✗')
+        return np.nan
+    P = np.stack([(bnd[:, 0] + 0.5) * dx - cx, (bnd[:, 1] + 0.5) * dx - cy], -1)
+    th = np.arctan2(P[:, 1], P[:, 0])
+    r = np.linalg.norm(P, axis=1)
+    # 按角度分箱取平均半径
+    bins = np.linspace(-np.pi, np.pi, nplot + 1)
+    idx = np.clip(np.digitize(th, bins) - 1, 0, nplot - 1)
+    rb = np.array([r[idx == b].mean() if (idx == b).any() else np.nan for b in range(nplot)])
+    thc = 0.5 * (bins[:-1] + bins[1:])
+    ok = ~np.isnan(rb)
+    rn = rb[ok] / rb[ok].mean()
+    # 解析 Wulff（等价：R ∝ γ+γ_θθ）
+    s2 = 1.0 - np.cos(thc[ok]) ** 2
+    ana = 1.0 + 2.0 * Lam - 3.0 * Lam * s2
+    ana = ana / ana.mean()
+    dev = float(np.abs(rn - ana).max() / np.abs(ana).max())
+    print('  W1[Λ=%.2f herring=%-5s]: 归一化半径偏差 max|R−Wulff|/max = %.4f   %s'
+          % (Lam, herring, dev, 'PASS' if dev < 0.10 else 'FAIL'))
+    return dev
 
 
 def M3_McLean(N=32, dx=2e-9, nstep=400):
