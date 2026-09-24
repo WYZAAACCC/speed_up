@@ -154,6 +154,220 @@ def S1_GibbsThomson(N=96, dx=1e-9, R0=2.4e-8, M=1e-9, gamma=0.15, nstep=400):
     return rel < 0.15
 
 
+def _old_main():
+    res = {}
+    res['S0'] = S0_curvature()
+    res['S1'] = S1_GibbsThomson()
+    print('\n总判定: %s' % ('ALL PASS' if all(res.values())
+                          else 'FAIL -> %s' % [k for k, v in res.items() if not v]))
+
+
+# ============================================================ 多区域 level-set（多畴身份）
+class LevelSetMulti(object):
+    """多区域 level-set：每个相/变体一个 φ_k（有符号距离），region = argmin_k φ_k。
+       · 身份由 φ 平流携带（**没有随机胞翻转** ✗）
+       · 体相耦合：ε⁰(φ) 由 region 给出 ⇒ 复用已验的谱法微弹性
+       · 界面动力学：∂φ_k/∂t + v_n^k|∇φ_k| = 0，v_n^k = M[Δf_k + Δf_el,k − Ω γ(n) κ_k]
+    """
+
+    def __init__(self, N, L, C=None, eps0=None, gamma=0.15, Mob=1e-9, df=None,
+                 Lam=0.0, k0_mode='clamped', workers=4, reinit_every=20, nv=None):
+        self.N, self.L = N, L
+        self.dx = L / N
+        self.gamma = gamma
+        self.M = Mob
+        self.reinit_every = reinit_every
+        self.nv = (nv if nv is not None else (1 if eps0 is None else len(eps0)))
+        self.nreg = self.nv + 1                      # 0 = 母相
+        x = (np.arange(N) + 0.5) * self.dx
+        X, Y, Z = np.meshgrid(x, x, x, indexing='ij')
+        self.XYZ = np.stack([X, Y, Z], -1)
+        self.phi = np.full((self.nreg, N, N, N), 1e3)
+        self.df = np.zeros(self.nreg) if df is None else np.asarray(df, float)
+        # 弹性
+        self.pf = None
+        if C is not None and eps0 is not None:
+            from windowB_pf3d import PF3D, VOIGT, G6 as _G6
+            self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
+                           workers=workers, k0_mode=k0_mode)
+            self.e0v_eng = np.array([[eps0[v][i, j] for (i, j) in VOIGT]
+                                     for v in range(self.nv)]) * _G6[None, :]
+            self._G6 = _G6
+
+    # ---------- 区域与几何 ----------
+    def region(self):
+        return np.argmin(self.phi, axis=0).astype(np.int8)
+
+    def seed_sphere(self, k, center, R):
+        c = np.asarray(center, float)
+        r = np.linalg.norm(self.XYZ - c, axis=-1)
+        self.phi[k] = np.minimum(self.phi[k], r - R)
+        for j in range(self.nreg):
+            if j != k:
+                self.phi[j] = np.maximum(self.phi[j], R - r)   # 其它区域让位
+
+    def seed_plate(self, k, center, normal, R, t):
+        """薄板晶核：法向 normal、半径 R、厚 t"""
+        c = np.asarray(center, float)
+        n = np.asarray(normal, float)
+        n = n / np.linalg.norm(n)
+        rel = self.XYZ - c
+        d = rel @ n
+        rperp = np.linalg.norm(rel - d[..., None] * n, axis=-1)
+        sdf = np.maximum(np.abs(d) - t / 2, rperp - R)         # 圆盘 SDF（近似）
+        self.phi[k] = np.minimum(self.phi[k], sdf)
+        for j in range(self.nreg):
+            if j != k:
+                self.phi[j] = np.maximum(self.phi[j], -sdf)
+
+    def init_parent(self):
+        """★ 多区域 VDF 的标准初始化：母相 = 变体并集的补集 ⇒ φ_0 = −min_{k≥1} φ_k。
+           （本轮修的 bug：把 φ_0 初始化成常数 1e3 ⇒ argmin 永远选变体 ⇒ 母相初始体积 0 ✗）"""
+        self.phi[0] = -np.min(self.phi[1:], axis=0)
+
+    def curvature_of(self, k):
+        g = np.gradient(self.phi[k], self.dx)
+        gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+        n = [gi / gn for gi in g]
+        return sum(np.gradient(n[i], self.dx)[i] for i in range(3))
+
+    def volume(self, k):
+        m = (self.region() == k)
+        return float(m.sum()) * self.dx ** 3
+
+    def area(self, k):
+        reg = self.region()
+        c = 0
+        for d in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+            nb = np.roll(reg, d, axis=(0, 1, 2))
+            c += int(np.count_nonzero((reg == k) & (nb != k)))
+        return c * self.dx ** 2
+
+    # ---------- 体相驱动：谱法微弹性 ----------
+    def elastic_driving(self):
+        """返回 (nreg, N,N,N)：-ε⁰_k:σ（对母相为 0）"""
+        reg = self.region()
+        out = np.zeros((self.nreg,) + reg.shape)
+        if self.pf is None:
+            return out
+        for v in range(self.nv):
+            self.pf.phi[v] = (reg == v + 1)
+        sig = self.pf.sigma_tensor()
+        for v in range(self.nv):
+            out[v + 1] = -np.einsum('p,p...->...', self.e0v_eng[v], sig)
+        return out
+
+    # ---------- 界面推进（PDE）----------
+    def advance(self, dt, aniso=0.0, npref=None, gamma0=None):
+        """aniso>0 时用近奇异各向异性 γ_k(n) = γ0[1+Λ(1−(n·n_pref)²)]（n=∇φ_k/|∇φ_k|）"""
+        ed = self.elastic_driving()
+        reg = self.region()
+        for k in range(self.nreg):
+            g = np.gradient(self.phi[k], self.dx)
+            gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+            kap = self.curvature_of(k)
+            gk = self.gamma if gamma0 is None else gamma0
+            if aniso > 0 and npref is not None and npref.get(k) is not None:
+                n = np.stack([gi / gn for gi in g], -1)
+                c2 = np.clip((n @ np.asarray(npref[k], float)) ** 2, 0, 1)
+                gk = gk * (1.0 + aniso * (1.0 - c2))
+            vn = self.M * (self.df[k] + ed[k] - gk * kap)
+            # 只在界面带内推进（|φ_k| <= 2 dx）
+            band = np.abs(self.phi[k]) <= 2.0 * self.dx
+            self.phi[k] -= dt * np.where(band, vn, 0.0) * gn
+        self._cnt = getattr(self, '_cnt', 0) + 1
+        if self.reinit_every and self._cnt % self.reinit_every == 0:
+            self.reinitialize()
+        return reg
+
+    def reinitialize(self, band_cells=6):
+        """把每个 φ_k 在带内重初始化成有符号距离；带外保持不变（多区域安全做法）"""
+        reg = self.region()
+        for k in range(self.nreg):
+            m = (reg == k)
+            near = np.abs(self.phi[k]) <= band_cells * self.dx
+            if not m.any():
+                continue
+            d_in = distance_transform_edt(m, sampling=self.dx)
+            d_out = distance_transform_edt(~m, sampling=self.dx)
+            self.phi[k] = np.where(near, np.where(m, -d_in, d_out), self.phi[k])
+
+
+def M1_multiregion_conservation(N=48, nstep=20):
+    """多区域静态守恒：v_n=0（df=0、γ=0）时各区域体积应逐位不变"""
+    g = LevelSetMulti(N, N * 1e-9, gamma=0.0, Mob=1.0, nv=2)
+    g.seed_sphere(1, [0.4 * N * 1e-9] * 3, 8e-9)
+    g.seed_sphere(2, [0.65 * N * 1e-9] * 3, 6e-9)
+    v0 = [g.volume(k) for k in range(g.nreg)]
+    for _ in range(nstep):
+        g.advance(1e-12)
+    v1 = [g.volume(k) for k in range(g.nreg)]
+    drift = max(abs(a - b) / max(abs(a), 1e-30) for a, b in zip(v0, v1))
+    print('---- M1 多区域静态守恒 ----')
+    print('   体积漂移（最大相对）= %.2e   %s' % (drift, 'PASS' if drift < 1e-6 else 'FAIL'))
+    return drift < 1e-6
+
+
+def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0,
+                       Mob=1e-9, rfrac=0.22):
+    """12 变体 RVE（level-set 表示）：看是否（i）不冻结晶核、（ii）给出板条形状。
+       与格点 KMC 版（windowB_gibbs）对照：那里 Λ≳5 时转变被冻在 5–23% ✗。"""
+    from windowB_pf3d import C_iso3, _lam_full
+    from windowB_ti64_variants import variants
+    C = C_iso3(113e9, 0.34)
+    eps0, Fs, meta = variants()
+    nv = len(eps0)
+    g = LevelSetMulti(N, N * dx, C=C, eps0=eps0, gamma=gamma, Mob=Mob,
+                      df=[0.0] + [df] * nv, workers=6, reinit_every=25)
+    # 各变体的弹性最省能法向（= 晶核取向）
+    npref = {}
+    rng = np.random.default_rng(0)
+    for v in range(nv):
+        best, bn = None, None
+        for n in rng.normal(size=(400, 3)):
+            n = n / np.linalg.norm(n)
+            val = 0.5 * float(np.einsum('ij,ijkl,kl->', eps0[v], _lam_full(C, n), eps0[v]))
+            if best is None or val < best:
+                best, bn = val, n
+        npref[v + 1] = bn
+    R = rfrac * N * dx
+    t = 2.0 * dx
+    for v in range(nv):
+        g.seed_plate(v + 1, (rng.random(3) * (N * dx - 2 * R) + R), npref[v + 1], R, t)
+    g.init_parent()
+    v0 = np.array([g.volume(k) for k in range(g.nreg)])
+    print('   [诊断] 初始各区域体积分数 = %s' % np.round(v0 / v0.sum(), 4))
+    print('   [诊断] phi 的最小值: 母相 %.3e ; 变体1 %.3e ; 空变体13 %.3e'
+          % (g.phi[0].min(), g.phi[1].min(), g.phi[g.nreg - 1].min()))
+    v = Mob * abs(df) * 0.5                    # 前沿速度估计
+    dt = 0.3 * dx / v
+    print('---- M2 12 变体 RVE（level-set）----')
+    print('   N=%d dx=%.1f nm 域=%.2f um | df=%.1e γ=%.2f Λ=%.1f | v≈%.3f m/s dt=%.2e'
+          % (N, dx * 1e9, N * dx * 1e6, df, gamma, aniso, v, dt))
+    print('   %6s %9s %9s %9s' % ('step', 'f_trans', 'V_max/V', 'min(V)>0'))
+    for k in range(nstep + 1):
+        if k % 60 == 0 or k == nstep:
+            vt = np.array([g.volume(j) for j in range(g.nreg)])
+            f = 1.0 - vt[0] / (N * dx) ** 3
+            print('   %6d %9.4f %9.4f %9s' % (k, f, vt.max() / v0.sum(),
+                                              str(bool((vt[1:] > 0).all()))))
+        if k == nstep:
+            break
+        g.advance(dt, aniso=aniso, npref=npref)
+    reg = g.region()
+    vt = np.array([g.volume(j) for j in range(g.nreg)])
+    sv = sum(g.area(j) for j in range(1, g.nreg)) / (N * dx) ** 3
+    print('   末态: 转变分数 %.4f ; 各变体体积分数 %s' %
+          (1 - vt[0] / (N * dx) ** 3, np.round(vt[1:] / vt[1:].sum(), 3)))
+    print('   S_v = %.3e 1/m ⇒ 板片厚 t = 2f/S_v = %.1f nm'
+          % (sv, 2 * (1 - vt[0] / (N * dx) ** 3) / max(sv, 1e-30) * 1e9))
+    return g
+
+
+if __name__ == '__main__' and False:
+    pass
+
+
 if __name__ == '__main__':
     print('=' * 92)
     print('Gibbs 面场（level-set）+ 体相场：判据 S0/S1')
@@ -161,5 +375,8 @@ if __name__ == '__main__':
     res = {}
     res['S0'] = S0_curvature()
     res['S1'] = S1_GibbsThomson()
+    res['M1'] = M1_multiregion_conservation()
+    M2_twelve_variants()
     print('\n总判定: %s' % ('ALL PASS' if all(res.values())
                           else 'FAIL -> %s' % [k for k, v in res.items() if not v]))
+    raise SystemExit(0)
