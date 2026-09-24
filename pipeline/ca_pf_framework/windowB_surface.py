@@ -749,7 +749,8 @@ class LevelSetMulti(object):
 
     # ---------- 界面推进（PDE）----------
     def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True,
-                adv_grad='upwind', extend=True, band_cells=5, iface_band=1.0):
+                adv_grad='upwind', extend=True, band_cells=5, iface_band=1.0,
+                drag=None):
         """★ ⑤（本轮修）配对一致推进：界面 (winner k, runner-up l) 用**同一个** v_n，
            两侧 φ 一致更新（φ_k 减、φ_l 增）。旧写法让每个 φ_k 各用自己 v_k ⇒
            实测界面有效速度只有 **v/2** ✗（因为 VDF 里 |∇(φ_k−φ_l)|=2）。
@@ -783,7 +784,18 @@ class LevelSetMulti(object):
         edl = np.take_along_axis(ed, larr[None], 0)[0]
         stk = np.take_along_axis(stiff, karr[None], 0)[0]
         kap_cell = np.take_along_axis(kap_all, karr[None], 0)[0]     # 用 winner 的曲率
-        v_cell = self.M * ((self.df[karr] - self.df[larr]) + (edk - edl) - stk * kap_cell)
+        dG_cell = (self.df[karr] - self.df[larr]) + (edk - edl) - stk * kap_cell
+        if drag is not None:
+            # ★★ 溶质拖曳（P3.3 / 框架 §6.3 [RULE] K5）：**隐式自洽**解
+            #     v = M[ΔG − P_drag(v)]，P_drag = P0/(1+v/v*)（双盒闭式，K1 已验）。
+            #     绝不能用线性闭式 v = MΔG(1−a v)：在被钉扎的驱动下它会**凭空给出速度**
+            #     （模块 7 K3 实测偏差 98%），而隐式解给出 v=0 ✓。
+            #     脱钉判据（本模块数值验证）：v>0 ⟺ ΔG>P0 或 M·ΔG>v*。
+            from windowB_drag import solve_v
+            P0, vstar = drag
+            v_cell, _pin = solve_v(dG_cell, self.M, P0, vstar)
+        else:
+            v_cell = self.M * dG_cell
         # ★★ 记账：和单畴一样，**必须做速度扩展**（否则窄带会把界面速度打到 ~0.14×，
         #    宽带会把剖面拉变形 ⇒ 见 `LevelSetSurface.advance` 的同一段记账）。
         #    多畴的额外要求：扩展只能**在本区域内部**传播（否则会把邻居界面的速度
