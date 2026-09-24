@@ -512,6 +512,7 @@ class LevelSetMulti(object):
         self.T = 1950.0
         self.c = np.full((N, N, N), 0.036)
         self.Gam = np.zeros((N, N, N))
+        self.J_edge = [np.zeros((N, N, N))] * 3     # 面扩散的边通量（ΣJ_s 判据/H7 用）
         self.df = np.zeros(self.nreg) if df is None else np.asarray(df, float)
         # 弹性
         self.pf = None
@@ -612,8 +613,11 @@ class LevelSetMulti(object):
              (3) 离开界面带的胞，其面过剩**还给体相**（⑥ 本轮修：旧写法直接清零 ⇒ 溶质泄漏 ✗）"""
         if not hasattr(self, 'Gam'):
             self.Gam = np.zeros_like(self.phi[0])
-        m = self.surface_band()
         A_c = self.cell_area_geom()      # ★ P1：用几何（coarea）测度，替换格子键测度
+        # ★★ H6 记账（本轮）：**面积、交换、扩散必须用同一个掩模**
+        #   旧写法：`surface_band()`（异邻 2 层带）与 `cell_area_geom`（winner & |φ|≤1.5dx）不一致
+        #   ⇒ 外层带胞 A_c=0 ⇒ 面扩散/交换在那里失效、且总量记账错位 ✗（审计 §5.2 的老账）。
+        m = A_c > 0
         # (3) 先把"离开带"的胞的面过剩还给体相（保守）
         if hasattr(self, '_m_prev'):
             left = self._m_prev & (~m)
@@ -628,22 +632,59 @@ class LevelSetMulti(object):
         dG = np.where(m, (Gam_eq - self.Gam) * frac, 0.0)
         self.Gam = np.where(m, self.Gam + dG, 0.0)
         self.c -= dG * A_c / (self.rho * self.dx ** 3)
-        # (2) 切向 Laplace–Beltrami：Δ_s Γ = ΔΓ − n_i n_j ∂_ijΓ − κ (n·∇Γ)
+        # (2) 面扩散 —— ★★ H6：改成**保守边通量形式**（旧写法是 Laplace–Beltrami *微分算子*）
+        #   为什么必须改：微分算子离散（中心差分）**没有通量结构** ⇒ Σ(A_c ΔΓ) ≠ 0，
+        #   即"面扩散会凭空造/吞溶质"，而 `ΣJ_s = 0`（三叉线通量平衡）正是本课题要学的东西。
+        #   通量形式：把面看成"带上的一个 2D 流形"，边 (i,j) 的通量为
+        #       F_ij = −D_s·A_e·(Γ_j−Γ_i)/ℓ_ij,  A_e = ½(A_c(i)+A_c(j)),
+        #       ℓ_ij = dx·|sin θ_ij| = |(x_j−x_i) − n̂(n̂·(x_j−x_i))|   ← 投影到切平面
+        #   于是：① 纯法向相连（ℓ→0）的通量为 0 ⇒ 不跨界面扩散 ✓（审计 A3 的切向性）；
+        #        ② 每条边只在 i、j 各记一次且符号相反 ⇒ **逐位守恒** ✓；
+        #        ③ 三叉线处各支通量自然相加 ⇒ **ΣJ_s = 0 是结构性的** ✓。
+        #   平界面极限：n=ẑ ⇒ x/y 边 ℓ=dx、z 边 ℓ=0 ⇒ 退化为切向 5 点 Laplacian ✓ 一致。
         if D_s > 0:
-            reg = self.region()
             order = np.argsort(self.phi, axis=0)
             karr = order[0]
-            lb = np.zeros_like(self.Gam)
-            g1 = np.gradient(self.Gam, self.dx)
-            grad2 = [np.gradient(gi, self.dx) for gi in g1]      # grad2[i][j] = ∂_i∂_j
-            lap = sum(grad2[i][i] for i in range(3))
-            for k in range(self.nreg):
-                nk = self._normal_of(k)
-                kap = self.curvature_of(k)
-                nnv = sum(nk[i] * nk[j] * grad2[i][j] for i in range(3) for j in range(3))
-                nd = sum(nk[i] * g1[i] for i in range(3))
-                lb = np.where((karr == k) | (m & (karr == k)), lap - nnv - kap * nd, lb)
-            self.Gam = np.where(m, self.Gam + dt * D_s * lb, self.Gam)
+            self.J_edge = []          # ★ 暴露每条边通量（供 ΣJ_s 判据/H7/算子使用）
+            # winner 的法向（用 winner 的 φ 直接求梯度）
+            # ★ 记账（本轮踩的坑）：**不能用 `self.phi[karr]`** —— 4 维数组上用 3 维整数
+            #   索引，numpy 会把尾部维度**接在索引形状后面** ⇒ 得到 (N,N,N,N,N,N) 的 6 维
+            #   数组（实测报 "allocate 512 GiB" ✗）。正确写法是 `take_along_axis`
+            #   （与 `advance` 里既有写法一致）。
+            phiw = np.take_along_axis(self.phi, karr[None], 0)[0]
+            gk = np.gradient(phiw, self.dx)
+            nrm = np.stack(gk, -1)
+            nn = np.linalg.norm(nrm, axis=-1, keepdims=True) + 1e-30
+            nhat = nrm / nn
+            eps = 1e-3 * self.dx
+            for ax in range(3):
+                Ac_j = np.roll(A_c, -1, axis=ax)
+                Ae = 0.5 * (A_c + Ac_j)
+                nj = np.roll(nhat, -1, axis=ax)
+                nb = 0.5 * (nhat + nj)
+                nb = nb / (np.linalg.norm(nb, axis=-1, keepdims=True) + 1e-30)
+                sin_t = np.sqrt(np.maximum(1.0 - nb[..., ax] ** 2, 0.0))
+                mj = np.roll(m, -1, axis=ax)
+                conn = m & mj
+                # ★ 记账（本轮由 F1 的**有效 D_s** 检验抓到的**量纲错误**）：
+                #   导通必须写成 `D_s·A_e·sinθ/dx²`，而不是 `D_s·A_e/ℓ`。
+                #   理由：面上的有限体积式是 `A_c ∂_tΓ = Σ_j (D_s·L_ij/ℓ_ij)(Γ_j−Γ_i)`，
+                #   其中 L_ij 是**边长**（不是面积！）。把 A_c≈dx² 的**面积**当 L 用，
+                #   会白白多出一个 dx ⇒ 有效 D 变成 `D_s·dx`（量纲也从 m²/s 变 m³/s）。
+                #   实测：修前 d(R²)/dt 口径的有效 D_s/D_s = **1e-8 = dx** ✗；
+                #   正确写法 = D_s·A_e·sinθ/dx²（平界面 sinθ=1 ⇒ 退化切向 5 点 Laplacian ✓，
+                #   纯法向 sinθ→0 ⇒ 通量→0 ✓）。
+                J = np.where(conn, -D_s * Ae * sin_t
+                             * (np.roll(self.Gam, -1, axis=ax) - self.Gam) / self.dx ** 2,
+                             0.0)
+                dq = dt * J
+                self.J_edge.append(J)
+                # Δq_i = dt·(J_{i−1→i} − J_{i→i+1}) ⇒ roll(+1) 把上一条边的 J 搬到 i
+                Ac_safe = np.where(m, A_c, 1.0)      # 带外 A_c=0 ⇒ 避免除零告警
+                self.Gam = np.where(m, self.Gam + (np.roll(dq, 1, axis=ax) - dq) / Ac_safe,
+                                    self.Gam)
+        else:
+            self.J_edge = [np.zeros_like(self.Gam)] * 3
         # (3') 带外的 Γ 清零（其摩尔量已在上面还给体相）
         self.Gam = np.where(m, self.Gam, 0.0)
 
