@@ -590,6 +590,26 @@ class LevelSetMulti(object):
     def area_total_geom(self):
         return float(self.cell_area_geom().sum())
 
+    def band_health(self):
+        """界面带健康度 —— **防止几何量静默失真**（本轮实测的坑）。
+
+        多畴 + 宽带速度扩展时，各区域按"自己最近的界面"平移 ⇒ 两区域之间的差分
+        `φ_k−φ_l` 被**无限拉陡**：实测带内 |∇φ| 从 0.5 涨到 530、带胞从 3.7e4 掉到 155
+        ⇒ 面几何测度（S_v、面积）**静默退化到 0** ✗。
+        任何用带几何做结论的地方（S_v、板条厚度、面偏析总量）必须先过这一关。
+        返回 (带胞数, 带内 |∇φ_winner| 中位, 是否健康)。
+        """
+        A = self.cell_area_geom()
+        m = A > 0
+        if not m.any():
+            return 0, np.inf, False
+        karr = np.argsort(self.phi, axis=0)[0]
+        phiw = np.take_along_axis(self.phi, karr[None], 0)[0]
+        gn = np.sqrt(sum(gi ** 2 for gi in np.gradient(phiw, self.dx)))
+        med = float(np.median(gn[m]))
+        ok = (med < 5.0) and (int(m.sum()) > 0.002 * self.phi.shape[1] ** 3)
+        return int(m.sum()), med, bool(ok)
+
     def Gamma_eq(self, c):
         """Langmuir/McLean 平衡过剩（mol/m²），复用 pipeline/gibbs 的单一参数来源"""
         try:
@@ -1005,6 +1025,10 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0
     #   `area_total_geom()` 对球 +0.3% ✓ ⇒ S_v、t=2f/S_v 才可信。
     sv_geom = g.area_total_geom() / (N * dx) ** 3
     sv_latt = sum(g.area(j) for j in range(1, g.nreg)) / (N * dx) ** 3
+    nb, medg, okg = g.band_health()
+    if not okg:
+        print('   ⚠⚠ 界面带已退化（带胞 %d、带内 |∇φ| 中位 %.2f）⇒ **下面的 S_v / 板条厚度'
+              '不得引用**：需先把多畴速度扩展改成"按配对"（见审计 §9.5）' % (nb, medg))
     print('   末态: 转变分数 %.4f ; 各变体体积分数 %s' %
           (1 - vt[0] / (N * dx) ** 3, np.round(vt[1:] / vt[1:].sum(), 3)))
     f_t = 1 - vt[0] / (N * dx) ** 3
