@@ -359,6 +359,45 @@ class GibbsLath(object):
                 E0 = E1
         return acc_total, E0 - self.E_total()
 
+    # ---------- 全局重排：整族消除某个变体（找地面态，不是动力学路径）----------
+    def sweep_global(self, rng, ntest=2, allow_parent=False):
+        """对每个变体 v, 试把**所有** v 胞换成某个别的标签, 用精确总能接受。
+           目的: 逐胞/整域移动都到不了"少数变体 + 大板条"的粗构型（实测停在 20-45 nm）,
+                 而 free 约定下面能偏好最粗构型 ⇒ 需要大尺度移动把地面态搜出来。
+           ⚠ 记账: 这是**能量下降搜索**（求地面态），不是物理动力学路径。
+           返回 (累计翻转胞数, dE)"""
+        E0 = self.E_total()
+        acc = 0
+        order = rng.permutation(self.nv) + 1
+        for v in order:
+            m = (self.lab == v)
+            if not m.any():
+                continue
+            cnt = {}
+            for d in pairs6():
+                nb = np.roll(self.lab, d, axis=(0, 1, 2))
+                sel = m & (nb != v)
+                if sel.any():
+                    vals, c = np.unique(nb[sel], return_counts=True)
+                    for vv, cc in zip(vals, c):
+                        cnt[int(vv)] = cnt.get(int(vv), 0) + int(cc)
+            cands = [k for k in cnt if k != v and (allow_parent or k != 0)]
+            if not cands:
+                continue
+            cands.sort(key=lambda k: -cnt[k])
+            best = None
+            for k in cands[:ntest]:
+                trial = self.lab.copy()
+                trial[m] = k
+                E1 = self.E_total(trial)
+                if E1 < E0 and (best is None or E1 < best[0]):
+                    best = (E1, k)
+            if best is not None:
+                self.lab[m] = best[1]
+                acc += int(m.sum())
+                E0 = best[0]
+        return acc, E0 - self.E_total()
+
 
 # ============================================================ 判据
 def _lam_pack_one(C, k, k0_mode):

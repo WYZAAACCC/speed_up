@@ -114,6 +114,65 @@ def do_geometry(lab, dx, eps0, C, tag, fh):
     return frac, A
 
 
+def shape_stats(lab, dx, eps0, C, fh, min_cells=40, topk=8):
+    """回转张量形状统计 + 与晶体学预测（rank-1 相容法向）的对照 —— G4 的正确测度。
+       板条判据: 回转张量本征值 a>=b>=c, 板条応 a≈b>>c（扁平）;
+                最小本征值的本征向量 = 板的法向; 与"该变体对上预测的相容法向"比对夹角。"""
+    from scipy import ndimage
+    from windowB_pf3d import _lam_full
+    struct = np.ones((3, 3, 3), int)
+    nv = len(eps0)
+    # 该变体对是否存在 rank-1 相容法向（Δε = sym(a(x)n)）: 用最小化 |(I-nn)Δ(I-nn)| 求
+    from windowB_bench3d import rank1_normal
+    comp = {}
+    for a in range(nv):
+        for b in range(a + 1, nv):
+            res, n = rank1_normal(eps0[b] - eps0[a])
+            if res < 1e-9:
+                comp[(a + 1, b + 1)] = n
+    fh.write('  --- 回转张量形状统计（G4 测度）---\n')
+    fh.write('  rank-1 相容的变体对: %d 对；这里按"每对预测一个相容法向"做对照\n' % len(comp))
+    rows = []
+    for v in range(1, nv + 1):
+        m = (lab == v)
+        if not m.any():
+            continue
+        lbl, n = ndimage.label(m, structure=struct)
+        sizes = ndimage.sum(m, lbl, range(1, n + 1))
+        for j, sz in enumerate(sizes, start=1):
+            if sz < min_cells:
+                continue
+            pts = np.argwhere(lbl == j).astype(float) * dx
+            pts -= pts.mean(0)
+            G = (pts.T @ pts) / len(pts)
+            w, V = np.linalg.eigh(G)          # 升序
+            rows.append((sz, v, w, V[:, 0]))
+    rows.sort(key=lambda r: -r[0])
+    fh.write('  最大的 %d 个域:\n' % min(topk, len(rows)))
+    for sz, v, w, nvec in rows[:topk]:
+        r31 = (w[2] / max(w[0], 1e-30)) ** 0.5
+        r21 = (w[1] / max(w[0], 1e-30)) ** 0.5
+        fh.write('    V%2d 体积=%6d 胞  回转半轴比 c:a=%.2f b:a=%.2f  n=[%+.2f %+.2f %+.2f]\n'
+                 % (v, int(sz), r21, r31, *nvec))
+    # 夹角: 每个大域的法向 vs "该变体与其最常见邻居"的相容法向
+    angs = []
+    for sz, v, w, nvec in rows[:40]:
+        best = None
+        for (a, b), nrm in comp.items():
+            if v not in (a, b):
+                continue
+            ang = np.degrees(np.arccos(min(1.0, abs(float(nvec @ nrm)))))
+            if best is None or ang < best:
+                best = ang
+        if best is not None:
+            angs.append(best)
+    if angs:
+        fh.write('  大域法向 vs 该变体参与的【相容对法向】的最近夹角: 中位数 %.1f deg, '
+                 '25%%分位 %.1f deg, 最小 %.1f deg\n'
+                 % (np.median(angs), np.percentile(angs, 25), min(angs)))
+    return rows
+
+
 def main(N=96, dx=1e-8, nstep=300, df=5e7, gamma=0.15, k0='clamped',
          nsel=4000, tag='', seed=7, monitor=25):
     os.makedirs(OUT, exist_ok=True)
@@ -153,11 +212,17 @@ def main(N=96, dx=1e-8, nstep=300, df=5e7, gamma=0.15, k0='clamped',
             break
         g.sweep(rng, nsel=nsel)
         if k % 10 == 9:                      # 每 10 遍加一批"整域换标签"的集体移动
-            g.sweep_domain(rng, ntry=12, allow_parent=False)
+            g.sweep_domain(rng, ntry=20, allow_parent=False)
+        if k % 40 == 39:                     # 每 40 遍做一次"整族消除"的全局重排
+            g.sweep_global(rng, ntest=2, allow_parent=False)
     g.save(tag)
     np.save(os.path.join(OUT, 'hist%s.npy' % tag), np.array(hist))
     with open(os.path.join(OUT, 'geom%s.txt' % tag), 'w') as fh:
         do_geometry(g.lab, dx, eps0, C, tag, fh)
+        try:
+            shape_stats(g.lab, dx, eps0, C, fh)
+        except Exception as exc:
+            fh.write('  [shape_stats 失败] %s\n' % exc)
     print(open(os.path.join(OUT, 'geom%s.txt' % tag)).read())
     return g
 
