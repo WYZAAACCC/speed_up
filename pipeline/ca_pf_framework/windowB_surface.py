@@ -770,7 +770,10 @@ class LevelSetMulti(object):
     # ---------- 界面推进（PDE）----------
     def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True,
                 adv_grad='upwind', extend='edt', band_cells=20, iface_band=1.0,
-                drag=None):
+                drag=None, pair_kernel=False):
+        # ★ 记账（本轮）：`pair_kernel=True` 是"按配对核"的**实验性**实现（见审计 §10），
+        #   尚未通过标定判据（平界面 |v|/MΔf 实测 0.00 ✗）⇒ **默认保持 False**，
+        #   即停在已被 W2 验证的那条路径上（pair=False + EDT 扩展 + 20dx 带 ⇒ 1.0000 ✓）。
         """★ ⑤（本轮修）配对一致推进：界面 (winner k, runner-up l) 用**同一个** v_n，
            两侧 φ 一致更新（φ_k 减、φ_l 增）。旧写法让每个 φ_k 各用自己 v_k ⇒
            实测界面有效速度只有 **v/2** ✗（因为 VDF 里 |∇(φ_k−φ_l)|=2）。
@@ -803,7 +806,26 @@ class LevelSetMulti(object):
         edk = np.take_along_axis(ed, karr[None], 0)[0]
         edl = np.take_along_axis(ed, larr[None], 0)[0]
         stk = np.take_along_axis(stiff, karr[None], 0)[0]
-        kap_cell = np.take_along_axis(kap_all, karr[None], 0)[0]     # 用 winner 的曲率
+        pha = np.take_along_axis(self.phi, karr[None], 0)[0]
+        phb = np.take_along_axis(self.phi, larr[None], 0)[0]
+        # ★★ 按配对（pair-canonical）核 —— 本轮修的关键点：
+        #   旧写法用 "winner 自己的曲率 κ_karr" 与 "winner 自己的刚度"，跨界面时曲率项
+        #   在两侧**不对称**（内侧用 κ_karr、外侧用 κ_larr）⇒ 与"按区域"的速度扩展叠加后，
+        #   两区域之间的差分 φ_k−φ_l 会被无限拉陡（实测带内 |∇φ| 0.5→530、带胞 3.7e4→155，
+        #   几何测度静默归零 ✗）。
+        #   改成用**差分场** d = φ_karr − φ_larr 的曲率（对两侧严格对称、且保持 winner 的
+        #   符号约定）与**成对平均刚度** ⇒ 界面速度成为该配对的单一标量，两侧一致。
+        if pair_kernel:
+            dd = pha - phb
+            gd = np.gradient(dd, self.dx)
+            gdn = np.sqrt(sum(g ** 2 for g in gd)) + 1e-30
+            nd = [g / gdn for g in gd]
+            kap_pair = sum(np.gradient(nd[i], self.dx)[i] for i in range(3))
+            stk_pair = 0.5 * (stk + np.take_along_axis(stiff, larr[None], 0)[0])
+            kap_cell = kap_pair
+            stk = stk_pair
+        else:
+            kap_cell = np.take_along_axis(kap_all, karr[None], 0)[0]
         dG_cell = (self.df[karr] - self.df[larr]) + (edk - edl) - stk * kap_cell
         if drag is not None:
             # ★★ 溶质拖曳（P3.3 / 框架 §6.3 [RULE] K5）：**隐式自洽**解
@@ -827,34 +849,39 @@ class LevelSetMulti(object):
         #     那是**退化构型**下的巧合；用真 SDF 初值必须靠宽带+扩展才复现 1.0000。
         #    多畴的额外要求：扩展只能**在本区域内部**传播（否则会把邻居界面的速度
         #    搬过来）⇒ 用 `karr == karr[最近界面胞]` 作约束 ✓。
-        phiw = np.take_along_axis(self.phi, karr[None], 0)[0]
-        iface = (np.abs(phiw) <= iface_band * self.dx) & (np.abs(v_cell) > 0)
-        # ★ 守卫（本轮踩的坑）：`distance_transform_edt(~iface)` 要求 `~iface` **非空**，
-        #   否则"最近零点索引"无定义、返回垃圾 ⇒ `karr == kat` 会把一半的界面更新切掉。
-        #   症状：W2（平界面 + 阶跃初值，全场 |φ|=0.5dx ⇒ iface=全场）速度掉到 0.25×theory ✗。
-        #   ⇒ 退化时退回"局部带"分支（旧行为）即可。
-        if extend and iface.any() and not iface.all():
-            if extend == 'edt':
-                ind = distance_transform_edt(~iface, return_distances=False, return_indices=True)
+        if pair_kernel:
+            # ★★ 配对口径（本轮默认）：界面 = 差分场 d = φ_karr − φ_larr 的小值集，
+            #    速度沿 d 的法向延拓 ⇒ 界面两侧拿到的是**同一个标量速度**
+            #    ⇒ 差分 d 只会**平移**、不会被拉陡（对比：按区域延拓时 |∇φ| 0.5→530 ✗）。
+            dfield = pha - phb
+            iface = (np.abs(dfield) <= iface_band * self.dx) & (np.abs(v_cell) > 0)
+            if iface.any() and not iface.all():
+                v_ext = extend_along_normal(np.where(iface, v_cell, 0.0), dfield,
+                                            self.dx, iters=14)
+                band = np.abs(dfield) <= band_cells * self.dx
+                v_cell = np.where(band, v_ext, 0.0)
+            else:
+                band = iface
+                v_cell = np.where(iface, v_cell, 0.0)
+        else:
+            phiw = np.take_along_axis(self.phi, karr[None], 0)[0]
+            iface = (np.abs(phiw) <= iface_band * self.dx) & (np.abs(v_cell) > 0)
+            # ★ 守卫：`distance_transform_edt(~iface)` 要求 `~iface` 非空（否则索引为垃圾）
+            if extend and iface.any() and not iface.all():
+                ind = distance_transform_edt(~iface, return_distances=False,
+                                             return_indices=True)
                 dist = distance_transform_edt(~iface)
                 v_at = np.where(iface, v_cell, 0.0)
                 kat = karr[tuple(ind)]
                 band = (dist <= band_cells) & (karr == kat)
-                v_use = np.where(band, v_at[tuple(ind)], 0.0)
+                v_cell = np.where(band, v_at[tuple(ind)], 0.0)
             else:
-                # 沿法向 PDE 延拓（用 winner 的 φ 作为法向参照）
-                vn_tmp = np.where(iface, v_cell, 0.0)
-                v_ext = extend_along_normal(vn_tmp, phiw, self.dx, iters=12)
-                band = np.abs(phiw) <= band_cells * self.dx
-                v_use = np.where(band, v_ext, 0.0)
-        else:
-            band = np.zeros(self.phi.shape[1:], bool)
-            for k in range(nreg):
-                band |= ((karr == k) | (larr == k)) & (np.abs(self.phi[k])
-                                                       <= band_cells * self.dx)
-            band = band & (np.abs(v_cell) > 0)
-            v_use = np.where(band, v_cell, 0.0)
-        v_cell = v_use
+                band = np.zeros(self.phi.shape[1:], bool)
+                for k in range(nreg):
+                    band |= ((karr == k) | (larr == k)) & (np.abs(self.phi[k])
+                                                           <= band_cells * self.dx)
+                band = band & (np.abs(v_cell) > 0)
+                v_cell = np.where(band, v_cell, 0.0)
         for k in range(nreg):
             # ④ 推进：默认 Godunov 迎风（鲁棒）；`adv_grad='central'` 用于"光滑 SDF +
             #   需要无偏各向异性幅度"的场合（W1/H1 判据实测：迎风把各向异性压低 ~8%，
