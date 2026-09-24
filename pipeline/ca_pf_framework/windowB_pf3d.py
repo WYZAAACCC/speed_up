@@ -72,6 +72,39 @@ def C_hex(C11, C12, C13, C33, C44, C66=None):
     return C_from_voigt(CV)
 
 
+def C_cubic(C11, C12, C44):
+    """立方（bcc/fcc）弹性常数 -> 完整张量（4 重轴 = x/y/z）。
+       ★ 判据见 `_chk_hex.py` HX-7：90°/180° 绕 x/y/z 的不变性在机器精度内成立。"""
+    CV = np.zeros((6, 6))
+    CV[0, 0] = CV[1, 1] = CV[2, 2] = C11
+    CV[0, 1] = CV[1, 0] = CV[0, 2] = CV[2, 0] = CV[1, 2] = CV[2, 1] = C12
+    CV[3, 3] = CV[4, 4] = CV[5, 5] = C44
+    return C_from_voigt(CV)
+
+
+def C_rot4(C, R):
+    """把 4 阶弹性张量按**材料系转动** R 转到实验室系：C'_{ijkl} = R_ia R_jb R_kc R_ld C_abcd。
+       对 hcp（横向各向同性）张量，转动只需给出 c 轴的去向 —— 绕 c 轴的面内转角不影响 C ✓
+       （这一点在 `_chk_hex.py` HX-6 用 Kelvin 谱 + 迹不变量复核）。"""
+    R = np.asarray(R, float)
+    return np.einsum('ia,jb,kc,ld,abcd->ijkl', R, R, R, R, C)
+
+
+def rot_z_to(n):
+    """给出任一正交阵 R 使 R @ ẑ = n̂（用于把 hcp 张量的 c 轴转到 n̂）。"""
+    n = np.asarray(n, float)
+    n = n / np.linalg.norm(n)
+    z = np.array([0.0, 0.0, 1.0])
+    ax = np.cross(z, n)
+    na = np.linalg.norm(ax)
+    if na < 1e-12:
+        return np.eye(3) if n[2] > 0 else np.diag([1.0, -1.0, -1.0])
+    ax = ax / na
+    th = np.arccos(np.clip(z @ n, -1.0, 1.0))
+    Kx = np.array([[0.0, -ax[2], ax[1]], [ax[2], 0.0, -ax[0]], [-ax[1], ax[0], 0.0]])
+    return np.eye(3) + np.sin(th) * Kx + (1.0 - np.cos(th)) * (Kx @ Kx)
+
+
 def lambda_packed(C, K, chunk=4096, k0_mode='free'):
     """Khachaturyan 张量 Lambda(n) 的 Voigt 6x6 打包，对每个 k 给 6x6。
        定义 LambdaP[p,q] = Lambda_{VOIGT[p], VOIGT[q]}（完整张量分量, 不带因子）。

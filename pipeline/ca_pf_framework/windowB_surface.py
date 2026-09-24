@@ -1208,9 +1208,15 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
           Λ=10 时实测该量跨 **[−1.35, +3.15]（含负）⇒ 非凸/不适定**（界面会被"起皱"
           驱动）。0.4 与 W1 的正对照同一个值（W1 已验证），且落在 Ti64 晶界能各向异性
           的常见范围（~0.2–0.4）。"""
-    from windowB_pf3d import C_iso3, _lam_full
+    from windowB_pf3d import C_iso3, C_cubic, _lam_full
     from windowB_ti64_variants import variants
-    C = C_iso3(113e9, 0.34)
+    # ★★ 记账（2026-09-25）：均匀模量近似的**参考模量**由"各向同性等效"改成**母相 β(bcc) 立方**
+    #   —— β-Ti 的 Zener 各向异性 A = 2C44/(C11−C12) = 2·36/(134−110) = **3.0**，是强各向异性，
+    #   用各向同性等效会丢掉弹性相互作用的**方向性**（而 M2 的板条取向正是靠它）。
+    #   张量本身已过 `_chk_hex.py` HX-7（立方不变性机器精度）；常数 ★【文献值待核对】。
+    #   ⚠ 仍未做：逐变体模量（12 个转动 hcp 张量已建好并验证 = HX-6，但 FFT 谱法要求均匀 C
+    #   ⇒ 要做 inhomogeneous 需换参考介质 + 极化迭代；见审计 §10.9）。
+    C = C_cubic(134.0e9, 110.0e9, 36.0e9)     # bcc β-Ti ★文献值待核对
     eps0, Fs, meta = variants()
     nv = len(eps0)
     g = LevelSetMulti(N, N * dx, C=C, eps0=eps0, gamma=gamma, Mob=Mob,
