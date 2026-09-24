@@ -244,8 +244,11 @@ class GibbsLath(object):
         self.lab[:] = 0
         self.lab[m] = a + 1
         self.lab[~m] = b + 1
-    def favorable_normal(self, v, nobs=400):
-        """变体 v 单独存在时, 弹性能密度最小的界面法向（= 该变体的"惯习面"近似, [T]）"""
+    def favorable_normal(self, v, nobs=600, iters=4000):
+        """变体 v 单独存在时, 弹性能密度最小 0.5 eps:Lam(n):eps 最小的界面法向。
+           ⚠ 这个"谷"非常平（实测最小值 ~1e4 vs 均匀 8.9e8），随机采样会跑偏，
+             必须随机起点 + 局部下降。PTMC 的 lambda2 本征方向在本泛函下并不最优
+             （8.7e8）—— 这是一条【待查证的分歧】，见 WINDOWB_GIBBS_REPORT.md §3.1。"""
         from windowB_pf3d import _lam_full
         best, bn = None, None
         rng = np.random.default_rng(0)
@@ -255,6 +258,16 @@ class GibbsLath(object):
                                         self.eps0[v]))
             if best is None or val < best:
                 best, bn = val, n
+        r = 0.2
+        for _ in range(iters):
+            cand = bn + r * rng.normal(size=3)
+            cand = cand / np.linalg.norm(cand)
+            val = 0.5 * float(np.einsum('ij,ijkl,kl->', self.eps0[v], _lam_full(self.C, cand),
+                                        self.eps0[v]))
+            if val < best:
+                best, bn = val, cand
+            else:
+                r *= 0.9995
         return bn, best
 
     def seed_plates(self, v, normal, thick_cells=2, nplate=3, rng=0, pad=2,
@@ -290,6 +303,61 @@ class GibbsLath(object):
     def save(self, tag):
         os.makedirs(OUT, exist_ok=True)
         np.save(os.path.join(OUT, 'lab%s.npy' % tag), self.lab)
+
+    # ---------- 集体移动：整域换标签（粗化的必要条件）----------
+    def _neighbor_labels(self, dom):
+        """域 dom 的外部邻居标签直方图"""
+        N = self.N
+        cnt = {}
+        lab = self.lab
+        for d in pairs6():
+            nb = np.roll(lab, d, axis=(0, 1, 2))
+            m = dom & (nb != lab)
+            if m.any():
+                vals, c = np.unique(nb[m], return_counts=True)
+                for v, cc in zip(vals, c):
+                    cnt[int(v)] = cnt.get(int(v), 0) + int(cc)
+        return cnt
+
+    def sweep_domain(self, rng, ntry=12, max_cells=8000, allow_parent=False):
+        """随机挑若干连通域, 提出"整域换成邻居标签"的移动, 用精确总能单调下降接受。
+           为什么必须加: 逐胞贪心只能局部重排, 无法让域**合并粗化**;
+           而 free 约定下"单变体均匀态"与"细混合态"弹性能都 ~0, 真正偏好由面能决定
+           => 地面态是**最粗**的构型(单个变体或相容层片), 靠逐胞移动到不了(实测)。
+           返回 (接受标签翻转数, dE)"""
+        from scipy import ndimage
+        struct = np.ones((3, 3, 3), int)
+        E0 = self.E_total()
+        acc_total = 0
+        for _ in range(ntry):
+            v = int(rng.integers(0, self.nv + 1))
+            m = (self.lab == v)
+            if not m.any():
+                continue
+            lbl, n = ndimage.label(m, structure=struct)
+            if n == 0:
+                continue
+            # 随机取一个域（偏向取大的：随机点再取其所属域）
+            pts = np.argwhere(m)
+            c = tuple(pts[rng.integers(0, len(pts))])
+            j = lbl[c]
+            dom = (lbl == j)
+            ncell = int(dom.sum())
+            if ncell > max_cells:
+                continue
+            cnt = self._neighbor_labels(dom)
+            cands = [k for k in cnt if (k != v) and (allow_parent or k != 0)]
+            if not cands:
+                continue
+            cands.sort(key=lambda k: -cnt[k])
+            trial = self.lab.copy()
+            trial[dom] = cands[0]
+            E1 = self.E_total(trial)
+            if E1 < E0:
+                np.copyto(self.lab, trial)
+                acc_total += ncell
+                E0 = E1
+        return acc_total, E0 - self.E_total()
 
 
 # ============================================================ 判据

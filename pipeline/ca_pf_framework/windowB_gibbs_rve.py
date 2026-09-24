@@ -125,9 +125,12 @@ def main(N=96, dx=1e-8, nstep=300, df=5e7, gamma=0.15, k0='clamped',
     for v in range(g.nv):
         nv_, ev_ = g.favorable_normal(v)
         nrm.append(nv_)
+    print('  各变体最省能法向（0.5 eps:Lam:eps）: %s'
+          % np.round([g.favorable_normal(v)[1] for v in range(3)], 1))
     npl = 0
     for v in range(g.nv):
-        npl += g.seed_plates(v, nrm[v], thick_cells=2, nplate=3, rng=seed + v)
+        npl += g.seed_plates(v, nrm[v], thick_cells=2, nplate=3, rng=seed + v,
+                             radius_cells=N)
     print('=' * 96)
     print('Gibbs 面板条 RVE: N=%d dx=%.1f nm 域=%.2f um | gamma=%.3f df=%.2e k0=%s'
           % (N, dx * 1e9, L * 1e6, gamma, df, k0))
@@ -149,6 +152,8 @@ def main(N=96, dx=1e-8, nstep=300, df=5e7, gamma=0.15, k0='clamped',
         if k == nstep:
             break
         g.sweep(rng, nsel=nsel)
+        if k % 10 == 9:                      # 每 10 遍加一批"整域换标签"的集体移动
+            g.sweep_domain(rng, ntry=12, allow_parent=False)
     g.save(tag)
     np.save(os.path.join(OUT, 'hist%s.npy' % tag), np.array(hist))
     with open(os.path.join(OUT, 'geom%s.txt' % tag), 'w') as fh:
