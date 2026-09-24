@@ -843,7 +843,7 @@ class LevelSetMulti(object):
     # ---------- 界面推进（PDE）----------
     def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True,
                 adv_grad='upwind', extend='edt', band_cells=20, iface_band=2.0,
-                drag=None, pair_kernel=False):
+                drag=None, pair_kernel=False, per_field=False):
         # ★ 记账（本轮 P1 重标定）：`iface_band=2.0` 而非 1.0 —— 界面种子必须是
         #   **≥2 层胞**。实测 pair_kernel 下 `iface_band=1.0`（|∇d|≈2 ⇒ 种子只有
         #   1 层）时，`extend_along_normal` 的迎风延拓**退化**（v/MΔf = 0.125 ✗）；
@@ -879,6 +879,12 @@ class LevelSetMulti(object):
         # winner / runner-up
         order = np.argsort(self.phi, axis=0)
         karr, larr = order[0], order[1]
+        if per_field:
+            # ★★ 按**场**推进（2026-09-25 新增，方案 (a)）—— 见 `_advance_perfield` 的记账。
+            #   走这条分支时后面那套"winner/runner-up 两场"逻辑整段跳过。
+            self._advance_perfield(dt, karr, larr, ed, stiff, iface_band,
+                                   band_cells, adv_grad)
+            return self._finish_advance(reg0)
         # 每胞的配对速度（正 = winner 长大）
         edk = np.take_along_axis(ed, karr[None], 0)[0]
         edl = np.take_along_axis(ed, larr[None], 0)[0]
@@ -904,6 +910,11 @@ class LevelSetMulti(object):
         else:
             kap_cell = np.take_along_axis(kap_all, karr[None], 0)[0]
         dG_cell = (self.df[karr] - self.df[larr]) + (edk - edl) - stk * kap_cell
+        # ★★ 记账（2026-09-25，查明 M2"塌缩"的真凶）：把本步驱动力存下来，供
+        #   `suggest_dt` 按**总驱动**定 CFL。**只用 Δf 估 dt 会严重低估界面速度** ——
+        #   实测 M2：弹性项中位 4.9e8 是 Δf(1e8) 的 ~5 倍 ⇒ 按 Δf 定出的 dt 实际每步
+        #   位移是 **0.6–0.75 dx**（不是 0.15），一阶迎风必然失真。
+        self.dG_max = float(np.max(np.abs(dG_cell)))
         if drag is not None:
             # ★★ 溶质拖曳（P3.3 / 框架 §6.3 [RULE] K5）：**隐式自洽**解
             #     v = M[ΔG − P_drag(v)]，P_drag = P0/(1+v/v*)（双盒闭式，K1 已验）。
@@ -1005,18 +1016,87 @@ class LevelSetMulti(object):
                     sgn = np.where(vnk > 0, 1.0, -1.0)
                     gmag = self._upwind_grad(self.phi[k], sgn)
                 self.phi[k] = self.phi[k] - dt * vnk * gmag
+        return self._finish_advance(reg0)
+
+    def _finish_advance(self, reg0):
+        """推进一步的**收尾**（两条推进路径共用，避免两处分叉）：
+           区域/计数、按平流取 `reg_adv`、定期重初始化、Stefan 记账。
+           ★ 记账：Stefan 必须只对"**平流**扫过的胞"记账。旧写法在 `reinitialize()`
+             之后才取 reg1 ⇒ 把**重初始化微移界面**造成的区域翻转也算成"前沿扫过"
+             ⇒ 凭空吞吐溶质（实测：关重初始化 M4=1.16e-2、每 20 步重初始化 5.37e-2 ✗）。"""
         reg = self.region()
         self._cnt = getattr(self, '_cnt', 0) + 1
         reg_adv = self.region()          # ★ 只反映【平流】造成的扫过
         if self.reinit_every and self._cnt % self.reinit_every == 0:
             self.reinitialize()
-        # ★ 记账（本轮修）：Stefan 必须只对"**平流**扫过的胞"记账。
-        #   旧写法在 reinitialize() 之后才取 reg1 ⇒ 把**重初始化微移界面**造成的
-        #   区域翻转也算成"前沿扫过" ⇒ 凭空吞吐溶质。实测：关掉重初始化 M4=1.16e-2，
-        #   每 20 步重初始化 ⇒ 5.37e-2 ✗（重初始化每步都在"造"溶质）。
         self._stefan(reg0, reg_adv)
         return reg
 
+    def _advance_perfield(self, dt, karr, larr, ed, stiff, iface_band,
+                          band_cells, adv_grad):
+        """★ 按**场**推进（2026-09-25，方案 (a)）：每个 φ_k 用它**自己最近界面**
+           `{k, l_k}`（`l_k(x) = argmin_{j≠k} φ_j(x)`）的配对速度，速度沿该界面的法向
+           延拓到带内，然后 `φ_k −= dt·V_k·|∇φ_k|`（Godunov 迎风）。
+
+           ★ 记账（为什么需要它）：旧写法每胞只推进局部 `(winner, runner-up)` **两个场**
+             ⇒ **"被推进的场集合"在空间上跳变**（一侧推进、紧邻一侧冻结）⇒ φ 上出现
+             跳变、再被 `|∇φ|` 项自放大 ⇒ 带胞与 `|∇φ|` 静默退化（§9.5/§10.4 的全部
+             隔离实验都指向这里，而不是配对扩展）。
+             本写法每胞推进**全部 nreg 个场**（各自带内）⇒ 跳变只剩"速度值的跳变"
+             （在 `l_k` 切换的中性面上），**不再有"零速区"** ✓。
+           ★ 另一个便利：这里 `V_k` **总是以 k 为被减数** ⇒ 跨 k 的界面**天然连续**
+             （不需要 §10.2 里 `sigma`/`vcanon` 那套规范化）；
+             曲率必须取**差分场** `d = φ_k − φ_{l_k}` 的（单场自己的曲率在界面两侧
+             **符号相反**：球内 φ_k = r−R 给 +2/R，球外 φ_l 给 −2/R ⇒ 两侧会互相打架 ✗）。
+           ★ 代价（如实记账）：每步 `nreg` 次差分场曲率 + `2·nreg` 次 EDT ⇒ 比旧路径
+             O(nreg) 倍（N=64/nreg=13 约 ~0.5–1 s/步）。
+        """
+        for k in range(self.nreg):
+            lk = np.where(karr == k, larr, karr)     # k 的最近竞争者
+            d = self.phi[k] - np.take_along_axis(self.phi, lk[None], 0)[0]
+            gd = np.gradient(d, self.dx)
+            gdn = np.sqrt(sum(g ** 2 for g in gd))
+            scale = np.maximum(gdn, 1e-30)           # d 不是距离函数（|∇d| ≈ 2）
+            nd = [g / scale for g in gd]
+            kap = sum(np.gradient(nd[i], self.dx)[i] for i in range(3))
+            edl = np.take_along_axis(ed, lk[None], 0)[0]
+            stk = 0.5 * (stiff[k] + np.take_along_axis(stiff, lk[None], 0)[0])
+            V = self.M * ((self.df[k] - self.df[lk]) + (ed[k] - edl) - stk * kap)
+            iface = (np.abs(d) <= iface_band * self.dx * scale) & (np.abs(V) > 0)
+            if np.any(iface) and not iface.all():
+                ind = distance_transform_edt(~iface, return_distances=False,
+                                             return_indices=True)
+                dist = distance_transform_edt(~iface)
+                Vext = np.where(dist <= band_cells, V[tuple(ind)], 0.0)
+            else:
+                band = np.abs(d) <= band_cells * self.dx * scale
+                Vext = np.where(band & (np.abs(V) > 0), V, 0.0)
+            if not np.any(Vext != 0):
+                continue
+            if adv_grad == 'central':
+                g = np.gradient(self.phi[k], self.dx)
+                gmag = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+            else:
+                sgn = np.where(Vext > 0, 1.0, -1.0)
+                gmag = self._upwind_grad(self.phi[k], sgn)
+            self.phi[k] = self.phi[k] - dt * Vext * gmag
+            vmax = float(np.max(np.abs(Vext)))
+            self.dG_max = (vmax / self.M) if self.M else 0.0
+
+    def suggest_dt(self, cfl=0.15, dt_prev=None, grow_max=2.0):
+        """按**实际最大界面速度**定步长：`dt = cfl·dx / max|v|`（`v = M·ΔG`）。
+           上一步的驱动力由 `advance` 写在 `self.dG_max`。
+           ★ 记账（2026-09-25，M2 的 CFL 真凶）：**必须用总驱动**（Δf + 弹性 − γκ），
+             不能只用 Δf。实测 M2 里弹性项比 Δf 大 ~5 倍 ⇒ 只按 Δf 定 dt 会让实际每步
+             位移达 0.6–0.75 dx（超 CFL 4–5 倍）⇒ 界面剖面失真、几何测度静默塌缩。
+           `grow_max` 限制 dt 相对上一步的放大倍数（速度下降时不让 dt 突跳）。"""
+        dmax = getattr(self, 'dG_max', 0.0)
+        if not dmax or dmax <= 0 or not self.M:
+            return None
+        dt = cfl * self.dx / (self.M * dmax)
+        if dt_prev is not None:
+            dt = min(dt, grow_max * dt_prev)
+        return dt
     def _stefan(self, reg0, reg1, k_part=0.6303, dbg=None):
         """③ 本轮修：Stefan 跳跃的**正确去向**——界面扫过时被排出的溶质
            **先存进面过剩 Γ**（即 ∂Γ/∂t 那一项），再由 update_Gamma 的面-体交换与
@@ -1109,12 +1189,25 @@ def M1_multiregion_conservation(N=48, nstep=20):
     return drift < 1e-6
 
 
-def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0,
+def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
                        Mob=1e-9, rfrac=0.22, adv_grad='upwind',
                        pair_kernel=False, iface_band=2.0, probe=0, cfl=0.15,
-                       plate_dx=2.0):
+                       plate_dx=2.0, per_field=False):
     """12 变体 RVE（level-set 表示）：看是否（i）不冻结晶核、（ii）给出板条形状。
-       与格点 KMC 版（windowB_gibbs）对照：那里 Λ≳5 时转变被冻在 5–23% ✗。"""
+       与格点 KMC 版（windowB_gibbs）对照：那里 Λ≳5 时转变被冻在 5–23% ✗。
+
+       ★★ 记账（2026-09-25 两个真修正，缺一都会让 M2 的几何量彻底失真）：
+       1) **`dt` 必须按总驱动自适应**（`suggest_dt`）：弹性项在界面带上中位 4.9e8，
+          是 Δf(1e8) 的 ~5 倍 ⇒ 只用 Δf 估 dt 会让**实际每步位移达 0.6–0.75 dx**
+          （超 CFL 4–5 倍）。实测修前 25 步内带胞 12601→35、|∇φ_winner| 0.73→6e5；
+          修后同样 25 步带胞 9567→**9671**、|∇φ_winner| 稳定在 0.48–0.62、12 个变体
+          **全部存活**，几何首次给出合理数字（长:短 3.9–5.2、与相容法向夹角中位 20.7°）。
+          ⇒ §9.4/§9.5 的"M2 塌缩/配对一致性被破坏"全部是**这一步的超 CFL 症状**。
+       2) **`Λ` 默认 10 → 0.4**：`γ(θ)=γ0(1+Λ sin²θ)` 的 Herring 稳定性要求
+          `γ+γ_θθ = γ0(1+2Λ−3Λ sin²θ) > 0`，最坏在 `sin²θ=1` ⇒ **Λ < 1**。
+          Λ=10 时实测该量跨 **[−1.35, +3.15]（含负）⇒ 非凸/不适定**（界面会被"起皱"
+          驱动）。0.4 与 W1 的正对照同一个值（W1 已验证），且落在 Ti64 晶界能各向异性
+          的常见范围（~0.2–0.4）。"""
     from windowB_pf3d import C_iso3, _lam_full
     from windowB_ti64_variants import variants
     C = C_iso3(113e9, 0.34)
@@ -1154,19 +1247,27 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=10.0
     dt = cfl * dx / v
     print('---- M2 12 变体 RVE（level-set）----')
     print('   N=%d dx=%.1f nm 域=%.2f um | df=%.1e γ=%.2f Λ=%.1f | v=M|df|=%.3f m/s '
-          'dt=%.2e ⇒ 每步位移 %.3f dx' % (N, dx * 1e9, N * dx * 1e6, df, gamma,
-                                          aniso, v, dt, dt * v / dx))
-    print('   %6s %9s %9s %9s' % ('step', 'f_trans', 'V_max/V', 'min(V)>0'))
+          'dt0=%.2e ⇒ 初值每步位移 %.3f dx（之后按**总驱动**自适应）'
+          % (N, dx * 1e9, N * dx * 1e6, df, gamma, aniso, v, dt, dt * v / dx))
+    print('   %6s %9s %9s %9s %9s %10s' %
+          ('step', 'f_trans', 'V_max/V', 'min(V)>0', 'dt*(M|dG|mx)/dx', '带胞'))
     for k in range(nstep + 1):
         if k % 60 == 0 or k == nstep:
             vt = np.array([g.volume(j) for j in range(g.nreg)])
             f = 1.0 - vt[0] / (N * dx) ** 3
-            print('   %6d %9.4f %9.4f %9s' % (k, f, vt.max() / v0.sum(),
-                                              str(bool((vt[1:] > 0).all()))))
+            nb, medg, okg = g.band_health()
+            print('   %6d %9.4f %9.4f %9s %12.3f %10d'
+                  % (k, f, vt.max() / v0.sum(), str(bool((vt[1:] > 0).all())),
+                     dt * (g.M * getattr(g, 'dG_max', 0.0)) / dx, nb))
         if k == nstep:
             break
         g.advance(dt, aniso=aniso, npref=npref, adv_grad=adv_grad,
-                  pair_kernel=pair_kernel, iface_band=iface_band)
+                  pair_kernel=pair_kernel, iface_band=iface_band,
+                  per_field=per_field)
+        # ★ 自适应 dt：按**实际总驱动**（含弹性）定 CFL，见 `suggest_dt` 的记账
+        ndt = g.suggest_dt(cfl=cfl, dt_prev=dt)
+        if ndt:
+            dt = ndt
         if probe and (k + 1) % probe == 0:
             nb, medg, okg = g.band_health()
             print('   [带健康 probe step=%4d] 带胞=%6d 带内|∇φ_win|中位=%8.3f %s'

@@ -43,7 +43,8 @@ def _seed(N, dx, kind='slab'):
 
 
 def run(N=48, dx=2e-9, M=1e-9, df=1e7, nstep=40, band_cells=20, extend='edt',
-        kind='slab', pair_kernel=False, iface_band=1.0, verb=False):
+        kind='slab', pair_kernel=False, iface_band=2.0, verb=False,
+        per_field=False):
     """返回 (v_ray, v_cnt)：均为 |速度|/(MΔf)。"""
     g = _seed(N, dx, kind)
     near = g.near0
@@ -52,7 +53,8 @@ def run(N=48, dx=2e-9, M=1e-9, df=1e7, nstep=40, band_cells=20, extend='edt',
     dt = 0.1 * dx / (M * df)
     for _ in range(nstep):
         g.advance(dt, extend=extend, band_cells=band_cells,
-                  pair_kernel=pair_kernel, iface_band=iface_band)
+                  pair_kernel=pair_kernel, iface_band=iface_band,
+                  per_field=per_field)
     _, z1 = g.iface_offset(1, 0, 2, near=near)
     c1 = int((g.region() == 1).sum())
     v_ray = abs(z1 - z0) / (nstep * dt) / (M * df)
