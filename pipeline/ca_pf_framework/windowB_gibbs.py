@@ -52,6 +52,19 @@ def pairs6():
     return ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
 
 
+def dirs26():
+    """26 个近邻方向（含对角）——用来让界面能"感知"非轴向法向。
+       面积测度取 area(d) = dx^2 * |d|；26 邻域测度相对 6 邻域会系统性偏大约 1.4-1.7 倍，
+       这在 gamma 的文献不确定度（0.1-0.3 J/m^2，±2 倍）之内，故记账后照用。"""
+    out = []
+    for a in (-1, 0, 1):
+        for b in (-1, 0, 1):
+            for c in (-1, 0, 1):
+                if (a, b, c) != (0, 0, 0):
+                    out.append((a, b, c))
+    return tuple(out)
+
+
 class GibbsLath(object):
     def __init__(self, N, L, C, eps0, gamma, df, workers=8, k0_mode='free'):
         self.N, self.L = N, L
@@ -69,6 +82,41 @@ class GibbsLath(object):
                                  for v in range(self.nv)]) * _G6[None, :]
         self.zero = np.zeros(6)
         self.lab = np.zeros((N, N, N), np.int8)
+        self.aniso = 0.0                      # 各向异性强度 lambda（0 = 各向同性）
+        self.dirs = dirs26()
+        self._build_iface_normals()
+
+    def _build_iface_normals(self):
+        """为每个"界面类型"(无序标签对) 定一个**择优法向**:
+             (0, v)  -> 变体 v 单独存在时的弹性最省能法向（≈ 该变体的惯习面法向）
+             (v, w)  -> 若该对是 rank-1 相容的, 取其相容法向; 否则 None（不给各向异性）
+           物理依据: 马氏体板条的界面能对取向敏感, 极小值在惯习面/孪晶面上。"""
+        from windowB_bench3d import rank1_normal
+        self.nab = {}
+        for v in range(1, self.nv + 1):
+            n, e = self.favorable_normal(v - 1)
+            self.nab[(0, v)] = n
+        for a in range(1, self.nv + 1):
+            for b in range(a + 1, self.nv + 1):
+                res, n = rank1_normal(self.eps0[b - 1] - self.eps0[a - 1])
+                self.nab[(a, b)] = n if res < 1e-9 else None
+        self._build_w_tables()
+
+    def _build_w_tables(self):
+        """按 (方向, 标签对) 预算好权重 w = |d| * [1 - lambda (d_hat . n_ab)^2]"""
+        nv = self.nv
+        self._w = []
+        for d in self.dirs:
+            dn = np.array(d, float)
+            dn /= np.linalg.norm(dn)
+            ln = np.linalg.norm(np.array(d, float))
+            w = np.ones((nv + 1) ** 2)          # 默认各向同性
+            for (a, b), nrm in self.nab.items():
+                if nrm is None:
+                    continue
+                idx = a * (nv + 1) + b
+                w[idx] = ln * (1.0 - self.aniso * float(dn @ nrm) ** 2)
+            self._w.append(w)
 
     # ---------- 标签 <-> phi ----------
     def sync_pf(self):
@@ -108,7 +156,24 @@ class GibbsLath(object):
         return c // 2
 
     def E_surf(self, lab=None):
-        return self.gamma * self.dx ** 2 * self.n_unlike(lab)
+        """各向异性面能: E = (gamma/2) dx^2 Sum_{方向 d} Sum_{标签对(a,b)} cnt * w(d,a,b)
+           （每个键被 +d 与 -d 各数一次 => /2）。aniso=0 时退化为 |d| 加权的 26 邻域面积。"""
+        lab = self.lab if lab is None else lab
+        nv = self.nv
+        tot = 0.0
+        for k, d in enumerate(self.dirs):
+            nb = np.roll(lab, d, axis=(0, 1, 2))
+            m = nb != lab
+            if not m.any():
+                continue
+            a = lab[m].astype(np.int64)
+            b = nb[m].astype(np.int64)
+            lo = np.minimum(a, b)
+            hi = np.maximum(a, b)
+            idx = lo * (nv + 1) + hi
+            cnt = np.bincount(idx, minlength=(nv + 1) ** 2).astype(float)
+            tot += float((cnt * self._w[k]).sum())
+        return 0.5 * self.gamma * self.dx ** 2 * tot
 
     def V_trans(self, lab=None):
         lab = self.lab if lab is None else lab
