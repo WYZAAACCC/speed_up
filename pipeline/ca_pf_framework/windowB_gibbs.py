@@ -115,7 +115,11 @@ class GibbsLath(object):
                 if nrm is None:
                     continue
                 idx = a * (nv + 1) + b
-                w[idx] = ln * (1.0 - self.aniso * float(dn @ nrm) ** 2)
+                # 近奇异各向异性: 偏离择优法向的界面贵 (1+Lambda) 倍。
+                # 原先把 lambda 限在 [0,1]（即最多 1/(1-lambda) 倍）实测被弹性/化学项淹没
+                # （lambda=0.9 与 0.99 结果逐位相同 ⇒ 决策根本没被改）。真实惯习面是
+                # "奇异"极小（只在特定面稳定），所以近奇异形式才对。
+                w[idx] = ln * (1.0 + self.aniso * (1.0 - float(dn @ nrm) ** 2))
             self._w.append(w)
 
     # ---------- 标签 <-> phi ----------
