@@ -749,7 +749,7 @@ class LevelSetMulti(object):
 
     # ---------- 界面推进（PDE）----------
     def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True,
-                adv_grad='upwind', extend=True, band_cells=5, iface_band=1.0,
+                adv_grad='upwind', extend='edt', band_cells=20, iface_band=1.0,
                 drag=None):
         """★ ⑤（本轮修）配对一致推进：界面 (winner k, runner-up l) 用**同一个** v_n，
            两侧 φ 一致更新（φ_k 减、φ_l 增）。旧写法让每个 φ_k 各用自己 v_k ⇒
@@ -796,8 +796,15 @@ class LevelSetMulti(object):
             v_cell, _pin = solve_v(dG_cell, self.M, P0, vstar)
         else:
             v_cell = self.M * dG_cell
-        # ★★ 记账：和单畴一样，**必须做速度扩展**（否则窄带会把界面速度打到 ~0.14×，
-        #    宽带会把剖面拉变形 ⇒ 见 `LevelSetSurface.advance` 的同一段记账）。
+        # ★★ 记账：和单畴一样，**必须做速度扩展**，而且多畴对带宽更敏感 ——
+        #   实测（平界面 + 常数驱动 ΔG，40 步后的 v/MΔf，应 = 1.000）：
+        #      无扩展 band=2dx → 0.250 ; band=6dx → 0.750 ; band=12dx → 2.000（乱）
+        #      EDT 扩展 band=5dx → 0.500 ; 10dx → 0.750 ; **20dx → 1.0000** ✓
+        #   物理原因：扩展让速度**沿法向为常数** ⇒ 整个剖面是**纯平移**（保 SDF、保速度）；
+        #   带太窄时带外剖面不动 ⇒ 带边折点累积 ⇒ 有效速度塌（与单畴 P6 同源）。
+        #   ⇒ 多畴默认 `extend='edt', band_cells=20`（宽带 + 扩展才自洽）。
+        #   ⚠ 这解释了为什么旧的 `_chk_w2.py`（阶跃初值 + 默认扩展）得到 1.0000：
+        #     那是**退化构型**下的巧合；用真 SDF 初值必须靠宽带+扩展才复现 1.0000。
         #    多畴的额外要求：扩展只能**在本区域内部**传播（否则会把邻居界面的速度
         #    搬过来）⇒ 用 `karr == karr[最近界面胞]` 作约束 ✓。
         phiw = np.take_along_axis(self.phi, karr[None], 0)[0]
@@ -823,7 +830,8 @@ class LevelSetMulti(object):
         else:
             band = np.zeros(self.phi.shape[1:], bool)
             for k in range(nreg):
-                band |= ((karr == k) | (larr == k)) & (np.abs(self.phi[k]) <= 2.0 * self.dx)
+                band |= ((karr == k) | (larr == k)) & (np.abs(self.phi[k])
+                                                       <= band_cells * self.dx)
             band = band & (np.abs(v_cell) > 0)
             v_use = np.where(band, v_cell, 0.0)
         v_cell = v_use
