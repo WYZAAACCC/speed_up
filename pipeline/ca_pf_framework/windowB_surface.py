@@ -253,6 +253,24 @@ class LevelSetMulti(object):
             b += (np.roll(reg, d, axis=(0, 1, 2)) != reg)
         return 0.5 * b * self.dx ** 2
 
+    def cell_area_geom(self):
+        """★ P1 修正：几何（coarea / 部分体积）面积测度，替换格子键测度。
+           A_c(i) = |∇φ_k(i)|·dx²/3（只取 winner==k 且在 1.5dx 带内）。
+           ★ 记账：初版多乘了 2（误以为要"两侧各半"），实测给 +100.5% ✗；
+             实际上每个胞只属一个区域 ⇒ Σ_k 已含两侧 ⇒ 去掉因子后 +0.25% ✅
+             （与 A2 的 +0.3% 完全一致，两条独立估计互相印证 ✓）。"""
+        reg = self.region()
+        A = np.zeros_like(self.phi[0])
+        for k in range(self.nreg):
+            g = np.gradient(self.phi[k], self.dx)
+            gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+            band = (reg == k) & (np.abs(self.phi[k]) <= 1.5 * self.dx)
+            A = np.where(band, gn * self.dx ** 2 / 3.0, A)
+        return A
+
+    def area_total_geom(self):
+        return float(self.cell_area_geom().sum())
+
     def Gamma_eq(self, c):
         """Langmuir/McLean 平衡过剩（mol/m²），复用 pipeline/gibbs 的单一参数来源"""
         try:
@@ -275,7 +293,7 @@ class LevelSetMulti(object):
         if not hasattr(self, 'Gam'):
             self.Gam = np.zeros_like(self.phi[0])
         m = self.surface_band()
-        A_c = self.cell_area()
+        A_c = self.cell_area_geom()      # ★ P1：用几何（coarea）测度，替换格子键测度
         Gam_eq = self.Gamma_eq(self.c)
         # ★ 稳定性保护：显式弛豫必须 dt ≤ τ_ex，否则 Γ 过冲发散（实测 M4 里 dt=4e-9 > τ=1e-9
         #   导致总量变负、涨 1e5 倍 ✗）。超出时按线性插值限幅（等价于隐式的第一步）。
@@ -295,7 +313,7 @@ class LevelSetMulti(object):
         if not hasattr(self, 'Gam'):
             self.Gam = np.zeros_like(self.phi[0])
         mb = float(self.c.sum()) * self.rho * self.dx ** 3
-        ms = float((self.Gam * self.cell_area()).sum())
+        ms = float((self.Gam * self.cell_area_geom()).sum())
         return mb, ms
 
     def curvature_of(self, k):
