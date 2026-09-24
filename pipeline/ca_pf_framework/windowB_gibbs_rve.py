@@ -174,7 +174,7 @@ def shape_stats(lab, dx, eps0, C, fh, min_cells=40, topk=8):
 
 
 def main(N=96, dx=1e-8, nstep=300, df=5e7, gamma=0.15, k0='clamped',
-         nsel=4000, tag='', seed=7, monitor=25, aniso=0.0):
+         nsel=4000, tag='', seed=7, monitor=25, aniso=0.0, nplate=3, rfrac=0.25):
     os.makedirs(OUT, exist_ok=True)
     C = C_iso3(113e9, 0.34)
     eps0, Fs, meta = variants()
@@ -190,8 +190,8 @@ def main(N=96, dx=1e-8, nstep=300, df=5e7, gamma=0.15, k0='clamped',
           % np.round([g.favorable_normal(v)[1] for v in range(3)], 1))
     npl = 0
     for v in range(g.nv):
-        npl += g.seed_plates(v, nrm[v], thick_cells=2, nplate=3, rng=seed + v,
-                             radius_cells=N)
+        npl += g.seed_plates(v, nrm[v], thick_cells=2, nplate=nplate, rng=seed + v,
+                             radius_cells=max(3, int(rfrac * N)))
     print('=' * 96)
     print('Gibbs 面板条 RVE: N=%d dx=%.1f nm 域=%.2f um | gamma=%.3f df=%.2e k0=%s'
           % (N, dx * 1e9, L * 1e6, gamma, df, k0))
