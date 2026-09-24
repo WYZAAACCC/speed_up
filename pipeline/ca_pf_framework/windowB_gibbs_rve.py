@@ -82,7 +82,14 @@ def do_geometry(lab, dx, eps0, C, tag, fh):
     A *= dx ** 2
     fh.write('  界面积 A = %.4e m^2 ; 单位体积界面积 S_v = %.4e 1/m\n'
              % (A, A / V))
-    fh.write('  等效"板条厚" 6V/A = %.1f nm\n' % (6 * V / A * 1e9))
+    # ★ 立体学: 板片(plate)的界面积密度 S_v = 2 f / t  =>  t = 2 f / S_v
+    #   （先前误用 6V/A 当"等效板条厚"，那会把体积分数混进厚度里 —— 已更正并记账）
+    Sv = A / V
+    ftr = 1.0 - np.count_nonzero(lab == 0) / tot
+    fh.write('  单位体积界面积 S_v = %.4e 1/m ; 板片厚度 t = 2f/S_v = %.1f nm\n'
+             % (Sv, (2 * ftr / Sv * 1e9) if Sv > 0 else float('nan')))
+    fh.write('  （旧写法 6V/A = %.1f nm 是错的：它把体积分数混进了厚度）\n'
+             % (6 * V / A * 1e9))
     for v in range(nv):
         if frac[v] < 0.01:
             continue
