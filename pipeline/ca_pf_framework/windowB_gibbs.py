@@ -82,7 +82,8 @@ class GibbsLath(object):
                                  for v in range(self.nv)]) * _G6[None, :]
         self.zero = np.zeros(6)
         self.lab = np.zeros((N, N, N), np.int8)
-        self.aniso = 0.0                      # 各向异性强度 lambda（0 = 各向同性）
+        self.aniso = 0.0                      # 各向异性强度 Lambda（0 = 各向同性）
+        self.neutral_tol = 0.0                # 接受判据的容差（>0 时允许"能量中性"的移动）
         self.dirs = dirs26()
         self._build_iface_normals()
 
@@ -260,7 +261,7 @@ class GibbsLath(object):
             sel = ordv[:m]
             sub[idx[sel, 0], idx[sel, 1], idx[sel, 2]] = best[sel]
             if not np.array_equal(sub, base):
-                if self.E_total(sub) < E0:
+                if self.E_total(sub) <= E0 + self.neutral_tol * max(abs(E0), 1e-30):
                     np.copyto(lab, sub)
                     acc = int(np.count_nonzero(sub != base))
                     break

@@ -181,13 +181,15 @@ def shape_stats(lab, dx, eps0, C, fh, min_cells=40, topk=8):
 
 
 def main(N=96, dx=1e-8, nstep=300, df=5e7, gamma=0.15, k0='clamped',
-         nsel=4000, tag='', seed=7, monitor=25, aniso=0.0, nplate=3, rfrac=0.25):
+         nsel=4000, tag='', seed=7, monitor=25, aniso=0.0, nplate=3, rfrac=0.25,
+         ntol=0.0):
     os.makedirs(OUT, exist_ok=True)
     C = C_iso3(113e9, 0.34)
     eps0, Fs, meta = variants()
     L = N * dx
     g = GibbsLath(N, L, C, eps0, gamma, df, workers=8, k0_mode=k0)
     g.aniso = float(aniso)
+    g.neutral_tol = float(ntol)
     g._build_w_tables()
     nrm = []
     for v in range(g.nv):
