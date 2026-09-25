@@ -299,31 +299,39 @@ rec("T-A9 §5.2 的'两个独立参数'在 n_solute=2 下不成立（应降级�
     True, "3 个自由参数")
 
 # ---------------------------------------------------------------------------
-hr("T-A10 抗截留通量向量化：n=1 时逐位退化到 alloy_pf_std 的标量式")
+hr("T-A10 抗截留通量：向量式 vs **真实** StdFront._j_at_faces（含符号判决）")
 # ---------------------------------------------------------------------------
+import inspect
 
+# (1) 默认符号：两个类的签名默认值都必须是判决过的 -1.0
+sig_s = inspect.signature(S2.StdFront.__init__).parameters["jat_sign"].default
+sig_m = inspect.signature(S2.StdFrontMulti.__init__).parameters["jat_sign"].default
+print("   默认 jat_sign: StdFront = %+.1f   StdFrontMulti = %+.1f" % (sig_s, sig_m))
+rec("T-A10c 两个类默认抗截留符号都是 -1.0（判决值）",
+    sig_s == -1.0 and sig_m == -1.0, "SigStdFront=%.1f SigMulti=%.1f" % (sig_s, sig_m))
 
-def j_at_scalar(a_t, ke, V, c, s):
-    return -(a_t / (2.0 * np.sqrt(2.0))) * (1.0 - ke) * V * c / np.cosh(s) ** 2
+# (2) 用**真的** StdFront 代码（__new__ 绕过 common_tangent，A1 未做）与 n_solute=1 的
+#     StdFrontMulti 逐点对比：同一个公式必须给出同一个数（含符号）。
+cl1 = T3.TernaryClosure({"B": (7334.0, 0.0)})          # §5.2 口径：k(1911.1) = 0.6303
+g1 = S2.StdFrontMulti(10e-9, 0.1, 2.5e-9, 1e-6, cl1, {"B": 0.036}, {"B": 9.5e-9},
+                      {"B": 5.0e-13}, x0=0.2e-6, T=1911.1)
+sf = S2.StdFront.__new__(S2.StdFront)                   # 不跑 __init__（它要 common_tangent）
+sf.W, sf.V, sf.dx, sf.N, sf.x0 = g1.W, g1.V, g1.dx, g1.N, g1.x0
+sf.ke, sf.jat_sign = g1.ke[0], g1.jat_sign
+tq = 2.0e-6
+cf = 0.036 * (1.0 + 0.3 * np.sin(np.arange(sf.N + 1) / 5.0))   # 任意非均匀面浓度
+ja = sf._j_at_faces(tq, S2.A_T_KR, cf)                          # 真实标量实现
+jb = g1._j_at_faces(tq, S2.A_T_KR, cf[None, :])[0]              # 三元实现的 n=1 行
+scale = max(np.max(np.abs(jb)), 1e-300)
+print("   max|StdFront - StdFrontMulti(n=1)| / max|j| = %.3e" % (np.max(np.abs(ja - jb)) / scale))
+print("   符号（k=0.6303<1 => 抗截留把溶质往液相推，j_at(界面) = %+.4e）" % ja[sf.N // 2])
+rec("T-A10a n=1 时真实 StdFront 与 StdFrontMulti 逐点一致（相对 < 1e-13）",
+    np.max(np.abs(ja - jb)) / scale < 1e-13)
+rec("T-A10b k<1 时 j_at 指向液相（正号）= 判决过的符号",
+    ja[sf.N // 2] > 0.0, "j_at = %+.4e" % ja[sf.N // 2])
 
-
-def j_at_vec(a_t, kvec, V, cvec, s):
-    return np.array([-(a_t / (2.0 * np.sqrt(2.0))) * (1.0 - kk) * V * cc
-                     / np.cosh(s) ** 2 for kk, cc in zip(kvec, cvec)])
-
-
-ss = np.linspace(-3.0, 3.0, 41)
-j1 = j_at_scalar(S2.A_T_KR, 0.6303, 0.6, 0.036, ss)
-jv1 = j_at_vec(S2.A_T_KR, [0.6303], 0.6, [0.036], ss)[0]
-rec("T-A10a n=1 时向量式与标量式逐位相同", np.array_equal(j1, jv1),
-    "max|d| = %.3e" % np.max(np.abs(j1 - jv1)))
-jv2 = j_at_vec(S2.A_T_KR, [KAL_REF, KV_REF], 0.6, [C0_AL, C0_V], ss)
-rec("T-A10b n=2 时逐溶质独立、且与 W 无关（解析前沿）",
-    jv2.shape == (2, ss.size) and np.all(np.isfinite(jv2)),
-    "j_at = [Al: %.3e, V: %.3e] (s=0)" % (jv2[0][20], jv2[1][20]))
-solvent_at = -(jv2[0] + jv2[1])
-print("   溶剂 Ti 的隐含项 j_at,Ti = -(j_Al + j_V)（由 Sum c_i = 1）: %.3e (s=0)"
-      % solvent_at[20])
+# (3) 反向对照：把符号翻成 +1，k_eff 必须**远离** k_e（这就是原 bug 的指纹）
+print("   反向对照（符号 +1 时 k_eff 远离 k_e）：见 T-A11a 的 sign=+1 行。")
 
 # ---------------------------------------------------------------------------
 hr("T-A11 三元前沿仪器（StdFrontMulti）：逐溶质正确性 + 冻结核面的 no-go")

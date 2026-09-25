@@ -78,7 +78,16 @@ def sech2(x):
 
 
 class StdFront:
-    def __init__(self, W, V, dx, L, x0=0.2e-6, T=1911.1, c0=C0, dt=None):
+    def __init__(self, W, V, dx, L, x0=0.2e-6, T=1911.1, c0=C0, dt=None,
+                 jat_sign=-1.0):
+        # jat_sign: 抗截留通量的符号。**默认 -1.0 是判决过的正确符号**。
+        # 判决依据（2026-09-25，见 pf1d_moose/README.md §9.9 与 _chk_ternary.py T-A10）：
+        #   对一个 k < 1 的溶质，抗截留幅值增大时 k_eff 必须**下降**（靠近 k_e）。
+        #   本类原来的写法（+1）会让 k_eff **上升**（远离 k_e）=> 符号反了。
+        #   注意：MOOSE 那套仪器用的是框架内置 AntitrappingCurrent，符号由 MOOSE 定，
+        #   且已被实测证明是对的（ALPHA 增大 => k_eff 0.877 -> 0.795 -> 0.6259 -> k_e=0.6303），
+        #   所以那条路的结论不受本判决影响。
+        self.jat_sign = float(jat_sign)
         self.W, self.V, self.dx, self.L, self.x0, self.c0 = W, V, dx, L, x0, c0
         self.N = int(round(L / dx))
         self.x = (np.arange(self.N) + 0.5) * dx
@@ -100,7 +109,8 @@ class StdFront:
     def _j_at_faces(self, t, a_t, c_face):
         xf = np.arange(self.N + 1) * self.dx
         s_f = (xf - (self.x0 + self.V * t)) / (np.sqrt(2) * self.W)
-        return -(a_t / (2 * np.sqrt(2))) * (1 - self.ke) * self.V * c_face * sech2(s_f)
+        return (self.jat_sign * -(a_t / (2 * np.sqrt(2))) * (1 - self.ke) * self.V
+                * c_face * sech2(s_f))
 
     def run(self, a_t, tend, dt=None, nsteps=None):
         dt = dt if dt is not None else self.dt

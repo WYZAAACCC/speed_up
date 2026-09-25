@@ -835,7 +835,7 @@ j^{\mathrm{at}}_i=a_t\,W\,(c_i^{l0}-c_i^{s0})\,
 | N1 | `ca3d.py` / `ca3d_solute.py` 双溶质向量化 | Window A 化学初值 |
 | N2 | `windowB_surface.py` 的 @@\Gamma_i@@ / @@D^s_{ij}@@ 向量化 | Window C |
 | N3 | R6 的 Langmuir 竞争与每溶质 @@\Delta G_{\mathrm{seg},i}@@ | Window C 定量 |
-| N4 | 标量 `alloy_pf_std.StdFront` 的**抗截留符号判决**（本轮只判了三元版）| A1/A2 |
+| ~~N4~~ | 标量 `alloy_pf_std.StdFront` 的**抗截留符号判决** | ✅ 已判决并已改（`jat_sign = -1.0`，判据 T-A10 —— 用**真实代码**逐点交叉验证 `0.000e+00`；MOOSE 侧不受影响，见 `pf1d_moose/README.md` §9.9）| — |
 | N5 | 文献 @@T_L=1923@@ K 与 @@\Delta T_0=45\text{–}50@@ K 的**出处与不确定度** | R7(c) 的定标 |
 | N6 | 摩尔体积两个口径（@@1.1345\times10^{-5}@@ vs @@9.873\times10^{-6}@@，差 15%）| 面-体守恒 |
 | N7 | @@L_{jk}@@ 与 @@D_{ij}@@ 非对角项 | 等 CALPHAD |

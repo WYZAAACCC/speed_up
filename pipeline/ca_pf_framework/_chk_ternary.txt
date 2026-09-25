@@ -1,5 +1,3 @@
-/mnt/f/speed_up/pipeline/ca_pf_framework/alloy_pf_std.py:77: RuntimeWarning: overflow encountered in square
-  return 1.0 / np.cosh(x) ** 2
 
 ==== T-A0 符号与锚（溶剂 Ti） ====
    dg_Ti(Tm) 公式值 = -0.000e+00 J/mol
@@ -88,10 +86,14 @@
    => 三元自由度 = 4 - 1 = 3（不是 §5.2 的 1）
    T-A9 §5.2 的'两个独立参数'在 n_solute=2 下不成立（应降级为准二元子集）          PASS 3 个自由参数
 
-==== T-A10 抗截留通量向量化：n=1 时逐位退化到 alloy_pf_std 的标量式 ====
-   T-A10a n=1 时向量式与标量式逐位相同                                  PASS max|d| = 0.000e+00
-   T-A10b n=2 时逐溶质独立、且与 W 无关（解析前沿）                          PASS j_at = [Al: -2.087e-03, V: 1.555e-03] (s=0)
-   溶剂 Ti 的隐含项 j_at,Ti = -(j_Al + j_V)（由 Sum c_i = 1）: 5.328e-04 (s=0)
+==== T-A10 抗截留通量：向量式 vs **真实** StdFront._j_at_faces（含符号判决） ====
+   默认 jat_sign: StdFront = -1.0   StdFrontMulti = -1.0
+   T-A10c 两个类默认抗截留符号都是 -1.0（判决值）                            PASS SigStdFront=-1.0 SigMulti=-1.0
+   max|StdFront - StdFrontMulti(n=1)| / max|j| = 0.000e+00
+   符号（k=0.6303<1 => 抗截留把溶质往液相推，j_at(界面) = +5.8733e-10）
+   T-A10a n=1 时真实 StdFront 与 StdFrontMulti 逐点一致（相对 < 1e-13） PASS 
+   T-A10b k<1 时 j_at 指向液相（正号）= 判决过的符号                       PASS j_at = +5.8733e-10
+   反向对照（符号 +1 时 k_eff 远离 k_e）：见 T-A11a 的 sign=+1 行。
 
 ==== T-A11 三元前沿仪器（StdFrontMulti）：逐溶质正确性 + 冻结核面的 no-go ====
    目标：c_int(Al) = c0/k = 0.14027 (>c0)   c_int(V) = c0/k = 0.02285 (<c0)
@@ -108,7 +110,9 @@
       要 R = -1（即 k_eff = k_i）需 a_t = 7.16，而该值随 W 变（见 T-A11d）=> no-go。
    T-A11c 移动坐标系质量守恒强制 c_s(deep) = c0（偏差 < 0.1%）             PASS max 相对偏差 = 2.228e-05
    冻结核面的 no-go 检查（单一 a_t 能否同时命中两个 k_i^e？）：
-     W/nm   k_eff(Al)        dev |    k_eff(V)        dev
+     W/nm   k_eff(Al)        dev |    k_eff(V)        dev/mnt/f/speed_up/pipeline/ca_pf_framework/alloy_pf_std.py:77: RuntimeWarning: overflow encountered in square
+  return 1.0 / np.cosh(x) ** 2
+
       5.0     0.93571    +28.68% |     1.13747    -27.81%
      10.0     0.89423    +22.98% |     1.23723    -21.48%
      20.0     0.84881    +16.73% |     1.35101    -14.26%
