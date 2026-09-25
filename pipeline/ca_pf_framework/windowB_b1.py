@@ -182,6 +182,8 @@ class B1Athermal(object):
                     self._seed_nuclei(n_new)
             g.advance(dt, aniso=self.aniso, npref=self.npref, herring=self.herring,
                       adv_grad=adv_grad, band_cells=band_cells, iface_band=2.0)
+            # ★★ W-6：与 M2 同样必须每步调 update_Gamma（面 Gamma 的弛豫/回吐/离带回还）
+            g.update_Gamma(dt)
             ndt = g.suggest_dt(cfl=cfl, dt_prev=dt)
             if ndt:
                 dt = ndt

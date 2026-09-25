@@ -658,3 +658,18 @@ athermal 指纹成立；**`alpha'` 的分数在本模型里是动力学量、不
 
 **下一步**：W-6（Stefan 的面储存/回吐项）→ W-7（Window B 侧 halo/core + domain-size 收敛）→
 W-8（盒子 B 三维 `Delta x = 0.25` µm）→ W-10（文献验证清单）。
+### (m) W-6（Stefan 面储存/回吐）—— 机制已验证 + 驱动缺口已修 + 守恒残差未闭合（2026-09-25）
+
+* **纠正过期备注**：`_stefan` 的 (a) 段 + `update_Gamma` (1)(2)(3) **已经实现**"面储存/回吐"
+  ⇒ M4 那句"还没做"**作废**（写于修好之前）。
+* **判据**（`_chk_w6.py`）：正确协议下 `|Gamma-Gamma_eq|/Gamma_eq = 0.00e+00` ✅；
+  负对照（只 `advance`）面 `Gamma` 净增 +2.688e-18、账面亏损 6.11e-04 ✅（证明回吐来自 `update_Gamma`）。
+* **★ 驱动协议缺口（已修）**：`M2_twelve_variants` / `B1Athermal` 原来**只调 `advance`、不调 `update_Gamma`**
+  ⇒ 溶质滞留面 `Gamma` + 离带胞脱离账本。现在两者每步都调（`M2` 加开关 `surface_chem=True`）；
+  `totals()` 加"离带兜底面积"记账。
+* **仍未闭合**：正确协议 30 步累积守恒 **1.23e-04**、单步最大 1.10e-05（已排除：调用顺序、`update_Gamma` 自身、
+  存储分支、`reinit`）⇒ 定位到 **`_stefan` 的掩模与 `cell_area_geom` 不一致**（H6 的记账早警告过）。
+  **W-6b** = 统一掩模 + 加逐步对账判据。⚠ **M4 的 2.02e-04 与它同源**，在此之前 `M4` 的 "<1e-3" 门槛偏松。
+
+**下一步**：W-6b（统一掩模 + 逐步对账）→ W-7（Window B 侧 halo/core + domain-size 收敛）→ W-8（盒子 B 三维 `Delta x = 0.25` µm）→ W-10。
+

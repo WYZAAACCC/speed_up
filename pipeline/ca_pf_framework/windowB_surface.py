@@ -826,7 +826,16 @@ class LevelSetMulti(object):
         if not hasattr(self, 'Gam'):
             self.Gam = np.zeros_like(self.phi[0])
         mb = float(self.c.sum()) * self.rho * self.dx ** 3
-        ms = float((self.Gam * self.cell_area_geom()).sum())
+        A_c = self.cell_area_geom()
+        # ★★ 记账修（2026-09-25，W-6）：离带的胞（A_c = 0）**仍然持有 Γ**（内存里没清），
+        #   若 totals 只按 A_c 计，这部分溶质会**脱离账本**（实测：界面走一步后
+        #   面总量无故减 6.2e-22、体相不动 ⇒ 账面漏）。物理上它由 update_Gamma 的第 (3) 项
+        #   "离带 -> 还回体相"处理；但**只要驱动没调 update_Gamma（M2/B1 就是），
+        #   账面就会漏**。这里用上一次的有效面积  兜底 ⇒ 账面不再漏。
+        A_eff = A_c
+        if hasattr(self, '_A_prev'):
+            A_eff = np.where(A_c > 0, A_c, self._A_prev)
+        ms = float((self.Gam * A_eff).sum())
         return mb, ms
 
     def curvature_of(self, k):
@@ -1282,7 +1291,7 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=1e8, gamma=0.15, aniso=0.4,
                        Mob=1e-9, rfrac=0.22, adv_grad='upwind',
                        pair_kernel=False, iface_band=2.0, probe=0, cfl=0.15,
                        plate_dx=2.0, per_field=False, aniso_elastic=False, quiet=False,
-                       t_end=None,
+                       t_end=None, surface_chem=True,
                        C_override=None):
     # t_end：给定**总物理时间**时，按累计时间跑（而不是固定步数）。★ 记账：
     #   界面每步位移被 CFL 钉在 ~0.15dx，而 dt ∝ 1/dG_max ⇒ **同一 nstep ≠ 同一时刻**；
@@ -1389,6 +1398,12 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=1e8, gamma=0.15, aniso=0.4,
         g.advance(dt, aniso=aniso, npref=npref, adv_grad=adv_grad,
                   pair_kernel=pair_kernel, iface_band=iface_band,
                   per_field=per_field)
+        # ★★ W-6 修（2026-09-25）：**必须每步调 update_Gamma** —— 否则被 Stefan 扫出的
+        #   溶质全部滞留在面 Gamma 里（既不弛豫到 McLean、也不由面扩散/回吐分发），
+        #   且界面移走后离带胞的 Gamma 会脱离账本（实测 rel 约 5e-6/步）。
+        #   关掉它只在做'纯平流/纯面储存'的隔离实验时才有意义。
+        if surface_chem:
+            g.update_Gamma(dt)
         # ★ 自适应 dt：按**实际总驱动**（含弹性）定 CFL，见 `suggest_dt` 的记账
         _tacc += dt
         ndt = g.suggest_dt(cfl=cfl, dt_prev=dt)
