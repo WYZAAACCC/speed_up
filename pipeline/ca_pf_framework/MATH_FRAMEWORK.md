@@ -641,6 +641,30 @@ A[\mathcal I]=\Delta x^2\cdot\frac{\#\{\text{异标签近邻键}\}}{2}
     ⇒ 已加入 `docs/LIT_SEARCH_BRIEF_Ti64_THERMO.md` 的检索项（TEM vs SEM/EBSD 的板条宽/间距）。
   - 算力账（说明为何必须更正）：真取 @\Delta x=10@ nm 则 @L=20@ µm 需 @2000^3\approx8\times10^9@ 胞 ✗；
     取 @\Delta x=0.25@ µm 则 @80^3\approx5\times10^5@ 胞 ✓（@L=50@ µm 时 @200^3\approx8\times10^6@ ✓）。
+* **⚠ 生产路径的权威声明（2026-09-25 依代码复核）**：
+  - **生产路径 = `windowB_surface.py`（level-set 面场 + 面上的 `\Gamma` 场）** —— 每胞唯一标签、
+    界面为面、面量按面积记，符合用户"禁止随机胞翻转 / 要面场+PDE"的硬约束；
+  - **非生产参考（仍在仓库）**：`windowB_gibbs.py`（`GibbsLath`：胞**重标号**，接受用精确总能
+    单调下降 ⇒ 非热极限语义可用，但形式上是元胞重标号，不作主路径）与
+    `windowB_hybrid.py`（`advance(..., rng)` 里 `draw = rng.random(...)` ⇒ **随机胞翻转**，
+    与用户约束冲突 ✗，仅作历史原型）；
+  - 这两个文件只作 **G1–G3 能量判据的参考实现**；`windowB_surface.py` 模块级只 import
+    numpy/scipy（弹性核与参数表在函数内延迟 import `windowB_pf3d`/`windowB_aniso_elastic`/
+    `gibbs_physics`）⇒ **与那两个原型无依赖** ✓。
+* **V6 必须分侧记（2026-09-25）**：**CA 侧 halo 已实现**（`ca3d.py` 的 halo + `active_box`；
+  闭式判据在 `verify_framework.py` 的 W1–W4：泄漏 `e^{-N}`、Dirichlet 截断 `((1-k)/k)e^{-N}`、
+  打靶法复核、横向截断 RULE）✓；**Window B 侧 halo/core 与 domain-size 收敛未做** ✗
+  （全仓库 `halo` 只出现在 `ca3d.py` 与 CA 验证脚本里）。
+* **惯习面 `{334}_\beta` 的证据（2026-09-25）**：**两个分析脚本已存在** ——
+  `_chk_334.py`（{334} 族 24 个成员 vs 3000 个随机方向的弹性能分位；**随机对照已经做过** ✓）
+  与 `_chk_nstar.py`（把 **PTMC 不变平面法向**代入 `\frac12\varepsilon:\Lambda(n):\varepsilon`）。
+  ⚠ 两者都**只打印数值、没有 pass/fail 门槛** ⇒ 结论**未记账**（本会话的 HX-8b 才是带判据的版本）。
+* **Window B 的 PF 引擎实况（2026-09-25）**：`windowB_pf3d.py::PF3D` 与 `windowB_pf.py::MartensitePF`
+  **已经是多变体马氏体 PF 引擎**（Allen–Cahn 型非守恒序参量 + FFT 谱法微弹性 +
+  `\varepsilon^0(\varphi)=\sum_v\varphi_v\varepsilon^0_v` 驱动），且 **`sigma_ext`（外应力）已接进驱动力**
+  （`sext_e0[v] = \sigma_{ext}:\varepsilon^0_v` 出现在 `forces()`/`dfdphi()` 里 ✓）
+  ⇒ **缺的不是引擎，而是**：T 依赖的势垒/KM 动力学（`M_s`/`Koistinen`/`Landau`/`athermal` 全库 0 命中）、
+  "V 不分配"的非守恒束缚判据、以及**变体选择判据脚本**（给定 `\sigma_{ext}` ⇒ `\Delta E_v=-\sigma:\varepsilon^{0,v}` 最小）。
 * **与 Window C（晶界 Gibbs 面）共用一套离散面机制**：`\Gamma_i@ 的面上输运
   与这里的 @A[\mathcal I]@、面法向、面扩散是同一套数据结构 ⇒ 可复用。
 * **与学习层（§8）**：Gibbs 面版本天然给出"面上算子"的训练数据（面法向、面通量、

@@ -13,7 +13,7 @@
 | P1.2 增量（本轮） | ✅ | `_chk_irf.py`：独立复算 LKT 核对 `irf_ti64.csv` 全 **115** 行（R 1.1e-3 / ΔT 5.1e-4）；`_ab_irf.py`：**IRF 换表对晶粒骨架几乎无影响（≤0.4%）** |
 | **P1.3 CALPHAD 接入** | ⏸ 等外部 | `CALPHAD_REQUEST.md`（26 量）；本轮给**文献+理论替代**：`_chk_thermo.py` + `THERMO_F12_CLOSURE.md` + `docs/LIT_SEARCH_BRIEF_Ti64_THERMO.md` |
 | **P1.4 AMG/迭代求解器** | ❌ 未做 | Phase 3 的前置（20³ µm/Δx=0.5 µm 要在 22 GB 内跑通） |
-| **Phase 2 P2.1/P2.2/P2.3 Window B** | ❌ 未开始 | `马氏体/α′` 在代码里 0 命中（B1/B2 子模型都没有）|
+| **Phase 2 P2.1/P2.2/P2.3 Window B** | 🚧 **判据层已有、仿真层部分** | `verify_framework.py` 有 TH1–TH9（含 TH4=F1/F2、TH8=模型液相线 vs 实测）、S1–S6、G1–G4（Gibbs 吸附/规范）、P1–P4（**P4 = α′ 建造期内分解的时间标度判据**）、K1–K5（拖曳）、L1–L7（含 **L5 = 「PF 必须复现 CA 的 V(ΔT)」**）；**PF 引擎已有**（`windowB_pf3d.py::PF3D` / `windowB_pf.py::MartensitePF`，非守恒 + FFT 微弹性 + `sigma_ext` 外应力已接）；**仍缺**：T 依赖势垒/KM（`M_s`/`Landau`/`athermal` 全库 0 命中）、B2 的相分解**实现**（时间标度判据已有）、**晶界 α 膜**、变体选择**判据脚本** |
 | Phase 2 的**数值地基**（本轮） | ✅ 大幅推进 | `windowB_surface.py`：H2 Gibbs–Thomson **1.2%**、H6 三叉线 **1.5e-16**、H7 层间 Π **3.2e-14**、H8 各向异性 W1 PASS、H3 **1.55e-4**、H4 **2.0e-4**、A3 面扩散切向比 1.000 |
 | **Phase 3 3D + A→B 耦合** | 🚧 部分 | Π 守恒算子 ✓（小算例）；**拖曳 D4 绝对速度仍差 ~2–2.5×** ✗；盒子 A/B 未按计划尺寸跑 |
 | **Phase 4 Window C** | 🚧 部分 | 面上热力学/守恒/面扩散/三叉线判据化 ✓；**移动曲面 + 三叉线联合** ✗；`ΔS_seg = 0` 仍缺失 ✗ |
