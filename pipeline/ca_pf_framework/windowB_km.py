@@ -178,3 +178,57 @@ def feq_scan(dfs, N=32, nstep=60, **kw):
     """
     fs = [feq_run(d, N=N, nstep=nstep, **kw) for d in dfs]
     return np.asarray(dfs, float), np.asarray(fs, float)
+
+
+# =============================================================================
+# 四、★ T2.1b-8：athermal 形核层（2026-09-25）
+# =============================================================================
+# 为什么必须有这一层（WINDOWB_SURFACE_AUDIT §11.7 的实测结论）：
+#   自协调 12 变体下 sum_v dev(eps0_v) = 0（C4 已验）⇒ 弹性能几乎不随 f 增长
+#   ⇒ 驱动力不随 f 消失 ⇒ **只靠生长**任何正驱动都会推到几何饱和（实测 f ~= 0.96，
+#     且与驱动无关，5 个驱动点离散仅 0.019）。
+#   ⇒ α' 的分数 vs T **只能来自 athermal 形核**（HYBRID_FRAMEWORK §8 item 4：
+#     形核是输入）。马氏体形核是 athermal 的：**只在降温时新增晶核**，等温不新增。
+#
+# 闭合（KJMA + 线性形核律 ⇒ 自动给出 KM）：
+#   形核数密度        N_v(T) = alpha_KM * (M_s - T) / v_0        [1/m^3]，T < M_s；T >= M_s 为 0
+#   与 KM 的关系      f(T) = 1 - exp(-alpha_KM (M_s - T)) = 1 - exp(-N_v v_0)   （KJMA）
+#   => **v_0（单个晶核最终能占的体积）必须由模型自己量出来**，不能猜：
+#        v_0 = -(V / N_seed) * ln(1 - f_sat)          （由 N_seed 个预置晶核的饱和分数反解）
+#   => alpha_KM 是**输入**（本模块给 [A] 占位 + 敏感度带）；模型给的是
+#      N_v(T) 与"生长 + 碰撞"共同产生的 f(T)，再由 fit_alpha 反解 alpha_meas 与输入比对。
+#
+# 记账：[A] = 指派/待标定。ALPHA_KM_BAND 是**占位值 + 敏感度带**，不是文献直读值
+#       （Ti64 的 alpha_KM 需检索，见 docs/LIT_SEARCH_BRIEF）；【未核实】。
+
+ALPHA_KM_BAND = (5.0e-3, 1.1e-2, 2.0e-2)   # 1/K  [A] 占位（文献常见量级 1e-2 量级，【未核实】）
+ALPHA_KM_REF = 1.1e-2                      # 1/K  [A] 默认占位
+
+
+def v0_from_saturation(f_sat, N_seed, V):
+    """由 N_seed 个预置晶核的饱和分数反解单个晶核的特征体积 v_0 [m^3]。【实测】
+        f_sat = 1 - exp(-N_seed * v_0 / V)  =>  v_0 = -(V/N_seed) ln(1-f_sat)
+    ★ 用模型自己的饱和分数，而不是猜几何尺寸（碰撞/吞并会让等效体积远大于几何体积）。"""
+    import math
+    if not (0.0 < f_sat < 1.0):
+        raise ValueError('v0_from_saturation: 需要 0 < f_sat < 1，收到 %r' % f_sat)
+    return -(float(V) / float(N_seed)) * math.log1p(-float(f_sat))
+
+
+def Nv_of_T(T, Ms=M_S_TI64, alpha=ALPHA_KM_REF, v0=1.0):
+    """athermal 形核数密度 [1/m^3]（T >= M_s 时为 0）。[T]"""
+    T = np.asarray(T, float)
+    return np.where(T < Ms, alpha * (Ms - T) / v0, 0.0)
+
+
+def N_target(T, Ms, alpha, v0, V):
+    """体积 V 内到温度 T 为止的**累计晶核数**（浮点；调用者做累计取整）。[T]"""
+    return float(np.asarray(Nv_of_T(T, Ms, alpha, v0), float)) * float(V)
+
+
+def alpha_from_Nv(Nv, T, Ms=M_S_TI64, v0=1.0):
+    """由 (N_v, T) 反解 alpha_KM [1/K]：alpha = N_v v_0/(M_s - T)。[T]"""
+    dT = float(Ms) - float(T)
+    if dT <= 0:
+        raise ValueError('alpha_from_Nv: 需要 T < M_s')
+    return float(Nv) * float(v0) / dT
