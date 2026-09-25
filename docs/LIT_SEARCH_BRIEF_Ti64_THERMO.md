@@ -28,3 +28,19 @@
 2. 用 van t Hoff + 本模型的精确闭式反解 k ⇒ 看是否与文献的 k_V 一致（现在预测 k* ≈ 0.46~0.48）；
 3. 若 **k_V 文献值 ≈ 0.63 且 ΔT_0 ≈ 48 K 同时成立** ⇒ 则本模型的"理想溶液 + 准二元"族
    **必须扩展**（三元 / 温度相关 k / 非理想），这才是 F1/F2 的真正修法。
+## 附加检索项（2026-09-25 加）：**板条/膜的"层级"与量级必须分清**
+
+背景：`MATH_FRAMEWORK.md` §5.8.5 曾把「@10–50 nm」写成**板条间距**，与 docx/文献的 µm 级冲突
+⇒ 需要文献把**同一族术语的层级**分清（这直接决定 Window B 体相网格的 @Δx@）：
+
+| # | 要回答 | 关键词 | 判据 |
+|---|---|---|---|
+| L1 | **α′ 板条宽度**：TEM 与 SEM/EBSD 分别给多少？| `alpha prime lath width TEM Ti-6Al-4V LPBF`、`martensite lath thickness` | 给出 TEM 值域与 SEM 值域**分别**列（很可能不是同一个量：单根片层 vs 板条束/间距）|
+| L2 | **板条间距 / 束间距**（相邻板条中心距）| `lath spacing`、`interlath spacing` | 典型值 + 分布 |
+| L3 | **集束 / 变体群（colony / variant cluster / packet）**尺寸 | `martensite colony size`、`variant cluster`、`packet` | 5–50 µm 是否可复现？|
+| L4 | **β 纳米膜/颗粒**厚度（α′→α+β 分解后）| `beta nanofilm`、`retained beta`、`interlath beta` | 5–100 nm 是否可复现？|
+| L5 | **晶界 α 膜（GB α）**厚度 | `grain boundary alpha layer`、`GB alpha thickness` | 量级 + 是否连续 |
+
+**为什么必须分清**：Window B 的体相 @Δx@ 由"**体相需要解析的最粗层级**"定（集束 5–50 µm、
+板条间距 ~1 µm ⇒ @Δx≈0.1–0.5@ µm），而 nm 级（β 膜、界面宽、单根片层）**按面表示**，
+不由网格解析 —— 若把 nm 量当成体相 @Δx@ 的驱动量，盒子就无法装下集束（算力差 10²–10⁴ 倍）。
