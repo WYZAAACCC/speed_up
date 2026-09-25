@@ -15,7 +15,9 @@ N = int(sys.argv[1]) if len(sys.argv) > 1 else 32
 nstep = int(sys.argv[2]) if len(sys.argv) > 2 else 40
 for tag, kw in (('A  Λ=0.40 按区域核（默认）', dict(aniso=0.4, per_field=False)),
                 ('B  Λ=0.40 按场推进（方案 a）', dict(aniso=0.4, per_field=True)),
-                ('C  Λ=10.0 对照（越 Herring 界）', dict(aniso=10.0, per_field=False))):
+                ('C  Λ=10.0 对照（越 Herring 界）', dict(aniso=10.0, per_field=False)),
+                ('D  Λ=0.40 + **逐变体各向异性弹性**',
+                 dict(aniso=0.4, per_field=False, aniso_elastic=True))):
     print('=' * 78)
     print('==== M2-%s ====' % tag)
     W.M2_twelve_variants(N=N, nstep=nstep, probe=10, **kw)

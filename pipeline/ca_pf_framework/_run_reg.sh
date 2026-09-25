@@ -10,6 +10,10 @@ for s in _chk_s1.py _chk_d4.py _chk_w2.py _chk_a3.py _chk_w1.py _chk_p1.py _chk_
 done
 echo "=================== _chk_hex.py (各向异性弹性张量) ==================="
 $PY -u _chk_hex.py 2>&1 | grep -v Warning | grep -E 'PASS|FAIL|HX 总判定'
+echo "=================== _chk_aniso.py (不均匀价值门槛) ==================="
+$PY -u _chk_aniso.py 2>&1 | grep -v Warning | grep -E '⇒|AV-'
+echo "=================== _chk_as.py (inhomogeneous 弹性求解器) ==================="
+$PY -u _chk_as.py 2>&1 | grep -v Warning | grep -E 'PASS|FAIL|AS 总判定|记账|E_inh'
 echo "=================== _chk_m2c.py 32 20 ==================="
 $PY -u _chk_m2c.py 32 20 2>&1 | grep -v Warning | grep -E 'M2-|带健康|法向 vs|S_v|末态|===='
 for s in _chk_h6.py _chk_h7.py _chk_drag.py; do

@@ -529,7 +529,8 @@ class LevelSetMulti(object):
     """
 
     def __init__(self, N, L, C=None, eps0=None, gamma=0.15, Mob=1e-9, df=None,
-                 Lam=0.0, k0_mode='clamped', workers=4, reinit_every=20, nv=None):
+                 Lam=0.0, k0_mode='clamped', workers=4, reinit_every=20, nv=None,
+                 aniso_elastic=False, C_hex_tab=None, C_cub=None):
         self.N, self.L = N, L
         self.dx = L / N
         self.gamma = gamma
@@ -556,6 +557,8 @@ class LevelSetMulti(object):
         self.df = np.zeros(self.nreg) if df is None else np.asarray(df, float)
         # 弹性
         self.pf = None
+        self.ae = None
+        self.aniso_elastic = bool(aniso_elastic)
         if C is not None and eps0 is not None:
             from windowB_pf3d import PF3D, VOIGT, G6 as _G6
             self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
@@ -563,6 +566,26 @@ class LevelSetMulti(object):
             self.e0v_eng = np.array([[eps0[v][i, j] for (i, j) in VOIGT]
                                      for v in range(self.nv)]) * _G6[None, :]
             self._G6 = _G6
+        if self.aniso_elastic:
+            # ★★ 逐变体模量（方案：参考介质 + 极化迭代；已过 AS-1/AS-1b/AS-2）：
+            #   12 个 Burgers 变体的 hcp 张量各不相同（c 轴 = {110}_β 面法向，来自
+            #   `windowB_ti64_variants` 的 meta['n'] —— **注意与 `npref` 不是一回事**：
+            #   `npref` 是"弹性最省能法向"（惯习面），这里是晶体学 c 轴）
+            #   基体 = 母相 bcc。参考模量 C⁰ 取**初始**相体积平均（固定一次；
+            #   迭代的不动点与 C⁰ 无关，C⁰ 只影响收敛速度）。
+            from windowB_aniso_elastic import AnisoElastic
+            from windowB_pf3d import C_hex, C_cubic, C_rot4, rot_z_to
+            from windowB_ti64_variants import variants as _vars
+            _e0, _Fs, _meta = _vars()
+            Cal = C_hex_tab if C_hex_tab is not None else C_hex(
+                162.4e9, 92.0e9, 69.0e9, 180.7e9, 46.7e9)      # ★文献值待核对
+            Cbe = C_cub if C_cub is not None else C_cubic(134.0e9, 110.0e9, 36.0e9)
+            self._C_phases = [Cbe] + [
+                C_rot4(Cal, rot_z_to(np.asarray(_meta[v]['n'], float)))
+                for v in range(self.nv)]
+            f0 = 1.0 / (self.nv + 1)
+            self.ae = AnisoElastic(N, L, self._C_phases,
+                                   sum(self._C_phases) / len(self._C_phases))
 
     # ---------- 区域与几何 ----------
     def region(self):
@@ -831,6 +854,21 @@ class LevelSetMulti(object):
         """返回 (nreg, N,N,N)：-ε⁰_k:σ（对母相为 0）"""
         reg = self.region()
         out = np.zeros((self.nreg,) + reg.shape)
+        if self.aniso_elastic:
+            # ★ 逐变体模量路径（`windowB_aniso_elastic.AnisoElastic`，已过 AS-1/AS-1b/AS-2）：
+            #   把 `region` 的 0/1 指示场当作相场（与 PF3D 路径一致），解 inhomogeneous
+            #   弹性取 σ。σ 的 6 分量约定与 `PF3D.sigma_tensor()` **逐位一致**
+            #   （AS-1/AS-1b 实测 0.00e+00 / 9.5e-16）⇒ 下面 `e0v_eng` 的内积可直接复用。
+            phi = np.zeros((self.nreg,) + reg.shape)
+            for k in range(self.nreg):
+                phi[k] = (reg == k)
+            e0l = [np.zeros((3, 3))] + [np.asarray(e, float)
+                                        for e in self.pf.eps0]
+            sig6, _, _nit, _ = self.ae.solve(phi, e0l, niter=200, tol=1e-10)
+            for v in range(self.nv):
+                out[v + 1] = -np.einsum('p,p...->...', self.e0v_eng[v], sig6)
+            self._ae_nit = _nit
+            return out
         if self.pf is None:
             return out
         for v in range(self.nv):
@@ -1192,7 +1230,7 @@ def M1_multiregion_conservation(N=48, nstep=20):
 def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
                        Mob=1e-9, rfrac=0.22, adv_grad='upwind',
                        pair_kernel=False, iface_band=2.0, probe=0, cfl=0.15,
-                       plate_dx=2.0, per_field=False):
+                       plate_dx=2.0, per_field=False, aniso_elastic=False):
     """12 变体 RVE（level-set 表示）：看是否（i）不冻结晶核、（ii）给出板条形状。
        与格点 KMC 版（windowB_gibbs）对照：那里 Λ≳5 时转变被冻在 5–23% ✗。
 
@@ -1220,7 +1258,8 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
     eps0, Fs, meta = variants()
     nv = len(eps0)
     g = LevelSetMulti(N, N * dx, C=C, eps0=eps0, gamma=gamma, Mob=Mob,
-                      df=[0.0] + [df] * nv, workers=6, reinit_every=25)
+                      df=[0.0] + [df] * nv, workers=6, reinit_every=25,
+                      aniso_elastic=aniso_elastic)
     # 各变体的弹性最省能法向（= 晶核取向）
     npref = {}
     rng = np.random.default_rng(0)
