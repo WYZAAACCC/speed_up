@@ -553,6 +553,7 @@ class LevelSetMulti(object):
         self.T = 1950.0
         self.c = np.full((N, N, N), 0.036)
         self.Gam = np.zeros((N, N, N))
+        self.Gam_mol = np.zeros((N, N, N))   # ★ W-6c：面量的**权威状态**（摩尔/胞）
         # ★★ W-6c（2026-09-25）：**面量的权威状态改按「摩尔/胞」存**（Gam_mol）。
         #   为什么： 里的 A_c 是 coarea 测度、**界面一动它就变** ⇒ 账面逐步漏
         #   （实测 advance 侧 rel 1.1e-5/步，30 步累积 1.2e-4；update_Gamma 侧是 2.5e-32）。
@@ -1201,6 +1202,8 @@ class LevelSetMulti(object):
            （记账：Γ 不足时从邻居补，仍是精确守恒 ✓）。"""
         m = self.surface_band()
         A_c = self.cell_area_geom()
+        if not hasattr(self, 'Gam_mol') or self.Gam_mol.shape != A_c.shape:
+            self.Gam_mol = self.Gam * A_c          # 惰性初始化（应对 __new__/外部构造）
         if dbg is not None:
             b0, s0 = self.totals()
             dbg['t0'] = b0 + s0
@@ -1854,8 +1857,9 @@ def M4_report(N=32, nstep=150):
     print('---- M4 守恒（体相 + 面过剩，level-set 表示）—— 两工况 ----')
     r1 = M4_conservation(N=N, nstep=nstep, df=-1e8, tag='溶解(历史)')
     r2 = M4_conservation(N=N, nstep=nstep, df=+1e8, tag='成长(物理)')
-    print('    记账：面量按摩尔/胞（Gam_mol）记账、带外强制回吐（W-6c/W-6d）；')
-    print('          但两工况的  都恰好 = 0 ⇒ **溶质是从体相消失**，去向待查（W-6e）。')
+    print('    记账：面量按摩尔/胞（Gam_mol）记账、带外强制回吐（W-6c/W-6d），')
+    print('           派生 Gam 后同步 （否则兼容 guard 每步误触发 => 体相丢溶质）。')
+    print('          ★ W-6e（2026-09-25）：上述同步就是把本判据从 8.9e-2 压到 2e-16 的那一步。')
     print('          "Stefan 只做了推给邻居、没做面储存/回吐"那条旧备注**已作废**（机制早已实现）。')
     ok = (r1 < 1.0e-3) and (r2 < 1.0e-3)
     print('    M4 判定: %s（溶解 %.2e / 成长 %.2e，门槛 1e-3）'

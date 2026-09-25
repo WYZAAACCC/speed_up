@@ -713,4 +713,16 @@ W-8（盒子 B 三维 `Delta x = 0.25` µm）→ W-10（文献验证清单）。
 * **下一步 W-6e**：用 `_stefan` 的 `dbg` 钩子在成长工况逐子步对账，定位体相丢溶质的那一步。
 
 **下一步**：W-6e → W-7（Window B 侧 halo/core + domain-size 收敛）→ W-8（盒子 B 三维 `Delta x = 0.25` µm）→ W-10。
+### (q) ★ W-6 **关闭**（2026-09-25）：M4 两工况都到机器精度，门槛已收紧到 1e-3
+
+* 根因（两个，都在 `update_Gamma` 的兼容 guard 上）：① guard 用 `Gam*A_c` 判"外部写歪"，
+  而 `A_c` 随界面移动而变 ⇒ 每步误触发 ⇒ 体相丢溶质（W-6d 的 8.9e-2 就是它）；
+  修法 = `_stefan` 派生 `Gam` 后同步 `_Gam_derived`、guard 比 `Gam` vs `_Gam_derived`。
+  ② `self.Gam_mol = np.zeros(...)` **上一轮只在注释里写了、赋值漏了** ⇒ `advance` 在"第 0 步就翻转"的场景
+  （M2 的 12 变体）直接 `AttributeError`；M4（球）第 0 步无翻转 + 紧接 `update_Gamma` 惰性创建 ⇒ 掩盖了它。
+* **结果**：`_chk_w6` **5/5**（0.00e+00）；`M4` 溶解 **0.000e+00** / 成长 **2.015e-16**（门槛 1e-3）；
+  `A3` / `H6`（1.81e-16）/ `M3`（1.55e-04）**全 PASS**；`M2` 计时 1.6 s / 5.4 s（每步 `update_Gamma` 开销可忽略）。
+* **W-6d 的"成长工况 8.9e-2 是体相记账缺陷"那句作废**（根因是 guard，已修）。
+
+**下一步**：W-7（Window B 侧 halo/core + domain-size 收敛）→ W-8（盒子 B 三维 `Delta x = 0.25` µm）→ W-10。
 
