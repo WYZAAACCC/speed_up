@@ -864,7 +864,10 @@ class LevelSetMulti(object):
                 phi[k] = (reg == k)
             e0l = [np.zeros((3, 3))] + [np.asarray(e, float)
                                         for e in self.pf.eps0]
-            sig6, _, _nit, _ = self.ae.solve(phi, e0l, niter=200, tol=1e-10)
+            #   ★ 记账：`AnisoElastic` 内部**全张量**（(3,3,N,N,N)，见该模块的记账）⇒
+            #     用 `sigma6` 转成本仓库 6 分量约定（与 `PF3D.sigma_tensor()` 逐位一致，
+            #     AS-1/AS-1b 三种 ε⁰ 实测 ≤9.5e-16）。
+            sig6, _nit, _ = self.ae.sigma6(phi, e0l, niter=200, tol=1e-10)
             for v in range(self.nv):
                 out[v + 1] = -np.einsum('p,p...->...', self.e0v_eng[v], sig6)
             self._ae_nit = _nit
