@@ -806,4 +806,15 @@ W-8（盒子 B 三维 `Delta x = 0.25` µm）→ W-10（文献验证清单）。
 * 待补：`verify_partition.sh` 在生产插值下的 `k_eff` 存档（生产插值现已 = 已验证的 `gr0²` 形式 ⇒ 结论可迁移）。
 
 **下一步**：`verify_partition.sh` 存档 → T3.1（A->B 对接）。
+### (y) k_eff 存档完成 —— 2026-09-26
+
+* 修 `verify_partition.sh` 的变量名 bug（`` -> ``）⇒ 判据首次真正打印：
+  A **0.895%** / B（生产 `A_part=0.264`）**0.768%** / C **0.057%**，全部 < 1% ⇒
+  `k = 1/(1+2A_part/k_c)` **数值确认**。
+* 与 L10-4 的衔接：`verify_partition.i` 用 `gr0²`（= 单晶粒的 `(Ση)²`）⇒ 生产插值改后**与之同源** ⇒ 结论可迁移。
+* 存档：`pipeline/validated/verify_partition_2026-09-26.log`。
+* 记账：该验证用的是 `verify_partition.i` 自己的 `kappa_c`/`M`（非生产值）⇒ 验证的是**热力学关系式**；
+  "生产分辨率下的 `k_eff` 数值"仍属 `pf1d_moose` §9.x（需 `l_D/dx >= 4` 网格）。
+
+**下一步**：T3.1（A->B 对接：把 CA 的晶粒骨架 + 凝固化学作为 Window B 的初值/边界）。
 

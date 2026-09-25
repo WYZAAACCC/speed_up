@@ -40,7 +40,9 @@ echo
 echo "================ 分配系数验证 ================"
 printf "  %-4s %-10s %-10s %-12s %-12s %-10s %s\n" "变体" "A_part" "公式 k" "c_solid" "c_liquid" "实测 k" "偏差"
 while read TAG KC C0 AP; do
-  L="$D/$T/v_out.csv"
+  # x 2026-09-26 fix: was "$D/$T/v_out.csv" (loop var is TAG, $T undefined)
+  #   => path became /root/work/verify_k//v_out.csv => always "no output", verdict never printed.
+  L="$D/$TAG/v_out.csv"
   if [ ! -f "$L" ]; then
     printf "  %-4s %-10s  无输出（见 $TAG/run.log）\n" "$TAG" "$AP"
     continue
