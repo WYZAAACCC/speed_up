@@ -101,8 +101,11 @@ relC = abs((mb1c + ms1c) - (mb0c + ms0c)) / max(abs(mb0c + ms0c), 1e-30)
 print('   C. 负对照（只 advance）：面 %+.3e mol ; 账面漂移 %.2e' % (ms1c - ms0c, relC))
 rec('W6-4C 负对照：面 Γ 净增（溶质滞留面、不回吐）',
     'PASS' if (ms1c - ms0c) > 0 else 'FAIL', 'd_face=%+.3e' % (ms1c - ms0c))
-rec('W6-5C 负对照：会计出现亏损（≫1e-6）=> 驱动必须调 update_Gamma',
-    'PASS' if relC > 1e-6 else 'FAIL', 'rel=%.2e' % relC)
+# ★ W-6c 之后：负对照下**账面也闭合了**（面量改摩尔/胞 => 记账与面积测度无关）。
+#   所以"驱动必须调 update_Gamma"的证据改成 **W6-4C**（溶质滞留在面、不回吐到 McLean），
+#   这一条改成记录 W-6c 的效果。
+rec('W6-5C 负对照下账面也闭合（W-6c：记账与测度无关）',
+    'PASS' if relC < 1e-6 else 'FAIL', 'rel=%.2e' % relC)
 
 nP = sum(1 for v in ok.values() if v == 'PASS')
 nF = sum(1 for v in ok.values() if v == 'FAIL')
