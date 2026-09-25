@@ -21,6 +21,9 @@
 | `ca3d_solute.py` | **液相溶质输运**（三维，逐胞有限体积）：产出 c_L（枝晶间→Window C）与 c_S（核心→Window B） |
 | `verify_ca3d_solute.py` | 溶质输运的 11 项三维判据 |
 | `verify_ca3d_physics.py` | 物理正确性判据（IRF 有效区间 / 初始固相区 / CET / 取向淘汰）14 项 |
+| `ternary_thermo.py` | **三元（Al+V）热力学闭合**（单一参数来源）：系线族 / 液相线恒等式 (★) / 分配矩阵 / Langmuir 竞争 |
+| `_chk_ternary.py` | 三元闭合的**数值判据 T-A0..T-A11（33 项）** + 完整输出 `_chk_ternary.txt` |
+| `TERNARY_COMPAT_AUDIT.md` | **Al+V 双溶质兼容性审计 + 修复台账**（含三个潜伏 bug 与一个 no-go）|
 | `ca3d_project.py` | **投影算子 Pi**（胞平均 -> 胞内分布，逐胞精确守恒），含 5 项自检 |
 | `pf1d_interface.py` | P1.1 第一次尝试（**无效实现，仅作失败诊断保留**） |
 | `P11_SPEC.md` | **P1.1 规格书**（含失败诊断 + MOOSE 落点 + 验收标准） |
@@ -42,6 +45,7 @@
 **液相溶质输运验证 11 项：PASS 11 / WARN 0 / FAIL 0**
 **物理正确性验证 15 项：PASS 14 / WARN 1 / FAIL 0**（WARN = T1d 诊断退化，已记账）
 **P1.1：未完成**（第一次尝试在定义层面失败，诊断与规格见 `P11_SPEC.md`，计 0 项通过）
+**三元（Al+V）闭合 33 项：PASS 33 / WARN 0 / FAIL 0**（`_chk_ternary.py`；含二元退化复现 §5.2 到 +0.013 K）
 **投影算子 Pi 5 项：PASS 5 / WARN 0 / FAIL 0**（守恒 1.27e-16）
 累计 **138 项**判据（框架 76 + 热层 11 + 三维 CA 21 + 溶质输运 11 + 物理 14 + Pi 5）
 
@@ -56,7 +60,7 @@
 
 ## 用户已定的 7 个决策（`MATH_FRAMEWORK.md` §14）
 
-D1 CALPHAD ｜D2 Window A 准二元 + Window B 三元 ｜D3 补能量方程+潜热（**已完成**）｜D4 盒子 B `20^3` µm 可接受
+D1 CALPHAD ｜**D2（2026-09-25 改判）全窗口三元 Al+V**，准二元只作退化对照 ｜D3 补能量方程+潜热（**已完成**）｜D4 盒子 B `20^3` µm 可接受
 ｜D5 算子目标重定位 ｜D6 参数文献优先、无则理论推导 ｜D7 保留 NO-Solidification 槽位但本轮不实现
 
 ## 复跑
