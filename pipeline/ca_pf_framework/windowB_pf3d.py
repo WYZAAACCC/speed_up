@@ -150,7 +150,7 @@ def e_density(C, e0, n):
 
 class PF3D(object):
     def __init__(self, N, L, C, eps0, gamma, w90, Lmob, dG=0.0, sigma_ext=None,
-                 workers=8, obstacle=False, k0_mode='free'):
+                 workers=8, obstacle=False, k0_mode='free', T=None, dG_of_T=None):
         self.k0_mode = k0_mode
         self.N, self.L, self.dim = N, L, 3
         self.C = C
@@ -177,7 +177,15 @@ class PF3D(object):
             self.W = W_GAMMA * gamma / w90
             self.kappa = K_GAMMA * gamma * w90
         self.Lmob = Lmob
-        self.dG = dG
+        # ---- T2.1b (2026-09-25): T 依赖驱动力的入口 ----
+        #    dG_of_T 是**可调用** dG(T)（见 windowB_km.dG_chem）。给了它 + T 就按 T 设 dG；
+        #   不给则完全维持旧行为（常数 dG）。**热循环 / athermal 相变必须用 set_T() 改温度**，
+        #   而不是重建对象（重建会丢掉场）。
+        #   ⚠ athermal 语义：马氏体没有热激活 ⇒ 每个 T 上系统跑到该 T 的**平衡分数** f_eq(T)；
+        #     动力学只决定"多快到达"，不决定"到达哪"。判据 T2.1b-3 用这条做指纹。
+        self.dG_of_T = dG_of_T
+        self.T = T
+        self.dG = float(dG_of_T(T)) if (dG_of_T is not None and T is not None) else dG
         self.sigma_ext = np.zeros((3, 3)) if sigma_ext is None else np.asarray(sigma_ext, float)
         self.workers = workers
         self.phi = np.zeros((self.nv, N, N, N))
@@ -252,15 +260,30 @@ class PF3D(object):
     def forces(self):
         sig = self.sigma_tensor()
         f = np.zeros_like(self.phi)
-        m = self.phi.sum(0)                                  # 总转变分数
         S2 = (self.phi ** 2).sum(0)
-        drive = self.dG * 6 * m * (1 - m)                     # d/dm[-dG m^2(3-2m)] 的驱动力
+        # ★★ 记账（2026-09-25，T2.1b 顺带修的**内部不一致**）：
+        #   原写法 drive = dG*6m(1-m) 是 d/dm[-dG m^2(3-2m)] —— 那对应化学能 -dG*m^2(3-2m)，
+        #   而本类自己的 E_chem_grad() 用的是**线性** Ec = -dG*m（=> 泛函导数恒为 -dG），
+        #   dfdphi()/step() 用的也是 -dG。**同一个类里两套化学插值** ⇒ 不一致。
+        #   后果（原写法）：m=0 时驱动力恒为 0（无法从"母相"自发开始）、且动力学被人为按 m 调制；
+        #   与 E_total() 不自洽 ⇒ 用 forces() 的路径与用 dfdphi() 的路径会给出不同的 f_eq(T)。
+        #   现统一为线性（= E_chem_grad/dfdphi 的形式）：drive = dG（每个变体拿到完整驱动力）。
+        #   影响面（已核）：所有现存调用点都是 dG=0（FD 自检、P2 外载择优）或"旧版对照"
+        #   => **对既有判据数值零影响**；只有 dG!=0 的动力学路径会变（那正是 T2.1b 要的）。
+        drive = self.dG
         for v in range(self.nv):
             f[v] = -np.einsum('p,p...->...', self.e0v_eng[v], sig) + self.sext_e0[v]
             p = self.phi[v]
             f[v] += drive - self.W * (2 * p * (1 - p) * (1 - 2 * p)
                                       + 2 * p * (S2 - p ** 2))
         return f, sig
+
+    def set_T(self, T):
+        """把温度设到 T（若定义了 dG_of_T 则同步更新 dG）。[T]"""
+        self.T = float(T)
+        if self.dG_of_T is not None:
+            self.dG = float(self.dG_of_T(self.T))
+        return self.dG
 
     def laplacian(self, p):
         lap = -2.0 * self.dim * p

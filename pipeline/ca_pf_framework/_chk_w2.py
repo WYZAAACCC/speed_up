@@ -22,8 +22,12 @@ import numpy as np
 from windowB_surface import LevelSetMulti
 
 
-def _seed(N, dx, kind='slab'):
-    g = LevelSetMulti(N, N * dx, nv=1, gamma=0.0, Mob=1e-9, df=[0.0, -1e7],
+def _seed(N, dx, kind='slab', df=1e7):
+    # ★★ 记账（2026-09-25 修的真缺陷）：原写法把 df 硬编码成 -1e7 ⇒  只改
+    #   了**归一化分母**、没改模拟本身 ⇒ 任何 df 参数下量的都是同一个算例，
+    #   而报告出来的数看起来像物理测量（静默伪造）。现把 df 传进来。
+    #   （对  的默认 df=1e7 逐位不变 ⇒ W2 既有判决有效性不受影响。）
+    g = LevelSetMulti(N, N * dx, nv=1, gamma=0.0, Mob=1e-9, df=[0.0, -df],
                       reinit_every=0)
     z = (np.arange(N)[None, None, :] + 0.5) * dx
     L = N * dx
@@ -46,7 +50,7 @@ def run(N=48, dx=2e-9, M=1e-9, df=1e7, nstep=40, band_cells=20, extend='edt',
         kind='slab', pair_kernel=False, iface_band=2.0, verb=False,
         per_field=False):
     """返回 (v_ray, v_cnt)：均为 |速度|/(MΔf)。"""
-    g = _seed(N, dx, kind)
+    g = _seed(N, dx, kind, df=df)
     near = g.near0
     _, z0 = g.iface_offset(1, 0, 2, near=near)
     c0 = int((g.region() == 1).sum())

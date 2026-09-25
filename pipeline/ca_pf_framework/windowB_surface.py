@@ -1249,10 +1249,40 @@ def M1_multiregion_conservation(N=48, nstep=20):
     return drift < 1e-6
 
 
+class M2Out(object):
+    """M2 的返回值：既支持 out['f_trans']（新代码），也把未知属性代理给内部 g
+       （旧代码  后用 g.volume(...) 的那批脚本）。
+       ★ 记账：加这个包装是为了"返回值从 g 改成 dict"这一步不破坏既有调用者。
+    """
+
+    def __init__(self, g, d):
+        object.__setattr__(self, '_g', g)
+        object.__setattr__(self, '_d', d)
+
+    def __getitem__(self, k):
+        return self._d[k]
+
+    def get(self, k, default=None):
+        return self._d.get(k, default)
+
+    def keys(self):
+        return self._d.keys()
+
+    def __contains__(self, k):
+        return k in self._d
+
+    def __getattr__(self, k):
+        return getattr(object.__getattribute__(self, '_g'), k)
+
+    def __setattr__(self, k, v):
+        setattr(object.__getattribute__(self, '_g'), k, v)
+
+
 def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
                        Mob=1e-9, rfrac=0.22, adv_grad='upwind',
                        pair_kernel=False, iface_band=2.0, probe=0, cfl=0.15,
-                       plate_dx=2.0, per_field=False, aniso_elastic=False):
+                       plate_dx=2.0, per_field=False, aniso_elastic=False, quiet=False,
+                       C_override=None):
     """12 变体 RVE（level-set 表示）：看是否（i）不冻结晶核、（ii）给出板条形状。
        与格点 KMC 版（windowB_gibbs）对照：那里 Λ≳5 时转变被冻在 5–23% ✗。
 
@@ -1268,6 +1298,7 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
           Λ=10 时实测该量跨 **[−1.35, +3.15]（含负）⇒ 非凸/不适定**（界面会被"起皱"
           驱动）。0.4 与 W1 的正对照同一个值（W1 已验证），且落在 Ti64 晶界能各向异性
           的常见范围（~0.2–0.4）。"""
+    _p = (lambda *a, **k: None) if quiet else print
     from windowB_pf3d import C_iso3, C_cubic, _lam_full
     from windowB_ti64_variants import variants
     # ★★ 记账（2026-09-25）：均匀模量近似的**参考模量**由"各向同性等效"改成**母相 β(bcc) 立方**
@@ -1276,10 +1307,20 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
     #   张量本身已过 `_chk_hex.py` HX-7（立方不变性机器精度）；常数 ★【文献值待核对】。
     #   ⚠ 仍未做：逐变体模量（12 个转动 hcp 张量已建好并验证 = HX-6，但 FFT 谱法要求均匀 C
     #   ⇒ 要做 inhomogeneous 需换参考介质 + 极化迭代；见审计 §10.9）。
-    C = C_cubic(134.0e9, 110.0e9, 36.0e9)     # bcc β-Ti ★文献值待核对
+    # ★ C_override：隔离实验用（C_override=None 表示**关掉弹性**，只留化学驱动）。
+    #   用途：把「界面/化学」与「弹性相互作用」分开（见 _t21b_noel.py 的记账）。
+    #   C_override=None -> 默认（bcc β-Ti 立方）；'off' -> **关掉弹性**（C=None）；
+    #   否则当作显式张量。
+    _no_el = (C_override == 'off')
+    if C_override is None or _no_el:
+        C = C_cubic(134.0e9, 110.0e9, 36.0e9)    # bcc β-Ti ★文献值待核对
+    else:
+        C = C_override
+    #   C 仍用于算 npref（晶核取向，几何量）；弹性求解器是否建由 C_use 决定。
+    C_use = None if _no_el else C
     eps0, Fs, meta = variants()
     nv = len(eps0)
-    g = LevelSetMulti(N, N * dx, C=C, eps0=eps0, gamma=gamma, Mob=Mob,
+    g = LevelSetMulti(N, N * dx, C=C_use, eps0=eps0, gamma=gamma, Mob=Mob,
                       df=[0.0] + [df] * nv, workers=6, reinit_every=25,
                       aniso_elastic=aniso_elastic)
     # 各变体的弹性最省能法向（= 晶核取向）
@@ -1299,8 +1340,8 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
         g.seed_plate(v + 1, (rng.random(3) * (N * dx - 2 * R) + R), npref[v + 1], R, t)
     g.init_parent()
     v0 = np.array([g.volume(k) for k in range(g.nreg)])
-    print('   [诊断] 初始各区域体积分数 = %s' % np.round(v0 / v0.sum(), 4))
-    print('   [诊断] phi 的最小值: 母相 %.3e ; 变体1 %.3e ; 空变体13 %.3e'
+    _p('   [诊断] 初始各区域体积分数 = %s' % np.round(v0 / v0.sum(), 4))
+    _p('   [诊断] phi 的最小值: 母相 %.3e ; 变体1 %.3e ; 空变体13 %.3e'
           % (g.phi[0].min(), g.phi[1].min(), g.phi[g.nreg - 1].min()))
     v = Mob * abs(df) * 0.5                    # 前沿速度估计
     # ★★ 记账（本轮修的真 bug）：前沿速度是 **M·|Δf|**，不是 0.5 倍。旧写法
@@ -1312,18 +1353,18 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
     #   ⇒ 改用**显式 CFL**：`dt = cfl·dx/(M|Δf|)`。
     v = Mob * abs(df)
     dt = cfl * dx / v
-    print('---- M2 12 变体 RVE（level-set）----')
-    print('   N=%d dx=%.1f nm 域=%.2f um | df=%.1e γ=%.2f Λ=%.1f | v=M|df|=%.3f m/s '
+    _p('---- M2 12 变体 RVE（level-set）----')
+    _p('   N=%d dx=%.1f nm 域=%.2f um | df=%.1e γ=%.2f Λ=%.1f | v=M|df|=%.3f m/s '
           'dt0=%.2e ⇒ 初值每步位移 %.3f dx（之后按**总驱动**自适应）'
           % (N, dx * 1e9, N * dx * 1e6, df, gamma, aniso, v, dt, dt * v / dx))
-    print('   %6s %9s %9s %9s %9s %10s' %
+    _p('   %6s %9s %9s %9s %9s %10s' %
           ('step', 'f_trans', 'V_max/V', 'min(V)>0', 'dt*(M|dG|mx)/dx', '带胞'))
     for k in range(nstep + 1):
         if k % 60 == 0 or k == nstep:
             vt = np.array([g.volume(j) for j in range(g.nreg)])
             f = 1.0 - vt[0] / (N * dx) ** 3
             nb, medg, okg = g.band_health()
-            print('   %6d %9.4f %9.4f %9s %12.3f %10d'
+            _p('   %6d %9.4f %9.4f %9s %12.3f %10d'
                   % (k, f, vt.max() / v0.sum(), str(bool((vt[1:] > 0).all())),
                      dt * (g.M * getattr(g, 'dG_max', 0.0)) / dx, nb))
         if k == nstep:
@@ -1337,7 +1378,7 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
             dt = ndt
         if probe and (k + 1) % probe == 0:
             nb, medg, okg = g.band_health()
-            print('   [带健康 probe step=%4d] 带胞=%6d 带内|∇φ_win|中位=%8.3f %s'
+            _p('   [带健康 probe step=%4d] 带胞=%6d 带内|∇φ_win|中位=%8.3f %s'
                   % (k + 1, nb, medg, 'OK' if okg else '**退化**'))
     reg = g.region()
     vt = np.array([g.volume(j) for j in range(g.nreg)])
@@ -1348,17 +1389,21 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
     sv_latt = sum(g.area(j) for j in range(1, g.nreg)) / (N * dx) ** 3
     nb, medg, okg = g.band_health()
     if not okg:
-        print('   ⚠⚠ 界面带已退化（带胞 %d、带内 |∇φ| 中位 %.2f）⇒ **下面的 S_v / 板条厚度'
+        _p('   ⚠⚠ 界面带已退化（带胞 %d、带内 |∇φ| 中位 %.2f）⇒ **下面的 S_v / 板条厚度'
               '不得引用**：多畴速度扩展/带掩模仍有问题（见审计 §9.5/§10）' % (nb, medg))
-    print('   末态: 转变分数 %.4f ; 各变体体积分数 %s' %
+    _p('   末态: 转变分数 %.4f ; 各变体体积分数 %s' %
           (1 - vt[0] / (N * dx) ** 3, np.round(vt[1:] / vt[1:].sum(), 3)))
     f_t = 1 - vt[0] / (N * dx) ** 3
-    print('   S_v(几何 coarea) = %.3e 1/m ⇒ 板片厚 t = 2f/S_v = %.1f nm ; '
+    _p('   S_v(几何 coarea) = %.3e 1/m ⇒ 板片厚 t = 2f/S_v = %.1f nm ; '
           '（格点键测度 S_v = %.3e ⇒ t = %.1f nm，仅作对照）'
           % (sv_geom, 2 * f_t / max(sv_geom, 1e-30) * 1e9,
              sv_latt, 2 * f_t / max(sv_latt, 1e-30) * 1e9))
-    geom_stats(g)
-    return g
+    if not quiet:
+        geom_stats(g)
+    out = dict(f_trans=float(f_t), v_frac=(vt / vt.sum()).tolist(),
+               v_abs=vt.tolist(), S_v_geom=float(sv_geom),
+               band=nb, band_ok=bool(okg), g=g)
+    return M2Out(g, out)
 
 
 if __name__ == '__main__' and False:
