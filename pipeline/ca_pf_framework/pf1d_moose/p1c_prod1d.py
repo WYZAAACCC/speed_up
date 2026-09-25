@@ -217,12 +217,15 @@ def make_input(A, WF, kappa_c, tend, V, dx, nx, wt_um=4.0):
 [Executioner]
   type = Transient
   solve_type = NEWTON
-  dt = %(dt).6e
   end_time = %(tend).6e
+  dt = %(dt).6e
+%(stepper)s
   nl_rel_tol = 1e-6
   nl_abs_tol = 1e-7
+  nl_max_its = 120
   l_tol = 1e-10
   line_search = bt
+  dtmin = 1e-14
 []
 [Preconditioning]
   [smp]
@@ -251,7 +254,7 @@ def make_input(A, WF, kappa_c, tend, V, dx, nx, wt_um=4.0):
 []
 """ % dict(nx=nx, xmax=nx * dx, c0=C0, x0=x0, V=V, wtan=wtan, k_c=K_C,
            A_part=A_PART, kappa_c=kappa_c, A=A, WF=WF, k_eq=K_EQ,
-           dt=0.05 * dx ** 2 / 1.2e-6, tend=tend, xmid=(x0 + V * tend) - 0.0,
+           dt=DT, stepper=STEPPER, tend=tend, xmid=(x0 + V * tend) - 0.0,
            npts=min(4000, nx + 1),
            zeros="".join("  [gr%d]\n    order = CONSTANT\n    family = MONOMIAL\n  []\n"
                          % j for j in range(1, 8)),
@@ -260,15 +263,37 @@ def make_input(A, WF, kappa_c, tend, V, dx, nx, wt_um=4.0):
     return s
 
 
+ADAPTIVE_STEPPER = """  [TimeStepper]
+    type = IterationAdaptiveDT
+    dt = %(dt).6e
+    optimal_iterations = 8
+    iteration_window = 2
+    cutback_factor = 0.5
+    growth_factor = 1.5
+  []"""
+
 if __name__ == "__main__":
     A = float(sys.argv[1]); WF = float(sys.argv[2]); KC = float(sys.argv[3])
     tend = float(sys.argv[4]) if len(sys.argv) > 4 else 3.0e-5
     V = float(sys.argv[5]) if len(sys.argv) > 5 else 0.6
     dx = float(sys.argv[6]) if len(sys.argv) > 6 else 1.0e-6
     nx = int(sys.argv[7]) if len(sys.argv) > 7 else 60
+    global DT, STEPPER
+    DT = float(os.environ.get("PROD1D_DT", "0") or (0.05 * dx ** 2 / 1.2e-6))
+    STEPPER = ADAPTIVE_STEPPER if os.environ.get("PROD1D_ADAPT", "0") == "1" else ""
+    print("dt = %.4e s (fixed=%s)  dt/(l_D^2/D_L) = %.4f"
+          % (DT, not STEPPER, DT / ((1.2e-6 / V) ** 2 / 1.2e-6)))
     tag = "A%g_W%g_kc%g" % (A, WF * 1e6, KC)
+    suf = os.environ.get("PROD1D_SUFFIX", "")
+    if suf:
+        tag += "_" + suf
     d = os.path.join(HERE, "prod1d_" + tag)
     os.makedirs(d, exist_ok=True)
+    # defensive: a reused directory would mix profile_line_<timestep>.csv from
+    # earlier runs and max() would then read a STALE profile (AGENTS lesson #25).
+    for f in os.listdir(d):
+        if f.startswith("profile_line_") or f == "p1c_prod1d_out.csv":
+            os.remove(os.path.join(d, f))
     io.open(os.path.join(d, "p1c_prod1d.i"), "w", encoding="utf-8").write(
         make_input(A, WF, KC, tend, V, dx, nx))
     print("target c_int = c0/k = %.5f ; dx=%.2f um  nx=%d  V=%.2f m/s  tend=%.1e s"

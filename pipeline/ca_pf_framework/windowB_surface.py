@@ -530,7 +530,7 @@ class LevelSetMulti(object):
 
     def __init__(self, N, L, C=None, eps0=None, gamma=0.15, Mob=1e-9, df=None,
                  Lam=0.0, k0_mode='clamped', workers=4, reinit_every=20, nv=None,
-                 aniso_elastic=False, C_hex_tab=None, C_cub=None):
+                 aniso_elastic=False, C_hex_tab=None, C_cub=None, sigma_ext=None):
         self.N, self.L = N, L
         self.dx = L / N
         self.gamma = gamma
@@ -555,6 +555,17 @@ class LevelSetMulti(object):
         self.Gam = np.zeros((N, N, N))
         self.J_edge = [np.zeros((N, N, N))] * 3     # 面扩散的边通量（ΣJ_s 判据/H7 用）
         self.df = np.zeros(self.nreg) if df is None else np.asarray(df, float)
+        # ---- T2.1a (2026-09-25): external stress sigma_ext -------------------
+        # Driving-force convention, identical to `PF3D.forces()` / `dfdphi()`:
+        #     df_v = -eps0_v : sigma_int  +  sigma_ext : eps0_v
+        # (the second term is the work done by the applied stress as the
+        # transformation strain develops).  sigma_ext = None reproduces the old
+        # behaviour bit-for-bit (sext_e0 is then identically zero).
+        self.sigma_ext = (np.zeros((3, 3)) if sigma_ext is None
+                          else np.asarray(sigma_ext, float))
+        self.sext_e0 = (np.zeros(self.nv) if eps0 is None else
+                        np.array([np.einsum('ij,ij->', self.sigma_ext,
+                                            np.asarray(e, float)) for e in eps0]))
         # 弹性
         self.pf = None
         self.ae = None
@@ -562,7 +573,8 @@ class LevelSetMulti(object):
         if C is not None and eps0 is not None:
             from windowB_pf3d import PF3D, VOIGT, G6 as _G6
             self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
-                           workers=workers, k0_mode=k0_mode)
+                           workers=workers, k0_mode=k0_mode,
+                           sigma_ext=self.sigma_ext)
             self.e0v_eng = np.array([[eps0[v][i, j] for (i, j) in VOIGT]
                                      for v in range(self.nv)]) * _G6[None, :]
             self._G6 = _G6
@@ -874,7 +886,8 @@ class LevelSetMulti(object):
                 init=getattr(self, '_ae_eps', None))
             self._ae_eps = self.ae.eps
             for v in range(self.nv):
-                out[v + 1] = -np.einsum('p,p...->...', self.e0v_eng[v], sig6)
+                out[v + 1] = (-np.einsum('p,p...->...', self.e0v_eng[v], sig6)
+                              + self.sext_e0[v])
             self._ae_nit = _nit
             return out
         if self.pf is None:
@@ -883,7 +896,8 @@ class LevelSetMulti(object):
             self.pf.phi[v] = (reg == v + 1)
         sig = self.pf.sigma_tensor()
         for v in range(self.nv):
-            out[v + 1] = -np.einsum('p,p...->...', self.e0v_eng[v], sig)
+            out[v + 1] = (-np.einsum('p,p...->...', self.e0v_eng[v], sig)
+                          + self.sext_e0[v])
         return out
 
     # ---------- 界面推进（PDE）----------
