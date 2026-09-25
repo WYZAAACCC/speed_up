@@ -14,6 +14,8 @@ echo "=================== _chk_aniso.py (不均匀价值门槛) ================
 $PY -u _chk_aniso.py 2>&1 | grep -v Warning | grep -E '⇒|AV-'
 echo "=================== _chk_as.py (inhomogeneous 弹性求解器) ==================="
 $PY -u _chk_as.py 2>&1 | grep -v Warning | grep -E 'PASS|FAIL|AS 总判定|记账|E_inh'
+echo "=================== _chk_irf.py (V8-a: CA 的 LKT 表独立核对) ==================="
+$PY -u _chk_irf.py 2>&1 | grep -v Warning | grep -E '表:|全表|参照|⇒'
 echo "=================== _chk_m2c.py 32 20 ==================="
 $PY -u _chk_m2c.py 32 20 2>&1 | grep -v Warning | grep -E 'M2-|带健康|法向 vs|S_v|末态|===='
 for s in _chk_h6.py _chk_h7.py _chk_drag.py; do
