@@ -728,7 +728,23 @@
     prop_values = '1e-14'
   []
 
-  # --- S = Ση²（固相指示 + f_cc 的输入）---
+  # --- S1 = Ση（★ L10-4：固相指示改用它；(Ση)² 在固相处处 = 1，含晶界与**三叉线**）---
+  #   为什么必须换掉 min(1,2S)：S=Ση² 在二元晶界是 0.5、在**三叉线只有 1/3**
+  #   ⇒ min(1,2S) 在 S=1/3 只到 2/3 ⇒ **液相项以 1/3 权重泄漏** ⇒ D_TJ = 0.33·D_L
+  #   （比 D_GB 还大 1000 倍，物理上错）。而 Ση 在固相处处 = 1（晶内/晶界/三叉线）
+  #   ⇒ (Ση)² = 1 处处饱和 ✓，液相 = 0 ✓，固液界面单调混合 ✓。
+  #   ★ 附带的强理由：verify_partition.i 验证 k=1/(1+2A/k_c) 时用的正是 gr0² 形式
+  #   （单晶粒的 (Ση)²）⇒ 换过去之后**生产的分凝用它自己的插值也成立**，
+  #   而旧 min(1,2S) 从未在与自身一致的插值下验证过（原注释亦承认）。
+  [solute_S1]
+    type = DerivativeParsedMaterial
+    property_name = S_eta1
+    coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
+    expression = 'gr0+gr1+gr2+gr3+gr4+gr5+gr6+gr7'
+    derivative_order = 2
+  []
+
+  # --- S = Ση²（仍用于 h_gb 的配对乘积）---
   [solute_S]
     type = DerivativeParsedMaterial
     property_name = S_eta2
@@ -756,13 +772,13 @@
     derivative_order = 2
   []
 
-  # --- 固相指示 h_s = min(1, 2S)；晶界处饱和到 1 ---
+  # --- 固相指示 h_s = min(1, Ση)²；★ L10-4：晶内/晶界/**三叉线**处处 = 1 ---
   [solute_hs]
     type = DerivativeParsedMaterial
     property_name = h_solid
     coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
-    material_property_names = 'S_eta2'
-    expression = 'min(1, 2*S_eta2)'
+    material_property_names = 'S_eta1'
+    expression = 'min(1, S_eta1)^2'
     derivative_order = 2
   []
 
@@ -779,10 +795,10 @@
     type = DerivativeParsedMaterial
     property_name = M
     coupled_variables = 'gr0 gr1 gr2 gr3 gr4 gr5 gr6 gr7'
-    material_property_names = 'S_eta2 h_gb h_solid'
+    material_property_names = 'S_eta2 S_eta1 h_gb h_solid'
     constant_names = 'D_L D_S D_GB k_c A_part'
     constant_expressions = '1.2e-06 4e-13 4e-10 0.9 0.264'
-    expression = '(D_L + (D_S-D_L)*h_solid + (D_GB-D_S)*h_gb) / (k_c + 2*A_part*min(1, 2*S_eta2))'
+    expression = '(D_L + (D_S-D_L)*h_solid + (D_GB-D_S)*h_gb) / (k_c + 2*A_part*min(1, S_eta1)^2)'
     derivative_order = 2
   []
 
@@ -793,6 +809,9 @@
   #   **该关系式已数值验证**（三组变体偏差均 <1%）：见 pipeline/verify_partition.i。
   #   现值：k_c=0.9, c0=0.036（V 原子分数）, A_part=0.264 -> k = 0.630（Ti64 的 V）
   #   k_c 与 F0 同步缩放过（9.0e5 -> 0.9）。
+  # ★ L10-4（2026-09-26）：f_loc 的固相项用**与 h_solid 同源**的 min(1, Ση)^2
+  #   （旧 min(1,2S) 在三叉线 S=1/3 只到 2/3 ⇒ 液相项泄漏 1/3 ⇒ D_TJ = 0.33·D_L）；
+  #   与 verify_partition.i 验证 k=1/(1+2A/k_c) 时用的 gr0² 形式一致。
   [free_energy]
     type = DerivativeParsedMaterial
     property_name = f_loc
@@ -800,7 +819,7 @@
     constant_names     = 'k_c c0 A_part Omega0 wgb'
     constant_expressions = '0.9 0.036 0.264 -5e-11 4e-06'
     expression = 'k_c/2*(c-c0)^2
-                  + A_part*c^2*min(1, 2*(gr0^2+gr1^2+gr2^2+gr3^2+gr4^2+gr5^2+gr6^2+gr7^2))
+                  + A_part*c^2*min(1, gr0+gr1+gr2+gr3+gr4+gr5+gr6+gr7)^2
                   + (Omega0/wgb)*(c-c0)*8*((gr0^2+gr1^2+gr2^2+gr3^2+gr4^2+gr5^2+gr6^2+gr7^2)^2 - (gr0^4+gr1^4+gr2^4+gr3^4+gr4^4+gr5^4+gr6^4+gr7^4))'
     derivative_order = 2
   []
