@@ -743,12 +743,15 @@ class LevelSetMulti(object):
                 self.Gam_mol = self.Gam * A_c          # 外部写了 Gam => 以它为准
         else:
             self.Gam_mol = self.Gam * A_c
-        # (3) 先把"离开带"的胞的面过剩还给体相（保守；按摩尔）
-        if hasattr(self, '_m_prev'):
-            left = self._m_prev & (~m)
-            if left.any():
-                self.c[left] += self.Gam_mol[left] / (self.rho * self.dx ** 3)
-                self.Gam_mol = np.where(left, 0.0, self.Gam_mol)
+        # (3) ★ W-6d：把"带外但仍持有 Gam_mol"的胞**每步强制回吐**给体相。
+        #   旧写法依赖 （"上一步在带内、这一步不在"）⇒ 与调用顺序/reinit 耦合，
+        #   漏掉的胞会让 Gam_mol 挂在带外 ⇒ 账面多出量（M4 综合场景 2.02e-04 -> 2.43e-03 的来源）。
+        #   新写法只用**当前**的 ：凡是带外且 Gam_mol != 0 的，一律回吐并清零 ⇒ 与顺序无关。
+        wander = (self.Gam_mol != 0.0) & (~m)
+        if wander.any():
+            self.c = self.c + np.where(wander,
+                                       self.Gam_mol / (self.rho * self.dx ** 3), 0.0)
+            self.Gam_mol = np.where(wander, 0.0, self.Gam_mol)
         self._m_prev, self._A_prev = m.copy(), A_c.copy()
         Gam_eq = self.Gamma_eq(self.c)
         # ★ 稳定性保护：显式弛豫必须 dt ≤ τ_ex，否则 Γ 过冲发散（实测 M4 里 dt=4e-9 > τ=1e-9
@@ -1232,8 +1235,10 @@ class LevelSetMulti(object):
                 take = np.where(msk, np.minimum(self.Gam_mol, -amount), 0.0)
                 self.Gam_mol = np.where(msk, self.Gam_mol - take, self.Gam_mol)
                 amount = amount + take
-            # 派生 Gam 保持一致（供读 Gam 的判据/物理使用）
+            # 派生 Gam 保持一致（供读 Gam 的判据/物理使用），并同步 
+            #   —— 否则 update_Gamma 的 guard 会误判成"外部写了 Gam"而每步重同步一次。
             self.Gam = np.where(A_c > 0, self.Gam_mol / np.maximum(A_c, 1e-30), 0.0)
+            self._Gam_derived = self.Gam.copy()
             if dbg is not None:
                 b2, s2 = self.totals()
                 dbg['log'].append((dbg['step'], kind + ' b)取面后', (b2 + s2) - dbg['t0'], 0))
@@ -1816,9 +1821,17 @@ def geom_stats(g, topk=6, min_cells=200):
     return rows
 
 
-def M4_conservation(N=32, dx=2e-9, nstep=150):
-    """体相 + 面过剩的守恒（新表示下重做 H4）"""
-    g = LevelSetMulti(N, N * dx, nv=1, gamma=0.15, Mob=1e-9, df=[0.0, -1e8])
+def M4_conservation(N=32, dx=2e-9, nstep=150, df=-1e8, tag='溶解(历史工况)',
+                    tol=1.0e-3, verbose=True):
+    """体相 + 面过剩的守恒。
+
+    ★ W-6d（2026-09-25）三处改动，都是为了让它**有信息量**：
+      1) 门槛 2.5e-2 -> **1e-3**（2.5% 太松，PASS 没有信息量）；
+      2) 同时上报**两个工况**：@BT@df=-1e8@BT@（溶解，历史工况）与 @BT@df=+1e8@BT@（成长，物理工况，
+         符号按判据 T2.1b-7 的判决）；两者的残差**差 30 倍**，只报一个会把缺陷藏起来；
+      3) 把"Stefan 只做了推给邻居、没做面储存/回吐"那条旧备注删掉（机制早已实现，W-6）。
+    """
+    g = LevelSetMulti(N, N * dx, nv=1, gamma=0.15, Mob=1e-9, df=[0.0, df])
     g.seed_sphere(1, [0.5 * N * dx] * 3, 5 * dx)
     g.init_parent()
     g.c[:] = 0.036
@@ -1829,12 +1842,25 @@ def M4_conservation(N=32, dx=2e-9, nstep=150):
         g.update_Gamma(dt)
     mb1, ms1 = g.totals()
     rel = abs((mb1 + ms1) - (mb0 + ms0)) / abs(mb0 + ms0)
-    print('---- M4 守恒（体相 + 面过剩，level-set 表示）----')
-    print('   初始 %.6e mol ; 末态 %.6e mol ; 相对漂移 %.2e   %s'
-          % (mb0 + ms0, mb1 + ms1, rel, 'PASS' if rel < 2.5e-2 else 'FAIL'))
-    print('   ⚠ 残 1.7e-2 的来源（已定位）：Stefan 条件目前只做了"被排出的溶质推给邻居"，')
-    print('     还没做"先存进面 Γ、再由面扩散/回吐"那一项 ⇒ 这是**建模缺口**，不是纯数值问题。')
-    return rel < 2.5e-2
+    if verbose:
+        print('    %-14s : 相对漂移 %.3e   面 %+.3e   体 %+.3e   %s（门槛 %.0e）'
+              % (tag, rel, ms1 - ms0, mb1 - mb0, 'PASS' if rel < tol else 'FAIL', tol))
+    return rel
+
+
+def M4_report(N=32, nstep=150):
+    """M4 两工况 + 门槛判定（任一 FAIL 则整体 FAIL）。★ 记账：残差主要是**体相**在丢溶质
+       （两面工况的  都恰好为 0）⇒ W-6e 要查  的记账去向。"""
+    print('---- M4 守恒（体相 + 面过剩，level-set 表示）—— 两工况 ----')
+    r1 = M4_conservation(N=N, nstep=nstep, df=-1e8, tag='溶解(历史)')
+    r2 = M4_conservation(N=N, nstep=nstep, df=+1e8, tag='成长(物理)')
+    print('    记账：面量按摩尔/胞（Gam_mol）记账、带外强制回吐（W-6c/W-6d）；')
+    print('          但两工况的  都恰好 = 0 ⇒ **溶质是从体相消失**，去向待查（W-6e）。')
+    print('          "Stefan 只做了推给邻居、没做面储存/回吐"那条旧备注**已作废**（机制早已实现）。')
+    ok = (r1 < 1.0e-3) and (r2 < 1.0e-3)
+    print('    M4 判定: %s（溶解 %.2e / 成长 %.2e，门槛 1e-3）'
+          % ('PASS' if ok else 'FAIL', r1, r2))
+    return ok
 
 
 if __name__ == '__main__':
