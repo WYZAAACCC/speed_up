@@ -57,14 +57,22 @@ for tag, drag in (('无拖曳', None), ('拖曳(ΔG<P0 钉扎)', (5.0e7, 1.0e-3)
     z = np.arange(N)[None, None, :] * dx
     g.phi[1] = (z - 0.25 * N * dx) * np.ones((N, N, N))
     g.init_parent()
+    # ★★ 修（2026-09-25，W-4）：旧写法用**计数法**（数 region 翻转的胞）量位移 ——
+    #   与 W2 那次是同一个病：计数法对**均匀亚胞平移失明**、对剖面展宽又系统性偏大，
+    #   实测偏差可达 2–2.5x（正是 W-4 记的"拖曳绝对速度差 2–2.5x"）。
+    #   改用 **亚胞射线交点**（，与 W2/P1/S1 同一口径）。
+    near = 0.25 * N * dx
     n0 = int((g.region() == 1).sum())
+    _, z0 = g.iface_offset(1, 0, 2, near=near)
     dt = 0.1 * dx / (Mob * df_drive)
     nstep = 40
     for _ in range(nstep):
         g.advance(dt, drag=drag)
     n1 = int((g.region() == 1).sum())
-    x_meas = abs(n1 - n0) * dx ** 3 / (N * dx) ** 2
-    v_eff = x_meas / (nstep * dt)
-    print('   %-18s : v_实测 = %.4e m/s ; v_无拖曳解析 = MΔG = %.4e ⇒ 比 %.3f'
-          % (tag, v_eff, Mob * df_drive, v_eff / (Mob * df_drive)))
+    _, z1 = g.iface_offset(1, 0, 2, near=near)
+    v_ray = abs(z1 - z0) / (nstep * dt)
+    v_cnt = abs(n1 - n0) * dx ** 3 / (N * dx) ** 2 / (nstep * dt)
+    print('   %-18s : v_射线 = %.4e | v_计数 = %.4e | 解析 MΔG = %.4e => 比(射线) %.3f  比(计数) %.3f'
+          % (tag, v_ray, v_cnt, Mob * df_drive, v_ray / (Mob * df_drive),
+             v_cnt / (Mob * df_drive)))
 print('   （拖曳参数取自 D2 的两支：ΔG<P0 ⇒ 应 v=0；ΔG>P0 ⇒ 应 v>0）')
