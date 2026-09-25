@@ -16,6 +16,10 @@ echo "=================== _chk_as.py (inhomogeneous 弹性求解器) ===========
 $PY -u _chk_as.py 2>&1 | grep -v Warning | grep -E 'PASS|FAIL|AS 总判定|记账|E_inh'
 echo "=================== _chk_irf.py (V8-a: CA 的 LKT 表独立核对) ==================="
 $PY -u _chk_irf.py 2>&1 | grep -v Warning | grep -E '表:|全表|参照|⇒'
+echo "=================== _chk_thermo.py (F1/F2 文献+理论闭合) ==================="
+$PY -u _chk_thermo.py 2>&1 | grep -v Warning | grep -E '=>|dT0 目标|k\*|⇒|实测'
+echo "=================== _chk_irf2.py (ΔT_0 对 Window A 的影响) ==================="
+$PY -u _chk_irf2.py 2>&1 | grep -v Warning | grep -E 'B0|工作点|12|23|Vc|Vc|可用的|=>'
 echo "=================== _chk_m2c.py 32 20 ==================="
 $PY -u _chk_m2c.py 32 20 2>&1 | grep -v Warning | grep -E 'M2-|带健康|法向 vs|S_v|末态|===='
 for s in _chk_h6.py _chk_h7.py _chk_drag.py; do
