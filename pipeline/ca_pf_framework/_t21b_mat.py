@@ -6,7 +6,7 @@ import windowB_surface as W
 print('   gamma  elasticity   f_trans      band  ok')
 for gm in (0.0, 0.15):
     for ce, tag in (('off', 'off '), (None, 'on  ')):
-        out = W.M2_twelve_variants(N=32, nstep=60, df=-1e8, gamma=gm,
+        out = W.M2_twelve_variants(N=32, nstep=60, df=1e8, gamma=gm,
                                   C_override=ce, quiet=True)
         print('   %5.2f  %s        %9.6f  %6d %3d'
               % (gm, tag, out['f_trans'], out['band'], out['band_ok']))

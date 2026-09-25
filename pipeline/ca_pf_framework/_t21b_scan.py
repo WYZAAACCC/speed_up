@@ -22,7 +22,7 @@ ns = int(sys.argv[3]) if len(sys.argv) > 3 else 120
 K = float(os.environ.get('T21B_K', '120'))
 if len(sys.argv) <= 3:
     ns = max(60, int(round(K * absdf)))
-df = -absdf * 1e8
+df = +absdf * 1e8
 
 import windowB_surface as W
 

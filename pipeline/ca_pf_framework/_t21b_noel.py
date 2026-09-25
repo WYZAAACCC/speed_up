@@ -8,6 +8,6 @@ import windowB_surface as W
 
 print('   |df|/1e8  nstep   f_trans   band  ok')
 for a in [0.5, 1.0, 2.0]:
-    out = W.M2_twelve_variants(N=32, nstep=60, df=-a * 1e8, C_override='off',
+    out = W.M2_twelve_variants(N=32, nstep=60, df=a * 1e8, C_override='off',
                                quiet=True)
     print('   %8.1f %6d %9.6f %6d %3d' % (a, 60, out['f_trans'], out['band'], out['band_ok']))

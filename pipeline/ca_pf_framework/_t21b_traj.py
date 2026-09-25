@@ -10,5 +10,5 @@ absdf = float(sys.argv[1])
 ns = int(sys.argv[2]) if len(sys.argv) > 2 else 300
 N = int(sys.argv[3]) if len(sys.argv) > 3 else 32
 print('#### absdf=%.2fe8 nstep=%d N=%d' % (absdf, ns, N), flush=True)
-out = W.M2_twelve_variants(N=N, nstep=ns, df=-absdf * 1e8, probe=0, quiet=False)
+out = W.M2_twelve_variants(N=N, nstep=ns, df=absdf * 1e8, probe=0, quiet=False)
 print('#### FINAL f_trans=%.6f band=%d ok=%d' % (out['f_trans'], out['band'], out['band_ok']), flush=True)

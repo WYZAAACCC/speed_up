@@ -9,6 +9,6 @@ print('  pair_kernel  |df|/1e8  nstep   f_trans   band  ok')
 for pk in (False, True):
     for a in [0.5, 1.0, 2.0]:
         kw = dict(pair_kernel=True, iface_band=2.0) if pk else {}
-        out = W.M2_twelve_variants(N=32, nstep=60, df=-a * 1e8, quiet=True, **kw)
+        out = W.M2_twelve_variants(N=32, nstep=60, df=a * 1e8, quiet=True, **kw)
         print('  %-11s %8.1f %6d %9.6f %6d %3d'
               % (str(pk), a, 60, out['f_trans'], out['band'], out['band_ok']))

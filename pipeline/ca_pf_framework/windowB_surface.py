@@ -1278,12 +1278,26 @@ class M2Out(object):
         setattr(object.__getattribute__(self, '_g'), k, v)
 
 
-def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
+def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=1e8, gamma=0.15, aniso=0.4,
                        Mob=1e-9, rfrac=0.22, adv_grad='upwind',
                        pair_kernel=False, iface_band=2.0, probe=0, cfl=0.15,
                        plate_dx=2.0, per_field=False, aniso_elastic=False, quiet=False,
+                       t_end=None,
                        C_override=None):
+    # t_end：给定**总物理时间**时，按累计时间跑（而不是固定步数）。★ 记账：
+    #   界面每步位移被 CFL 钉在 ~0.15dx，而 dt ∝ 1/dG_max ⇒ **同一 nstep ≠ 同一时刻**；
+    #   比较不同驱动下的分数必须在**同一 t**（否则低驱动因 dt 更大而虚假领先）。
     """12 变体 RVE（level-set 表示）：看是否（i）不冻结晶核、（ii）给出板条形状。
+
+       ★★ 符号约定（2026-09-25 由判据 T2.1b-7 判决，_chk_t21b7.py）：
+          df > 0 = **变体有利**（会长大）；df < 0 = 变体不利（会缩小）。
+          验证（nv=1 的 slab）：df=+1e8 => dV1=+18432、v/(M|df|)=+0.9989；
+                            df=-1e8 => dV1=-18432、v/(M|df|)=-1.0000。
+          这与 PF3D 的 dF/dphi_v = -dG（梯度下降 => dG>0 才长大）一致。
+          ⚠ **默认值 2026-09-25 从 -1e8 改成 +1e8**：改前所有 M2 运行
+          （含 §6.7 与审计引用的「转变分数 14.5%」）其实是在**溶解**晶核，
+          报出的分数是**弹性自协调**撑起来的（T2.1b 开工时用单步增量发现，
+          见 WINDOWB_SURFACE_AUDIT §11）。**改前的 f_trans 数值一律作废**。
        与格点 KMC 版（windowB_gibbs）对照：那里 Λ≳5 时转变被冻在 5–23% ✗。
 
        ★★ 记账（2026-09-25 两个真修正，缺一都会让 M2 的几何量彻底失真）：
@@ -1359,20 +1373,24 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
           % (N, dx * 1e9, N * dx * 1e6, df, gamma, aniso, v, dt, dt * v / dx))
     _p('   %6s %9s %9s %9s %9s %10s' %
           ('step', 'f_trans', 'V_max/V', 'min(V)>0', 'dt*(M|dG|mx)/dx', '带胞'))
-    for k in range(nstep + 1):
-        if k % 60 == 0 or k == nstep:
+    _nstop = nstep if t_end is None else 1000000
+    _tacc = 0.0
+    for k in range(_nstop + 1):
+        _done = (k == nstep) if t_end is None else (_tacc >= t_end)
+        if k % 60 == 0 or _done:
             vt = np.array([g.volume(j) for j in range(g.nreg)])
             f = 1.0 - vt[0] / (N * dx) ** 3
             nb, medg, okg = g.band_health()
             _p('   %6d %9.4f %9.4f %9s %12.3f %10d'
                   % (k, f, vt.max() / v0.sum(), str(bool((vt[1:] > 0).all())),
                      dt * (g.M * getattr(g, 'dG_max', 0.0)) / dx, nb))
-        if k == nstep:
+        if _done:
             break
         g.advance(dt, aniso=aniso, npref=npref, adv_grad=adv_grad,
                   pair_kernel=pair_kernel, iface_band=iface_band,
                   per_field=per_field)
         # ★ 自适应 dt：按**实际总驱动**（含弹性）定 CFL，见 `suggest_dt` 的记账
+        _tacc += dt
         ndt = g.suggest_dt(cfl=cfl, dt_prev=dt)
         if ndt:
             dt = ndt
@@ -1402,7 +1420,8 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=-1e8, gamma=0.15, aniso=0.4,
         geom_stats(g)
     out = dict(f_trans=float(f_t), v_frac=(vt / vt.sum()).tolist(),
                v_abs=vt.tolist(), S_v_geom=float(sv_geom),
-               band=nb, band_ok=bool(okg), g=g)
+               band=nb, band_ok=bool(okg), g=g, k_used=k, t_total=_tacc,
+               dt_last=dt)
     return M2Out(g, out)
 
 
