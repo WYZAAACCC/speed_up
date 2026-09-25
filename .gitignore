@@ -286,7 +286,15 @@ bench/**/*.npz
 .jitcache/
 
 # ---- ca_pf_framework 下的重产物（MOOSE app 构建、大数组、审计日志）----
-pipeline/ca_pf_framework/pf1d_moose/
+# ★ 记账（2026-09-25 修）：原来这里整目录排除 `pf1d_moose/` ⇒ **V4（PF↔LKT 薄界面匹配）
+#   的 1D MOOSE 工作台从未进版本库**（框架里因此一直写"V4 ❌ 未做"，而工作台其实存在）。
+#   现改为"只忽略跑出来的重产物，源码/模板/驱动/文档入库"。
+pipeline/ca_pf_framework/pf1d_moose/*/
+pipeline/ca_pf_framework/pf1d_moose/.jitcache/
+pipeline/ca_pf_framework/pf1d_moose/__pycache__/
+pipeline/ca_pf_framework/pf1d_moose/*.csv
+pipeline/ca_pf_framework/pf1d_moose/*.log
+pipeline/ca_pf_framework/pf1d_moose/profile_line_*.csv
 pipeline/ca_pf_framework/*.npz
 pipeline/ca_pf_framework/*.vtk
 pipeline/ca_pf_framework/*.png
