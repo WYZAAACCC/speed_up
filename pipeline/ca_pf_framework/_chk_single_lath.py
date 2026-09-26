@@ -27,6 +27,9 @@ ap.add_argument('--facet', type=float, default=0.0)
 ap.add_argument('--facet_eps', type=float, default=0.05)
 ap.add_argument('--track', type=int, default=0)   # >0: 每 N 步记录主轴
 ap.add_argument('--elong', type=float, default=1.0)  # 种子面内长/宽比（EXPERT-#1 起有越界检查）
+ap.add_argument('--gamma', type=float, default=0.15)      # 0 = 关曲率项
+ap.add_argument('--reinit_every', type=int, default=25)   # 0 = 关重初始化
+ap.add_argument('--noelastic', type=int, default=0)       # 1 = 关弹性驱动
 ap.add_argument('--tag', default='')
 ap.add_argument('--N', type=int, default=64)
 ap.add_argument('--dx', type=float, default=5e-8)
@@ -55,8 +58,11 @@ for v in range(nv):
     npref[v + 1] = bn
 
 N, dx, L = a.N, a.dx, a.N * a.dx
-g = W.LevelSetMulti(N, L, C=C, eps0=eps0, gamma=0.15, Mob=1e-9,
-                    df=[0.0] + [a.df] * nv, workers=a.workers, reinit_every=25)
+g = W.LevelSetMulti(N, L, C=C, eps0=eps0, gamma=a.gamma, Mob=1e-9,
+                    df=[0.0] + [a.df] * nv, workers=a.workers,
+                    reinit_every=a.reinit_every)
+if a.noelastic:
+    g.pf = None      # 关弹性驱动（wtab 已在 __init__ 用 C 建好）
 k = a.variant
 _al = None
 if a.elong > 1.0:
@@ -71,7 +77,7 @@ g.c[:] = 0.036
 V0 = g.volume(k)
 _M = 1e-9
 _ed = g.elastic_driving()
-dt = a.cfl * dx / (_M * (abs(a.df) + 2.0 * float(np.max(np.abs(_ed)))))
+dt = a.cfl * dx / (_M * max(abs(a.df) + 2.0 * float(np.max(np.abs(_ed))), 1e-30))
 print('=== D11 single-lath: beta=%.2f beta_w=%.2f facet=%.2f N=%d dx=%.1f nm L=%.2f um R=%.1f nm t=%.1f nm'
       % (a.beta, a.beta_w, a.facet, N, dx * 1e9, L * 1e6, a.R * 1e9, a.t * 1e9), flush=True)
 t0 = time.time()
