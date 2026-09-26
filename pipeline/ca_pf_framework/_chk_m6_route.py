@@ -47,6 +47,7 @@ ap.add_argument('--nplate', type=int, default=1)
 ap.add_argument('--elong', type=float, default=1.0)   # 种子的面内长/宽比
 ap.add_argument('--noelastic', type=int, default=0)  # 1 = 关弹性驱动（隔离用）
 ap.add_argument('--gamma', type=float, default=0.15)  # 界面能（0 = 去掉曲率项）
+ap.add_argument('--adv_grad', default='central')      # |grad phi| 格式：upwind / central
 ap.add_argument('--reinit_every', type=int, default=25)
 ap.add_argument('--only_measure', default='')
 args = ap.parse_args()
@@ -115,7 +116,7 @@ for it in range(1, args.nstep + 1):
     g.advance(dt, aniso=args.aniso, npref=npref, band_cells=20,
               pair_aniso=bool(args.pair), mob_aniso=args.mob_aniso,
               pin_min=bool(args.pin_min), mob_beta=args.mob_beta,
-              mob_beta_w=args.mob_beta_w)
+              mob_beta_w=args.mob_beta_w, adv_grad=args.adv_grad)
     reg = g.region()
     f = 1.0 - float((reg == 0).mean())
     vt = np.array([g.volume(k) for k in range(g.nreg)], float)

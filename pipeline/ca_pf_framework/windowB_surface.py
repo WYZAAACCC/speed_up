@@ -629,6 +629,7 @@ class LevelSetMulti(object):
         self.pf = None
         self.ae = None
         self.aniso_elastic = bool(aniso_elastic)
+        self.elastic_soft = False     # AUDIT-#9: 默认沿用 hard region（不改动已归档结论）
         if C is not None and eps0 is not None:
             from windowB_pf3d import PF3D, VOIGT, G6 as _G6, _lam_full
             self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
@@ -668,8 +669,14 @@ class LevelSetMulti(object):
         self.ncmp = None      # (nreg,nreg,3); 母相相关项与对角项 = nan (调用方 fallback)
         # ---- P2 (2026-09-26): 每变体的**双轴**（n_hab, w = n_hab x a），a 由 rank-1 分解 ----
         self.wtab = None      # (nreg,3); 母相行 = nan
+        # AUDIT-#7 修：同时存**真长轴 a**（rank-1 分解的位移方向）。
+        #   原来调用方只能用 n x w 去还原 a，而 a 并不垂直于 n
+        #   （实测 n.a = cos(82.7deg) = 0.127），n x (n x a) = n(n.a) - a
+        #   => 偏离真 a 约 7.3deg。现在直接给 atab。
+        self.atab = None      # (nreg,3); 真长轴 a
         if C is not None and eps0 is not None:
             _w = np.full((self.nreg, 3), np.nan)
+            _a = np.full((self.nreg, 3), np.nan)
             _rng = np.random.default_rng(0)
             _ns = _rng.normal(size=(400, 3))
             _ns /= np.linalg.norm(_ns, axis=1)[:, None]
@@ -681,7 +688,9 @@ class LevelSetMulti(object):
                 _R = self._rank1_axes(_E, _nref)
                 if _R is not None:
                     _w[_v + 1] = _R[2]
+                    _a[_v + 1] = _R[1]      # AUDIT-#7: 真长轴
             self.wtab = _w
+            self.atab = _a
 
         if C is not None and eps0 is not None:
             self.ncmp = self._pair_normals(C, eps0)
@@ -1024,10 +1033,15 @@ class LevelSetMulti(object):
         return mb, ms
 
     def curvature_of(self, k):
-        g = np.gradient(self.phi[k], self.dx)
+        """kappa = div(grad phi / |grad phi|)。
+           AUDIT-#8 修：np.gradient 默认 edge_order=1（边界一阶）=> 对界面靠近边界、
+           或只有数胞厚的薄片，kappa 在边界/薄向上误差大。改用 **edge_order=2**。
+           记账：这不能解决"薄片只有 2-3 胞厚时二阶导本身不可信"的根本问题
+           （那是分辨率问题，见 LATH_CODE_AUDIT #8/#2 与 C 节），只去掉边界那一项误差。"""
+        g = np.gradient(self.phi[k], self.dx, edge_order=2)
         gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
         n = [gi / gn for gi in g]
-        return sum(np.gradient(n[i], self.dx)[i] for i in range(3))
+        return sum(np.gradient(n[i], self.dx, edge_order=2)[i] for i in range(3))
 
     # ================= ④ 数值格式：Godunov 迎风 |∇φ| 与 Sussman 重初始化 =================
     def _upwind_grad(self, phi, sgn):
@@ -1056,8 +1070,18 @@ class LevelSetMulti(object):
         return c * self.dx ** 2
 
     # ---------- 体相驱动：谱法微弹性 ----------
-    def elastic_driving(self):
-        """返回 (nreg, N,N,N)：-ε⁰_k:σ（对母相为 0）"""
+    def elastic_driving(self, soft=None):
+        """返回 (nreg, N,N,N)：-ε⁰_k:σ（对母相为 0）。
+
+           AUDIT-#9 修：原来一律用 **hard region** 指示场（@B@pf.phi[v] = (reg==v+1)@B@）
+           => 界面胞的 eps0 分布是阶梯状 => FFT 谱法解出的 sigma 在界面处有 O(1) 阶梯噪声
+           => 驱动 ed 在界面附近被污染。新增 soft 选项：用**平滑指示场**
+               h_k = 0.5*(1 - tanh(phi_k / w)),  w = 1.5*dx
+           默认 soft=None => 沿用类属性 self.elastic_soft（**默认 False**，
+           以免改变已归档的全部结论）；显式 soft=True 才启用。"""
+        if soft is None:
+            soft = bool(getattr(self, 'elastic_soft', False))
+        _hard = (lambda v: (self.region() == v + 1))
         reg = self.region()
         out = np.zeros((self.nreg,) + reg.shape)
         if self.aniso_elastic:
@@ -1086,8 +1110,14 @@ class LevelSetMulti(object):
             return out
         if self.pf is None:
             return out
-        for v in range(self.nv):
-            self.pf.phi[v] = (reg == v + 1)
+        if soft:
+            # AUDIT-#9: 平滑指示场（level-set 的 phi 是 SDF => 0.5*(1-tanh) 是自然选择）
+            _w = 1.5 * self.dx
+            for v in range(self.nv):
+                self.pf.phi[v] = 0.5 * (1.0 - np.tanh(self.phi[v + 1] / _w))
+        else:
+            for v in range(self.nv):
+                self.pf.phi[v] = (reg == v + 1)
         sig = self.pf.sigma_tensor()
         for v in range(self.nv):
             out[v + 1] = (-np.einsum('p,p...->...', self.e0v_eng[v], sig)
@@ -1095,8 +1125,14 @@ class LevelSetMulti(object):
         return out
 
     # ---------- 界面推进（PDE）----------
+    # AUDIT-#1 (2026-09-26)： 的**默认值**由 'upwind' 改为 'central'。
+    #   依据：审计发现两种格式在长时程上给出**不同结果**（同一 E6 配置：
+    #   长/宽 1.54(upwind) vs 1.75(central)，f 0.727 vs 0.846；C1(central) 跑满 700 步、
+    #   带胞健康、无失稳）=> 取更准确的 central 为默认。
+    #   ⚠ 记账：**这改变了后续所有结果的数值**，与审计前的归档结果不可逐位比较。
+    #   若某算例出现失稳（陡梯度），显式传 adv_grad='upwind' 可回退。
     def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True,
-                adv_grad='upwind', extend='edt', band_cells=20, iface_band=2.0,
+                adv_grad='central', extend='edt', band_cells=20, iface_band=2.0,
                 drag=None, pair_kernel=False, per_field=False, pair_aniso=False,
                 mob_aniso=0.0, pin_min=True, mob_beta=0.0, mob_beta_w=0.0,
                 facet_lam=0.0, facet_eps=0.05):
@@ -1164,7 +1200,11 @@ class LevelSetMulti(object):
         #   界面法向用**差分场** d = phi_k - phi_l 的梯度 (两侧对称, 且就是该界面的法向).
         _need_ref = (pair_aniso and aniso > 0) or (mob_aniso > 0.0) or (mob_beta > 0.0)
         nd_ref_ = None
-        if _need_ref and getattr(self, 'ncmp', None) is not None:
+        # AUDIT-#4 修：原来这里还要求 self.ncmp is not None，而 ncmp 只在
+        #   (C is not None and eps0 is not None) 时才建 => 跑"单变体 vs 母相"(nv=1、
+        #   不给 eps0) 时 ncmp=None => 整块被跳过 => **mob_beta 静默不生效**。
+        #   现在：ncmp 缺失时退化为"只用 npref"，并在下面 has_pair 分支做保护。
+        if _need_ref:
             gd_ = np.gradient(pha - phb, self.dx)
             gdn_ = np.sqrt(sum(g_ ** 2 for g_ in gd_)) + 1e-30
             ndir_ = np.stack([g_ / gdn_ for g_ in gd_], -1)
@@ -1175,12 +1215,16 @@ class LevelSetMulti(object):
                     if vv is not None and 0 <= int(kk) < nreg:
                         vv = np.asarray(vv, float)
                         np_arr[int(kk)] = vv / (np.linalg.norm(vv) + 1e-300)
-            ncl = self.ncmp
+            ncl = getattr(self, 'ncmp', None)
             ki = np.clip(karr, 0, nreg - 1)
             li = np.clip(larr, 0, nreg - 1)
             has_pair = (karr > 0) & (larr > 0)
-            nd_ref = np.where(has_pair[..., None], ncl[ki, li],
-                              np.where((karr > 0)[..., None], np_arr[ki], np_arr[li]))
+            if ncl is None:
+                # AUDIT-#4: 没有配对表 => 变体-变体界面也退化为用 winner/runner-up 的 npref
+                nd_ref = np.where((karr > 0)[..., None], np_arr[ki], np_arr[li])
+            else:
+                nd_ref = np.where(has_pair[..., None], ncl[ki, li],
+                                  np.where((karr > 0)[..., None], np_arr[ki], np_arr[li]))
             badp = ~np.isfinite(nd_ref).all(-1)
             if badp.any():
                 nd_ref = np.where(badp[..., None], np_arr[ki], nd_ref)
@@ -1215,7 +1259,11 @@ class LevelSetMulti(object):
         #   `suggest_dt` 按**总驱动**定 CFL。**只用 Δf 估 dt 会严重低估界面速度** ——
         #   实测 M2：弹性项中位 4.9e8 是 Δf(1e8) 的 ~5 倍 ⇒ 按 Δf 定出的 dt 实际每步
         #   位移是 **0.6–0.75 dx**（不是 0.15），一阶迎风必然失真。
+        # AUDIT-#3 修：原来 dG_max = max|dG_cell| **不含 Mfac** => Mfac 小的界面上
+        #   dt 被按"未压制的驱动力"定，最多保守 33 倍（白算机时）。
+        #   现在改存"有效驱动"，在 Mfac 应用之后重算（见下面 _dG_max_from_mfac）。
         self.dG_max = float(np.max(np.abs(dG_cell)))
+        self._dG_cell_ref = dG_cell          # 供 Mfac 应用后重算 dG_max
         if drag is not None:
             # ★★ 溶质拖曳（P3.3 / 框架 §6.3 [RULE] K5）：**隐式自洽**解
             #     v = M[ΔG − P_drag(v)]，P_drag = P0/(1+v/v*)（双盒闭式，K1 已验）。
@@ -1246,6 +1294,7 @@ class LevelSetMulti(object):
         #   法向生长必须容纳失配 => 额外激活能 ∝ (n.n_hab)^2 的几何投影）。
         #   标定见 LATH_FACET_PLAN §9：位错环形成能 => beta~3.8；板条纵横比反推 => beta~3.0
         #   => 取 beta=3.5（带 [3,6]）。M_min = 3% M0 => 界面不会被冻结（数值安全）。
+        _mfac_dt = 1.0                          # AUDIT-#3: 累积的 Mfac（用于重定 dt）
         if mob_beta > 0.0 and nd_ref_ is not None:
             c2b_ = np.clip(np.einsum('...i,...i->...', ndir_, nd_ref_) ** 2, 0.0, 1.0)
             # ★ P2：**第二钉扎轴** w = n_hab x a（板条宽度方向）。
@@ -1260,10 +1309,16 @@ class LevelSetMulti(object):
                 c2w_ = np.clip(np.einsum('...i,...i->...', ndir_, np.where(
                     okw[..., None], w_of, 0.0)) ** 2, 0.0, 1.0)
                 _expo = _expo - mob_beta_w * np.where(okw, c2w_, 0.0)
-            v_cell = v_cell * np.exp(_expo)
+            _mfac_dt = np.exp(_expo)
+            v_cell = v_cell * _mfac_dt
+        # AUDIT-#6 修：mob_beta 与 mob_aniso 是两套等价机制的**不同参数化**，
+        #   同时给非零会相乘 => 双重调制（静默的错）。这里显式拒绝。
+        if mob_beta > 0.0 and mob_aniso > 0.0:
+            raise ValueError('mob_beta 与 mob_aniso 不能同时给非零（会双重调制）')
         if mob_aniso > 0.0 and nd_ref_ is not None:
             c2r_ = np.clip(np.einsum('...i,...i->...', ndir_, nd_ref_) ** 2, 0.0, 1.0)
             Mfac = 1.0 - mob_aniso * (c2r_ if pin_min else (1.0 - c2r_))
+            _mfac_dt = Mfac
             v_cell = v_cell * Mfac
 
         # ★★ （本轮修·关键）界面速度的**配对规范形**（跨界面连续化）。
@@ -1272,6 +1327,9 @@ class LevelSetMulti(object):
         #    **连续**；否则最近点延拓会把一侧的符号搬到另一侧 / 两侧种子互相抵消 ✗。
         #    规范形按 min(k,l) 定向 ⇒ 跨界面连续：V_c = M(df_min − df_max) = sigma·v_cell。
         #    随后每胞用**同一标量**：φ_karr 取 +V_ab = +sigma·V_c，φ_larr 取 −sigma·V_c。
+        # AUDIT-#3: 用**有效驱动**重定 dt（原来用未压制的 dG）
+        if not isinstance(_mfac_dt, float):
+            self.dG_max = float(np.max(np.abs(self._dG_cell_ref * _mfac_dt)))
         sigma = np.where(karr < larr, 1.0, -1.0)
         vcanon = sigma * v_cell
         # ★★ 记账：和单畴一样，**必须做速度扩展**，而且多畴对带宽更敏感 ——
@@ -1366,7 +1424,10 @@ class LevelSetMulti(object):
              ⇒ 凭空吞吐溶质（实测：关重初始化 M4=1.16e-2、每 20 步重初始化 5.37e-2 ✗）。"""
         reg = self.region()
         self._cnt = getattr(self, '_cnt', 0) + 1
-        reg_adv = self.region()          # ★ 只反映【平流】造成的扫过
+        # AUDIT-#10 修：原来这里又写了一次 self.region()（中间无修改 => 与 reg 相同）。
+        #   逻辑本来就对（此处仍在 reinitialize 之前 => 只反映【平流】造成的扫过），
+        #   只是重复计算；直接复用 reg。
+        reg_adv = reg
         if self.reinit_every and self._cnt % self.reinit_every == 0:
             self.reinitialize()
         self._stefan(reg0, reg_adv)
@@ -1492,13 +1553,30 @@ class LevelSetMulti(object):
             # ★ 收口（本轮）：接收者 = **全部 6 个邻居 + 自己 = 7 个** ⇒ 除数恒为 7 ✓。
             #   此前除数用 `wsum = #被扫邻居 + 1`（薄扫层里只有 ~2）⇒ 分出去的总量 = 应有量×7/wsum
             #   ≈ ×3.5 ⇒ 守恒漏（探针实测：体相应取 2.05e-21，却被拿走 7.19e-21 = 3.5 倍 ✓ 完全吻合）。
-            NRECV = 7.0
-            for d in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
-                nb = np.roll(swept, d, axis=(0, 1, 2))
-                src = np.roll(amount, d, axis=(0, 1, 2))
-                self.c += np.where(nb, src / NRECV / (self.rho * self.dx ** 3), 0.0)
-            # 自己那份
-            self.c += np.where(swept, amount / NRECV / (self.rho * self.dx ** 3), 0.0)
+            # AUDIT-#5 修：原来用 np.roll 分配（**周期边界**）=> 域边界的排出溶质会从
+            #   对面边界冒出（非物理）。改成**非周期移位**：只分给"落在域内"的邻居，
+            #   越界方向的那份自然留在源胞手上 => 既不跨域、又逐位守恒。
+            #   接收者数由**实际**决定（自己 + 域内被扫过的邻居），不再硬编码 7。
+            def _shift_np(arr, d):
+                out = np.zeros_like(arr)
+                src_s = [slice(None)] * 3
+                dst_s = [slice(None)] * 3
+                for ax in range(3):
+                    if d[ax] > 0:
+                        src_s[ax], dst_s[ax] = slice(0, -1), slice(1, None)
+                    elif d[ax] < 0:
+                        src_s[ax], dst_s[ax] = slice(1, None), slice(0, -1)
+                out[tuple(dst_s)] = arr[tuple(src_s)]
+                return out
+            _dirs = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+            nrecv = np.ones(swept.shape)                      # 自己
+            for d in _dirs:
+                nrecv += _shift_np(swept.astype(float), d)     # 域内且被扫过的邻居
+            share = np.where(swept, amount / np.maximum(nrecv, 1.0)
+                             / (self.rho * self.dx ** 3), 0.0)
+            self.c += share                                   # 自己那份
+            for d in _dirs:
+                self.c += _shift_np(share, d)                 # 邻居那份（非周期）
             if dbg is not None:
                 b2, s2 = self.totals()
                 dbg['log'].append((dbg['step'], kind + ' c)分发后', (b2 + s2) - dbg['t0'], 0))
