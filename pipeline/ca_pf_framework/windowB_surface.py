@@ -792,6 +792,18 @@ class LevelSetMulti(object):
             e_par = u @ al
             e_per = np.linalg.norm(u - e_par[..., None] * al, axis=-1)
             rperp = np.sqrt((e_par / elong) ** 2 + e_per ** 2)
+        # EXPERT-#1 修：**越界硬检查**。 在 elong>1 时用 (e_par/elong)^2+e_per^2
+        #   => 长轴半径 = elong*R。若它超过"种子中心到最近域面的距离"，种子会被
+        #   盒子截断（实测 E6: elong*R=1.8um > L/2=0.8um => 初始长/宽只有 2.72 而非 6）。
+        #   截断后的一切形貌结论都无效 => 这里直接拒绝，不再静默。
+        if elong > 1.0:
+            _c = np.asarray(center, float)
+            _margin = float(min(_c.min(), (self.L - _c).min()))
+            if elong * R > _margin:
+                raise ValueError(
+                    'elongated seed exceeds domain: elong*R=%.4g um > margin %.4g um. '
+                    'Enlarge L, reduce R, or reduce elong.'
+                    % (elong * R, _margin))
         sdf = np.maximum(np.abs(d) - t / 2, rperp - R)         # 椭/圆盘 SDF（近似）
         self.phi[k] = np.minimum(self.phi[k], sdf)
         for j in range(self.nreg):
@@ -1254,6 +1266,21 @@ class LevelSetMulti(object):
             stk = stk_pair
         else:
             kap_cell = np.take_along_axis(kap_all, karr[None], 0)[0]
+            # EXPERT-#4：默认 pair_kernel=False 时，变体-变体界面用的是 **winner 场的曲率**，
+            #   而真实界面曲率应来自差分场 d=phi_k-phi_l => 两侧不对称（仓库注释已记载：
+            #   可致 d 被拉陡、|grad phi| 由 ~1 涨到数百）。这里**显式告警**（不静默），
+            #   提醒结论可能被污染；修 pair_kernel 判据后再改默认。
+            if (not getattr(self, '_warned_pair_kernel', False)):
+                _hp = (karr > 0) & (larr > 0)
+                if _hp.sum() > 0:
+                    import warnings as _w
+                    _w.warn('pair_kernel=False: detected %d variant-variant interface cells; '
+                           'their curvature is taken from the winner field, not from '
+                           'the difference field phi_k-phi_l => the two sides are '
+                           'asymmetric and morphology conclusions may be biased '
+                           '(see LATH_CODE_AUDIT / expert review EXPERT-#4).'
+                           % int(_hp.sum()), RuntimeWarning, stacklevel=2)
+                    self._warned_pair_kernel = True
         dG_cell = (self.df[karr] - self.df[larr]) + (edk - edl) - stk * kap_cell
         # ★★ 记账（2026-09-25，查明 M2"塌缩"的真凶）：把本步驱动力存下来，供
         #   `suggest_dt` 按**总驱动**定 CFL。**只用 Δf 估 dt 会严重低估界面速度** ——
@@ -1308,7 +1335,13 @@ class LevelSetMulti(object):
                 okw = np.isfinite(w_of).all(-1)
                 c2w_ = np.clip(np.einsum('...i,...i->...', ndir_, np.where(
                     okw[..., None], w_of, 0.0)) ** 2, 0.0, 1.0)
-                _expo = _expo - mob_beta_w * np.where(okw, c2w_, 0.0)
+                # EXPERT-#5 修：第二钉扎轴 w **只对变体-母相界面**施加（与上面注释一致）。
+                #   原写法只要 winner 是变体就用它的 w => 变体-变体界面也被加了 w 轴钉扎，
+                #   于是实际模型是"变体-母相:双轴 / 变体-变体:winner 的双轴"，
+                #   而不是设计中的"变体-变体:只按相容法向单轴"（会改变变体间界面选择）。
+                _has_pair_ = (karr > 0) & (larr > 0)
+                _use_w = (~_has_pair_) & okw
+                _expo = _expo - mob_beta_w * np.where(_use_w, c2w_, 0.0)
             _mfac_dt = np.exp(_expo)
             v_cell = v_cell * _mfac_dt
         # AUDIT-#6 修：mob_beta 与 mob_aniso 是两套等价机制的**不同参数化**，
@@ -1586,15 +1619,60 @@ class LevelSetMulti(object):
                 dbg['log'].append((dbg['step'], kind, (b1 + s1) - dbg['t0'], int(swept.sum())))
                 dbg['t0'] = b1 + s1
 
-    def reinitialize(self, band_cells=6):
-        """把每个 φ_k 在带内重初始化成有符号距离；带外保持不变（多区域安全做法）"""
+    def reinitialize(self, band_cells=6, mode='pair'):
+        """★ EXPERT-#3 修（2026-09-26）：**按界面配对**重初始化（默认 mode='pair'）。
+
+        为什么必须改：多区域的真实界面由  决定，**不是** 。
+          旧实现把每个 phi_k 当**独立单相**做 Sussman => 即使各场自己的零等值面各自不动，
+           的零等值面仍会移动。
+          **实测**（_verify_reinit.py，两变体平面界面）：
+            不重初始化      => d=0 在 0.02500 um
+            独立 reinit 各 phi_k（旧实现）=> d=0 移到 **-0.21313 um**（跳 0.238um ≈ **4.8 个胞**！）
+            对差分场 reinit  => 0.02500 um（正确）
+          => 每 25 步一次的 reinit 会**反复打乱变体-变体界面**，很可能就是"等轴化"的真主因。
+
+        做法（对每个活跃配对 (k,l), k<l）：
+          1. d = phi_k - phi_l，只在 |d| <= band 的带内
+          2. d_new = sussman_reinit(d)  => SDF 且**零等值面不动**
+          3. **对称回写**：phi_k += 0.5*(d_new-d)，phi_l -= 0.5*(d_new-d)
+             => d_kl == d_new（界面保持），且 phi_k+phi_l 不变（不引入整体漂移）
+        记账：
+          * 多配对叠加处（三叉线）各配对各自贡献 => 近似处理，见文档。
+          * mode='perfield' 保留旧行为，仅供对照/回归。
+        """
+        if mode != 'pair':
+            reg = self.region()
+            for k in range(self.nreg):
+                near = np.abs(self.phi[k]) <= band_cells * self.dx
+                if not near.any():
+                    continue
+                newp = self.sussman_reinit(self.phi[k], iters=30)
+                self.phi[k] = np.where(near, newp, self.phi[k])
+            return
         reg = self.region()
-        for k in range(self.nreg):
-            near = np.abs(self.phi[k]) <= band_cells * self.dx
+        # 活跃配对：区域数少时可全对；否则用 region 的邻居关系先筛
+        pairs = set()
+        for ax in range(3):
+            a = reg
+            b = np.roll(reg, -1, axis=ax)
+            sel = a != b
+            if sel.any():
+                for x, y in zip(a[sel].ravel(), b[sel].ravel()):
+                    if x != y:
+                        pairs.add((int(min(x, y)), int(max(x, y))))
+        if not pairs:
+            return
+        delta = np.zeros_like(self.phi)
+        for (k, l) in pairs:
+            d = self.phi[k] - self.phi[l]
+            near = np.abs(d) <= band_cells * self.dx
             if not near.any():
                 continue
-            newp = self.sussman_reinit(self.phi[k], iters=30)  # ④ PDE 式（保界面位置）
-            self.phi[k] = np.where(near, newp, self.phi[k])
+            dn = self.sussman_reinit(d, iters=30)
+            corr = np.where(near, dn - d, 0.0)
+            delta[k] += 0.5 * corr
+            delta[l] -= 0.5 * corr
+        self.phi = self.phi + delta
 
 
 def M1_multiregion_conservation(N=48, nstep=20):
