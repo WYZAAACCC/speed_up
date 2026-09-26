@@ -87,7 +87,7 @@ def grad_sym(phi, dx):
     return np.sqrt(acc)
 
 
-def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2'):
+def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True):
     """④ 保亚胞位置的 PDE 式重初始化：解 φ_τ + S(φ0)(|∇φ|−1) = 0（一阶迎风）。
        零等值面在连续意义下不动 ✓（旧写法 `distance_transform_edt(mask)` 会把界面
        吸附到胞边界，O(0.5dx) 系统偏差 ✗）。
@@ -118,6 +118,16 @@ def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2'):
     S = phi0 / np.sqrt(phi0 ** 2 + dx ** 2)
     if dtau is None:
         dtau = 0.5 * dx / 3.0   # 一阶迎风、多维 CFL：dτ ≤ dx/3（|S|≤1）
+    # EXPERT-#3c 修（2026-09-26）：**自适应 dtau + 单步 clip + 发散守卫**。
+    #   为什么原写法会发散：更新量是 dtau*S*(gm-1)。当输入 |grad phi| 明显 >1 时
+    #   (gm-1)~O(1)，而 gm 自身在迭代中还会被二阶 ENO 过冲放大 =>
+    #   实测 iters 越大越糟（-0.82um@100 -> -71um@3000，带内 |grad| 变 nan）。
+    #   三处加固：
+    #     ① 自适应步长：dtau_eff = min(dtau, 0.5*dx/3/max(gm))  （CFL 对 gm 也成立）
+    #     ② 单步更新 clip 到 ±0.5*dx
+    #     ③ 守卫：若 max|phi| 超过初值量级 10 倍 => **拒绝本次 reinit**（返回原场，不静默生效）
+    _phi_raw = phi0.copy()
+    _lim0 = float(np.max(np.abs(phi0))) + dx
     for _ in range(iters):
         if grad == 'upwind':
             gm = upwind_grad(phi, S, dx)
@@ -128,7 +138,12 @@ def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2'):
             gm = np.sqrt(sum(gi ** 2 for gi in g))
         else:
             gm = grad_sym(phi, dx)
-        phi = phi - dtau * S * (gm - 1.0)
+        _gmax = float(np.max(gm))
+        _dte = min(dtau, 0.5 * dx / 3.0 / max(_gmax, 1.0))
+        _upd = _dte * S * (gm - 1.0)
+        phi = phi - np.clip(_upd, -0.5 * dx, 0.5 * dx)
+        if guard and float(np.max(np.abs(phi))) > 10.0 * _lim0:
+            return _phi_raw            # 发散 => 拒绝，保持原场
     return phi
 
 
