@@ -121,7 +121,9 @@ for it in range(1, a.nstep + 1):
                               ang_n=[_ang(_evec[:, j], _n1) for j in range(3)],
                               ang_w=[_ang(_evec[:, j], _w1) for j in range(3)],
                               ang_a=[_ang(_evec[:, j], _a1) for j in range(3)]))
-    if g.volume(k) / L ** 3 > 0.6:
+    # EXPERT-#1 记账：单核自由生长会一直长大，**必须早停**以免周期边界影响形状。
+    #   实测 60% 时 B0/B1 已明显受边界影响（V/V0=353/79）；降到 25% 更稳。
+    if g.volume(k) / L ** 3 > 0.25:
         break
 
 # ---------- 测形状（直接 extent，比惯性张量更贴合"薄饼"）----------
