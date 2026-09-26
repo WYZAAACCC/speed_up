@@ -115,6 +115,33 @@ def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2'):
     return phi
 
 
+def herring_stiffness_cusp(ndot2, gamma0, Lam, eps_c=0.05):
+    """**尖点/近奇异**界面能的 Herring 刚度 gamma + gamma_tt。
+
+        gamma(th)  = gamma0 * (1 + Lam * sqrt(sin^2 th + eps_c^2))
+        gamma_tt   = gamma0 * Lam * (eps_c^2 - s^4 - 2 s^2 eps_c^2) / s^3,   s^2 = sin^2 th + eps_c^2
+
+    ★ 为什么需要它（本轮实测 D11/长时程给的定量理由）：
+      孤立单核长跑（beta_h=3.5, beta_w=2.3）：300 步 aspect 3.49 -> 1200 步 **2.23**，
+      而**法向厚度反而长了 2.4x**。=> 形状弛豫（Gibbs-Thomson，驱动力 = gamma*kappa）
+      用**各向同性的 gamma** 把薄饼**拉圆**了 => 光有 M(n) 钉扎**维持不住**板条。
+      要维持，必须让惯习面同时是**低能面 + 刚性面**。
+
+    ★ 凸性（已逐项核对，故**不需要** Wulff 凸化）：
+        th -> 90 deg: gamma_tt -> -gamma0*Lam, gamma -> gamma0(1+Lam)
+                      => gamma+gamma_tt -> gamma0 > 0  ✓
+        th -> 0     : s -> eps_c => gamma_tt -> +gamma0*Lam/eps_c  (>0, 发散) ✓
+      => 处处凸；且惯习面处刚度 ~ gamma0*Lam/eps_c **极大** => 该面极稳定。
+    Lam 的物理：gamma(惯习面)/gamma(无序面) = 1/(1+Lam)。取 Lam=0.4 => 比 0.71。
+    """
+    s2 = np.clip(1.0 - ndot2, 0.0, 1.0)
+    s2e = s2 + eps_c ** 2
+    s = np.sqrt(s2e)
+    g = gamma0 * (1.0 + Lam * s)
+    gtt = gamma0 * Lam * (eps_c ** 2 - s2 ** 2 - 2.0 * s2 * eps_c ** 2) / (s2e ** 1.5)
+    return g + gtt
+
+
 def herring_stiffness(ndot2, gamma0, Lam, herring=True):
     """各向异性界面刚度 γ_eff = γ + γ_θθ（Herring 项）。
        输入 ndot2 = (n·n_pref)²；对 γ(θ)=γ0[1+Λ sin²θ]（θ = 法向与 n_pref 的夹角）:
@@ -385,7 +412,8 @@ class LevelSetSurface(object):
     # ---------- 界面推进（PDE，不是翻转）----------
     def advance(self, dt, df=0.0, gamma_eff=None, aniso=0.0, npref=None,
                 herring=True, band=1.5, adv_grad='upwind2', band_cells=6,
-                extend='edt', ext_iters=14, ext_refresh=5):
+                extend='edt', ext_iters=14, ext_refresh=5,
+                mob_aniso=0.0, mref=None):
         """∂φ/∂t + v_n|∇φ| = 0，v_n = M[Δf − γ_eff(n) κ]（γ_eff = γ+γ_θθ）。
            ★ 记账（本轮移植 ④ 的两处改动）：
              1) 空间导数换成 **Godunov 迎风 |∇φ|**（模块级 `upwind_grad`），
@@ -414,7 +442,26 @@ class LevelSetSurface(object):
             nd = nd / (np.linalg.norm(nd) + 1e-300)
             ndot2 = sum(n[i] * nd[i] for i in range(3)) ** 2
             gk = herring_stiffness(np.clip(ndot2, 0.0, 1.0), gam0, aniso, herring)
-        vn_if = np.where(m, self.M * (df - gk * kap), 0.0)
+        # ---- P0.4 (2026-09-26, LATH_FACET_PLAN): 界面**迁移率**各向异性 --------------
+        #   物理：界面迁移率与界面能一样由界面结构决定；{334} 型惯习面是"好界面"，
+        #         其他取向的迁移率被结构缺陷拖低（faceted growth 的标准图像）。
+        #   ★ 为什么必须走 M(n) 而不是继续调 gamma(n)：
+        #     P0.3 实测（_chk_mroute A-D，df=1e8 = dG_chem(M_s) 的真实值）：
+        #       aniso=0 与 aniso=0.9 的 M6 中位**都是 55.4 deg**，参考取向换对/换错也不动
+        #     => 在真实驱动力下，"界面能 vs 驱动力"的幅度竞争根本不成立。
+        #     而 M(n) 是**动力学**量，**没有热力学凸性约束**（不需要 gamma+gamma_tt>0）
+        #     => 各向异性强度可以任意大，不会被 Delta G 淹没。
+        #   形式： M(n) = M0 * [1 - mob_aniso * (1 - (n.nref)^2)]
+        #     mob_aniso=0   -> 各向同性（返回旧行为，逐位相同）
+        #     mob_aniso=1   -> 非法向迁移率 = 0（完全钉扎）
+        Mloc = self.M
+        if mob_aniso > 0.0 and mref is not None:
+            nv_, _gn_ = self.normal()
+            nd_ = np.asarray(mref, float)
+            nd_ = nd_ / (np.linalg.norm(nd_) + 1e-300)
+            ndot2_ = np.clip(sum(nv_[i] * nd_[i] for i in range(3)) ** 2, 0.0, 1.0)
+            Mloc = self.M * (1.0 - mob_aniso * (1.0 - ndot2_))
+        vn_if = np.where(m, Mloc * (df - gk * kap), 0.0)
         if extend == 'edt' and (~m).any():
             # 最近界面点扩展：把界面上的 v_n 复制到"到界面距离 ≤ band_cells"内的所有胞
             # ⇒ 沿法向常数 ⇒ 剖面的更新是纯平移（保 SDF、保界面速度）
@@ -580,7 +627,7 @@ class LevelSetMulti(object):
         self.ae = None
         self.aniso_elastic = bool(aniso_elastic)
         if C is not None and eps0 is not None:
-            from windowB_pf3d import PF3D, VOIGT, G6 as _G6
+            from windowB_pf3d import PF3D, VOIGT, G6 as _G6, _lam_full
             self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
                            workers=workers, k0_mode=k0_mode,
                            sigma_ext=self.sigma_ext)
@@ -608,7 +655,97 @@ class LevelSetMulti(object):
             self.ae = AnisoElastic(N, L, self._C_phases,
                                    sum(self._C_phases) / len(self._C_phases))
 
+        # ---- P0.1 (2026-09-26, LATH_FACET_PLAN 1-主因①-a): 配对相容法向表 ----
+        #   物理依据 = MATH_FRAMEWORK 5.6 的 rank-1 不变平面 (lam2(U)=1):
+        #   两个变体 k,l 之间的界面应落在它们的不变平面上, 法向
+        #       n*(k,l) = argmin_n 0.5 * dEps0 : Lam(C,n) : dEps0,  dEps0 = eps0_k - eps0_l.
+        #   旧代码: 任何界面都用 winner 的 npref[k] (= 对**母相**的惯习面)
+        #   => 变体-变体界面用错对象. 生产末态 f=0.9001 => 母相只剩 9.99% 面积
+        #   => 绝大多数界面用错 => M6 (58.9 deg vs 随机 59.7 deg) 的第一嫌疑.
+        self.ncmp = None      # (nreg,nreg,3); 母相相关项与对角项 = nan (调用方 fallback)
+        # ---- P2 (2026-09-26): 每变体的**双轴**（n_hab, w = n_hab x a），a 由 rank-1 分解 ----
+        self.wtab = None      # (nreg,3); 母相行 = nan
+        if C is not None and eps0 is not None:
+            _w = np.full((self.nreg, 3), np.nan)
+            _rng = np.random.default_rng(0)
+            _ns = _rng.normal(size=(400, 3))
+            _ns /= np.linalg.norm(_ns, axis=1)[:, None]
+            for _v in range(self.nv):
+                _E = np.asarray(eps0[_v], float)
+                _val = 0.5 * np.einsum('ij,sijkl,kl->s', _E,
+                                       np.array([_lam_full(C, n) for n in _ns]), _E)
+                _nref = _ns[int(np.argmin(_val))]
+                _R = self._rank1_axes(_E, _nref)
+                if _R is not None:
+                    _w[_v + 1] = _R[2]
+            self.wtab = _w
+
+        if C is not None and eps0 is not None:
+            self.ncmp = self._pair_normals(C, eps0)
+
     # ---------- 区域与几何 ----------
+    @staticmethod
+    def _rank1_axes(eps, nref):
+        """对形状应变 eps 做 **rank-1 分解** eps = 0.5*(a n^T + n a^T)，
+           并用 nref 选解（分解有**两个**解，取 n 更接近 nref 的那个）。
+           返回 (n_hab, a_axis, w_axis)；w = n x a = 板条**宽度方向**。
+
+           物理（MATH_FRAMEWORK 5.6 的 lam2(U)=1 的直接延伸）：
+             n = 惯习面法向（大面法向）—— 已被 beta_h 压制
+             a = 界面位错的**位移/滑移方向** = 板条**长轴**（不压制）
+             w = n x a = 面内垂直方向 = 板条**宽度方向**（第二钉扎轴）
+           ★ 记账：a.n 不要求为 0（rank-1 分解中 a.n 正比于 trace(eps)，
+             第一版判据误以为要正交，已更正）。判据用**重构误差**。
+        """
+        eps = np.asarray(eps, float)
+        w_, V = np.linalg.eigh(eps)
+        o = np.argsort(w_)[::-1]
+        w_ = w_[o]; V = V[:, o]
+        mu1, mu3 = w_[0], w_[2]
+        if mu1 <= 0 or mu3 >= 0:
+            return None
+        e1, e3 = V[:, 0], V[:, 2]
+        r = np.sqrt(-mu3 / mu1)
+        cands = []
+        for sgn in (+1.0, -1.0):
+            n = e1 + sgn * r * e3
+            n = n / np.linalg.norm(n)
+            a = mu1 * e1 - sgn * np.sqrt(-mu1 * mu3) * e3
+            a = a / np.linalg.norm(a)
+            cands.append((n, a))
+        nd = np.asarray(nref, float); nd = nd / np.linalg.norm(nd)
+        best = max(cands, key=lambda t: abs(t[0] @ nd))
+        n, a = best
+        wv = np.cross(n, a)
+        nw = np.linalg.norm(wv)
+        if nw < 1e-8:
+            wv = np.cross(n, [0.0, 0.0, 1.0])
+            nw = np.linalg.norm(wv) + 1e-300
+        return n, a, wv / nw
+
+    @staticmethod
+    def _pair_normals(C, eps0, nsamp=600, seed=0):
+        """变体-变体配对 (k,l) 的 rank-1 相容法向表 (MATH_FRAMEWORK 5.6).
+
+        返回 (nv+1, nv+1, 3): ncmp[k,l] = argmin_n 0.5 dEps0:Lam(C,n):dEps0.
+        母相相关项 (k==0 或 l==0) 与对角项 = nan (物理上不适用, 调用方 fallback 到 npref).
+        与 _chk_morph.py 的 M6 用**同一**定义 (那里也按 de = eps0[k-1]-eps0[l-1] 取 argmin).
+        """
+        from windowB_pf3d import _lam_full
+        nv = len(eps0)
+        tab = np.full((nv + 1, nv + 1, 3), np.nan)
+        rng = np.random.default_rng(seed)
+        ns = rng.normal(size=(nsamp, 3))
+        ns /= np.linalg.norm(ns, axis=1)[:, None]
+        L = np.array([_lam_full(C, n) for n in ns])            # (nsamp,3,3,3,3)
+        E = [np.asarray(e, float) for e in eps0]
+        for k in range(1, nv + 1):
+            for l in range(k + 1, nv + 1):
+                de = E[k - 1] - E[l - 1]
+                val = 0.5 * np.einsum('ij,sijkl,kl->s', de, L, de)
+                tab[k, l] = tab[l, k] = ns[int(np.argmin(val))]
+        return tab
+
     def region(self):
         return np.argmin(self.phi, axis=0).astype(np.int8)
 
@@ -620,15 +757,30 @@ class LevelSetMulti(object):
             if j != k:
                 self.phi[j] = np.maximum(self.phi[j], R - r)   # 其它区域让位
 
-    def seed_plate(self, k, center, normal, R, t):
-        """薄板晶核：法向 normal、半径 R、厚 t"""
+    def seed_plate(self, k, center, normal, R, t, elong=1.0, along=None):
+        """薄板晶核：法向 normal、半径 R、厚 t。
+
+           P3 (2026-09-26): elong/along 支持**长条形**种子（面内椭圆）。
+           为什么需要：Mfac 对变体-变体界面是**双重压制**（(n.ncmp)^2 与 (n.w)^2）
+           => 块被**锁在种子形状**上 => 圆盘种子只能给出长/宽~1 的等轴块
+           （实测 LR1 长/宽=1.39）。真实马氏体板条的**形核胚本身是薄片状**的
+           （晶体学控制）=> 属 HyBRID_FRAMEWORK 8 item 4 的**形核是输入**。
+           along = 长轴方向（= n x w）；elong = 长/宽比。
+        """
         c = np.asarray(center, float)
         n = np.asarray(normal, float)
         n = n / np.linalg.norm(n)
         rel = self.XYZ - c
         d = rel @ n
-        rperp = np.linalg.norm(rel - d[..., None] * n, axis=-1)
-        sdf = np.maximum(np.abs(d) - t / 2, rperp - R)         # 圆盘 SDF（近似）
+        u = rel - d[..., None] * n
+        rperp = np.linalg.norm(u, axis=-1)
+        if elong > 1.0 and along is not None:
+            al = np.asarray(along, float)
+            al = al / (np.linalg.norm(al) + 1e-300)
+            e_par = u @ al
+            e_per = np.linalg.norm(u - e_par[..., None] * al, axis=-1)
+            rperp = np.sqrt((e_par / elong) ** 2 + e_per ** 2)
+        sdf = np.maximum(np.abs(d) - t / 2, rperp - R)         # 椭/圆盘 SDF（近似）
         self.phi[k] = np.minimum(self.phi[k], sdf)
         for j in range(self.nreg):
             if j != k:
@@ -940,7 +1092,9 @@ class LevelSetMulti(object):
     # ---------- 界面推进（PDE）----------
     def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True,
                 adv_grad='upwind', extend='edt', band_cells=20, iface_band=2.0,
-                drag=None, pair_kernel=False, per_field=False):
+                drag=None, pair_kernel=False, per_field=False, pair_aniso=False,
+                mob_aniso=0.0, pin_min=True, mob_beta=0.0, mob_beta_w=0.0,
+                facet_lam=0.0, facet_eps=0.05):
         # ★ 记账（本轮 P1 重标定）：`iface_band=2.0` 而非 1.0 —— 界面种子必须是
         #   **≥2 层胞**。实测 pair_kernel 下 `iface_band=1.0`（|∇d|≈2 ⇒ 种子只有
         #   1 层）时，`extend_along_normal` 的迎风延拓**退化**（v/MΔf = 0.125 ✗）；
@@ -963,7 +1117,17 @@ class LevelSetMulti(object):
             gn[k] = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
             kap_k = self.curvature_of(k)
             gk = self.gamma if gamma0 is None else gamma0
-            if aniso > 0 and npref is not None and npref.get(k) is not None:
+            if facet_lam > 0.0 and npref is not None and npref.get(k) is not None:
+                # ★ P3：尖点界面能（只在给了 npref 的场上用）
+                n = np.stack([gi / gn[k] for gi in g], -1)
+                nd = np.asarray(npref[k], float)
+                nd = nd / (np.linalg.norm(nd) + 1e-300)
+                c2f = np.clip((n @ nd) ** 2, 0.0, 1.0)
+                gk = herring_stiffness_cusp(c2f, gk, facet_lam, facet_eps)
+            # ★ 记账（2026-09-26 的 bug）：这里必须是 **elif**。
+            #   第一版写成独立的 if => 当 aniso>0 时，下面 sin^2 分支会把 facet 的 gk
+            #   **整个覆盖** => facet_lam=0/0.4/1.0 三档结果**逐位相同**（实测抓到）。
+            elif aniso > 0 and npref is not None and npref.get(k) is not None:
                 n = np.stack([gi / gn[k] for gi in g], -1)
                 # ★ 各向异性刚度：**统一走 `herring_stiffness`**（原来这里内联的写法与
                 #   `LevelSetSurface` 各写一份 ⇒ 已合并，避免两处分叉）
@@ -988,6 +1152,41 @@ class LevelSetMulti(object):
         stk = np.take_along_axis(stiff, karr[None], 0)[0]
         pha = np.take_along_axis(self.phi, karr[None], 0)[0]
         phb = np.take_along_axis(self.phi, larr[None], 0)[0]
+        # ---- P0.2 (2026-09-26): 按**配对**选各向异性参考取向 ------------------
+        #   (k,0) 类界面 -> npref[k] (变体对母相的惯习面)
+        #   (k,l) 类界面 -> ncmp[k,l] (两变体的不变平面, 见 _pair_normals)
+        #   旧写法一律用 winner 的 npref[k] => 在 f->1 时对绝大多数界面用错对象.
+        #   界面法向用**差分场** d = phi_k - phi_l 的梯度 (两侧对称, 且就是该界面的法向).
+        _need_ref = (pair_aniso and aniso > 0) or (mob_aniso > 0.0) or (mob_beta > 0.0)
+        nd_ref_ = None
+        if _need_ref and getattr(self, 'ncmp', None) is not None:
+            gd_ = np.gradient(pha - phb, self.dx)
+            gdn_ = np.sqrt(sum(g_ ** 2 for g_ in gd_)) + 1e-30
+            ndir_ = np.stack([g_ / gdn_ for g_ in gd_], -1)
+            ndir_ = ndir_ / (np.linalg.norm(ndir_, axis=-1, keepdims=True) + 1e-300)
+            np_arr = np.full((nreg, 3), np.nan)
+            if npref is not None:
+                for kk, vv in npref.items():
+                    if vv is not None and 0 <= int(kk) < nreg:
+                        vv = np.asarray(vv, float)
+                        np_arr[int(kk)] = vv / (np.linalg.norm(vv) + 1e-300)
+            ncl = self.ncmp
+            ki = np.clip(karr, 0, nreg - 1)
+            li = np.clip(larr, 0, nreg - 1)
+            has_pair = (karr > 0) & (larr > 0)
+            nd_ref = np.where(has_pair[..., None], ncl[ki, li],
+                              np.where((karr > 0)[..., None], np_arr[ki], np_arr[li]))
+            badp = ~np.isfinite(nd_ref).all(-1)
+            if badp.any():
+                nd_ref = np.where(badp[..., None], np_arr[ki], nd_ref)
+            c2p = np.clip(np.einsum('...i,...i->...', ndir_, nd_ref) ** 2, 0.0, 1.0)
+            nd_ref_ = nd_ref
+            if pair_aniso and aniso > 0:
+                stk = herring_stiffness(c2p, self.gamma if gamma0 is None else gamma0,
+                                        aniso, herring)
+            self._pair_aniso_used = True
+        elif pair_aniso:
+            self._pair_aniso_used = False
         # ★★ 按配对（pair-canonical）核 —— 本轮修的关键点：
         #   旧写法用 "winner 自己的曲率 κ_karr" 与 "winner 自己的刚度"，跨界面时曲率项
         #   在两侧**不对称**（内侧用 κ_karr、外侧用 κ_larr）⇒ 与"按区域"的速度扩展叠加后，
@@ -1023,6 +1222,45 @@ class LevelSetMulti(object):
             v_cell, _pin = solve_v(dG_cell, self.M, P0, vstar)
         else:
             v_cell = self.M * dG_cell
+        # ---- P0.5 (2026-09-26): 界面**迁移率**各向异性（facet pinning）----------
+        #   物理与 D8 正对照（_chk_m8_mobpin.py，真实驱动力 df=1e8 下）：
+        #     gamma(n) 通道被驱动力完全淹没（P0.3），而 M(n) 是**动力学**量、
+        #     无热力学凸性约束 => 强度可任意大，实测能把形状取向精确钉住（主轴偏差 0.0 deg）。
+        #   形式： M(n) = M0 * [1 - a*(n.n*)^2]        (pin_min=True, 默认)
+        #          => n 平行 n* 时迁移率最小（法向长得慢）、面内长得快
+        #          => 形状是"沿 n* 法向的薄片" = **板条**的几何（不是"沿 n* 的针"）
+        #          这与惯习面物理一致：板条的**宽面**是惯习面，其法向 = n*。
+        #      M(n) = M0 * [1 - a*(1-(n.n*)^2)]    (pin_min=False)
+        #          => 沿 n* 长得最快 => 形状沿 n* 拉长（"针状"形态）
+        #   ⚠ 记账：D8 的 a00..a100 用的是 pin_min=False（当时 mref = 快生长方向），
+        #     所以它给的是"沿 mref 拉长"；那组数据证明的是**机制有效**（主轴 0.0 deg、
+        #     长径比单调 1.00->2.15），不是"板条已得到"。板条要用 pin_min=True + n*=惯习面法向。
+        # ★★ P1' (2026-09-26): **物理形式** M(n) = M0*exp[-beta*(n.n*)^2]，
+        #   beta = dG_misfit/(k_B T)（位移型界面靠界面位错保守滑移迁移：
+        #   Olson-Cohen / Christian；位错只能在其滑移面=惯习面内滑移 =>
+        #   法向生长必须容纳失配 => 额外激活能 ∝ (n.n_hab)^2 的几何投影）。
+        #   标定见 LATH_FACET_PLAN §9：位错环形成能 => beta~3.8；板条纵横比反推 => beta~3.0
+        #   => 取 beta=3.5（带 [3,6]）。M_min = 3% M0 => 界面不会被冻结（数值安全）。
+        if mob_beta > 0.0 and nd_ref_ is not None:
+            c2b_ = np.clip(np.einsum('...i,...i->...', ndir_, nd_ref_) ** 2, 0.0, 1.0)
+            # ★ P2：**第二钉扎轴** w = n_hab x a（板条宽度方向）。
+            #   只对"变体-母相"界面加（板条成形主要发生在从母相长大的阶段）；
+            #   变体-变体界面保持单轴（那里 ncmp 已是不变平面，w 无独立意义）。
+            _expo = -mob_beta * (c2b_ if pin_min else (1.0 - c2b_))
+            if mob_beta_w > 0.0 and getattr(self, 'wtab', None) is not None:
+                ki2 = np.clip(karr, 0, nreg - 1)
+                li2 = np.clip(larr, 0, nreg - 1)
+                w_of = np.where((karr > 0)[..., None], self.wtab[ki2], self.wtab[li2])
+                okw = np.isfinite(w_of).all(-1)
+                c2w_ = np.clip(np.einsum('...i,...i->...', ndir_, np.where(
+                    okw[..., None], w_of, 0.0)) ** 2, 0.0, 1.0)
+                _expo = _expo - mob_beta_w * np.where(okw, c2w_, 0.0)
+            v_cell = v_cell * np.exp(_expo)
+        if mob_aniso > 0.0 and nd_ref_ is not None:
+            c2r_ = np.clip(np.einsum('...i,...i->...', ndir_, nd_ref_) ** 2, 0.0, 1.0)
+            Mfac = 1.0 - mob_aniso * (c2r_ if pin_min else (1.0 - c2r_))
+            v_cell = v_cell * Mfac
+
         # ★★ （本轮修·关键）界面速度的**配对规范形**（跨界面连续化）。
         #    `v_cell` 是"winner 长大为正"的约定 ⇒ 跨过界面时 winner 换成 runner-up
         #    ⇒ 同一界面两侧的 `v_cell` **符号相反**。速度延拓要求被延拓的场在界面上
