@@ -9,9 +9,10 @@ zt = (b-a)/2
 def d0(g):
     col = (g.phi[1]-g.phi[2])[N//2, N//2, :]
     i = int(np.argmin(np.abs(col)))
-    if i==0 or i>=len(col)-1: return float(z[i])
-    v0,v1 = col[i], col[i+1]
-    return float(z[i]) if v0==v1 else float(z[i] + (0-v0)*dx/(v1-v0))
+    if i >= len(col)-1: return float(z[i])
+    v0, v1 = col[i], col[i+1]
+    if v0 == v1: return float(z[i])
+    return float(z[i] + (0.0 - v0)*dx/(v1 - v0))
 def mk(nv=2):
     g = W.LevelSetMulti(N, L, nv=nv, gamma=0.15, Mob=1e-9)
     g.phi[1] = Z + a; g.phi[2] = -Z + b

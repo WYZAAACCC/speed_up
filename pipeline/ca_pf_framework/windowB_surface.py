@@ -578,7 +578,14 @@ class LevelSetMulti(object):
 
     def __init__(self, N, L, C=None, eps0=None, gamma=0.15, Mob=1e-9, df=None,
                  Lam=0.0, k0_mode='clamped', workers=4, reinit_every=20, nv=None,
-                 aniso_elastic=False, C_hex_tab=None, C_cub=None, sigma_ext=None):
+                 aniso_elastic=False, C_hex_tab=None, C_cub=None, sigma_ext=None,
+                 reinit_iters=100, reinit_dtau=None, reinit_grad='upwind2'):
+        # EXPERT-#3: reinit_iters 由硬编码 30 提到 100。依据 _tune_reinit.py：
+        #   两变体平面界面 d=phi_k-phi_l 的零等值面 iters=30 停在 0.025um，
+        #   iters>=100 落到 0.01200um = **解析值** => 残余偏差来自迭代不足。
+        self.reinit_iters = int(reinit_iters)
+        self.reinit_dtau = reinit_dtau
+        self.reinit_grad = reinit_grad
         self.N, self.L = N, L
         self.dx = L / N
         self.gamma = gamma
@@ -1060,9 +1067,14 @@ class LevelSetMulti(object):
         """★ 委托给**模块级** `upwind_grad`（单畴/多畴共用一份 ⇒ 不会分叉）"""
         return upwind_grad(phi, sgn, self.dx)
 
-    def sussman_reinit(self, phi, iters=30):
-        """★ 委托给**模块级** `sussman_reinit`"""
-        return sussman_reinit(phi, self.dx, iters=iters)
+    def sussman_reinit(self, phi, iters=None):
+        """委托给模块级 `sussman_reinit`。
+           EXPERT-#3: 默认改用 self.reinit_iters 并透传 dtau/grad
+           （原来这里硬编码 iters=30，且丢掉了 dtau/grad）。"""
+        return sussman_reinit(phi, self.dx,
+                              iters=(self.reinit_iters if iters is None else iters),
+                              dtau=getattr(self, 'reinit_dtau', None),
+                              grad=getattr(self, 'reinit_grad', 'upwind2'))
 
     def _advance_phi(self, k, vn, dt):
         """④ 用迎风 |∇φ| 推进：φ_t + v_n|∇φ| = 0"""
@@ -1646,7 +1658,7 @@ class LevelSetMulti(object):
                 near = np.abs(self.phi[k]) <= band_cells * self.dx
                 if not near.any():
                     continue
-                newp = self.sussman_reinit(self.phi[k], iters=30)
+                newp = self.sussman_reinit(self.phi[k])
                 self.phi[k] = np.where(near, newp, self.phi[k])
             return
         reg = self.region()
@@ -1662,14 +1674,22 @@ class LevelSetMulti(object):
                         pairs.add((int(min(x, y)), int(max(x, y))))
         if not pairs:
             return
+        # ★ 关键：**逐胞只用它自己的界面配对**（karr,larr），否则多配对（含母相）的
+        #   修正会互相叠加、把界面推错（实测：叠加时界面跑到 -0.047um，逐胞后回到解析值附近）。
+        _karr = np.argmin(self.phi, axis=0)
+        _order = np.argsort(self.phi, axis=0)
+        _karr, _larr = _order[0], _order[1]
         delta = np.zeros_like(self.phi)
         for (k, l) in pairs:
             d = self.phi[k] - self.phi[l]
             near = np.abs(d) <= band_cells * self.dx
             if not near.any():
                 continue
-            dn = self.sussman_reinit(d, iters=30)
+            dn = self.sussman_reinit(d)
             corr = np.where(near, dn - d, 0.0)
+            # 该胞的界面身份必须是 (k,l)（无序）
+            is_kl = ((_karr == k) & (_larr == l)) | ((_karr == l) & (_larr == k))
+            corr = np.where(is_kl, corr, 0.0)
             delta[k] += 0.5 * corr
             delta[l] -= 0.5 * corr
         self.phi = self.phi + delta
