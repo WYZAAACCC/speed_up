@@ -1716,6 +1716,18 @@ class LevelSetMulti(object):
             near = np.abs(d) <= band_cells * self.dx
             if not near.any():
                 continue
+            # EXPERT-#3c 记账：本路径的正确性依赖"窄带 + 输入近似 SDF"。
+            #   Sussman 的不动点是 |grad| = 1 的场；若带内 |grad d| 明显偏离 1，
+            #   迭代会把斜率推向 1 并**同时移动零等值面**（不是 bug，是必然）。
+            #   这里加**运行期告警**，避免将来在别处误用这条路径。
+            _gd = np.gradient(d, self.dx)
+            _gdn = np.sqrt(sum(_gi ** 2 for _gi in _gd))
+            _med = float(np.median(_gdn[near]))
+            if abs(_med - 1.0) > 0.5:
+                import warnings as _w
+                _w.warn('pair reinit: band |grad d| median=%.3f 明显偏离 1; '
+                       'Sussman will move the zero-level set (input not SDF).'
+                       % _med, RuntimeWarning, stacklevel=2)
             dn = self.sussman_reinit(d)
             corr = np.where(near, dn - d, 0.0)
             # 该胞的界面身份必须是 (k,l)（无序）
