@@ -17,6 +17,7 @@
   S1 Gibbs–Thomson：孤球收缩应满足 d(R²)/dt = -4 M γ Ω（Ω 并入 M）
 （H3 偏析平衡 / H4 守恒沿用 `windowB_hybrid.py` 的验法，下一步搬过来。）
 """
+import os
 import numpy as np
 from scipy import fft as sfft
 from scipy.ndimage import distance_transform_edt, gaussian_filter
@@ -592,7 +593,9 @@ class LevelSetMulti(object):
         # 体相成分与面上过剩（Gibbs 面的状态量）
         try:
             import sys as _s
-            _s.path.insert(0, '/mnt/f/speed_up/pipeline/gibbs')
+            # (fix) 原来的硬编码绝对路径 => 换项目相对路径，别人克隆到别处也能跑
+            _s.path.insert(0, os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'gibbs'))
             from gibbs_physics import RHO_MOL
             self.rho = RHO_MOL
         except Exception:
@@ -857,7 +860,9 @@ class LevelSetMulti(object):
         """Langmuir/McLean 平衡过剩（mol/m²），复用 pipeline/gibbs 的单一参数来源"""
         try:
             import sys as _s
-            _s.path.insert(0, '/mnt/f/speed_up/pipeline/gibbs')
+            # (fix) 原来的硬编码绝对路径 => 换项目相对路径，别人克隆到别处也能跑
+            _s.path.insert(0, os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'gibbs'))
             from gibbs_physics import gamma_eq_langmuir, dH_seg_from_anchor
             H, _ = dH_seg_from_anchor()
             flat = np.ravel(c)

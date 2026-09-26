@@ -1,0 +1,2 @@
+q1_3dfix|/mnt/f/speed_up/pipeline/gibbs/prod3d/stage1_meltpool_gibbs3d_fix3d.i|Executioner/end_time=5e-7 Outputs/exo/enable=false Outputs/checkpoint/enable=false
+q2_3dold|/mnt/f/speed_up/pipeline/gibbs/prod3d/results_g3d_melt2/case.i|Executioner/end_time=5e-7 Outputs/exo/enable=false Outputs/checkpoint/enable=false
