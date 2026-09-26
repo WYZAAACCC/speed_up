@@ -26,6 +26,7 @@ ap.add_argument('--beta_w', type=float, default=0.0)
 ap.add_argument('--facet', type=float, default=0.0)
 ap.add_argument('--facet_eps', type=float, default=0.05)
 ap.add_argument('--track', type=int, default=0)   # >0: 每 N 步记录主轴
+ap.add_argument('--elong', type=float, default=1.0)  # 种子面内长/宽比（EXPERT-#1 起有越界检查）
 ap.add_argument('--tag', default='')
 ap.add_argument('--N', type=int, default=64)
 ap.add_argument('--dx', type=float, default=5e-8)
@@ -57,7 +58,14 @@ N, dx, L = a.N, a.dx, a.N * a.dx
 g = W.LevelSetMulti(N, L, C=C, eps0=eps0, gamma=0.15, Mob=1e-9,
                     df=[0.0] + [a.df] * nv, workers=a.workers, reinit_every=25)
 k = a.variant
-g.seed_plate(k, [L / 2, L / 2, L / 2], npref[k], a.R, a.t)
+_al = None
+if a.elong > 1.0:
+    _n = np.asarray(npref[k], float); _n /= np.linalg.norm(_n)
+    _w = np.asarray(g.wtab[k], float) if getattr(g, 'wtab', None) is not None else None
+    _al = np.cross(_n, _w) if _w is not None else np.array([1.0, 0.0, 0.0])
+    _al /= (np.linalg.norm(_al) + 1e-300)
+g.seed_plate(k, [L / 2, L / 2, L / 2], npref[k], a.R, a.t,
+             elong=a.elong, along=_al)
 g.init_parent()
 g.c[:] = 0.036
 V0 = g.volume(k)

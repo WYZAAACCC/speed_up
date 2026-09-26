@@ -16,7 +16,8 @@ def d0(g):
 def mk(nv=2):
     g = W.LevelSetMulti(N, L, nv=nv, gamma=0.15, Mob=1e-9)
     g.phi[1] = Z + a; g.phi[2] = -Z + b
-    g.phi[0] = -(np.minimum(g.phi[1], g.phi[2]))
+    # 干净构型：只有变体 1、2（母相不参与 => phi1=phi2 就是真实界面）
+    g.phi[0] = np.full_like(g.phi[0], 1e3)
     return g
 print('解析界面 z = %.5f um' % (zt*1e6))
 g = mk(); print('  重初始化前      : %.5f um' % (d0(g)*1e6))

@@ -99,6 +99,22 @@ def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2'):
            症状 ② 跑几百步后带内 |∇φ| 从 1.0 突然涨到 5.5 ⇒ 界面炸掉 ✗。
          现在默认 `dτ = 0.5·dx/3`（安全裕度 2 倍），收敛靠增加迭代数（iter=40）。"""
     phi0 = phi.copy()
+    # EXPERT-#3b 修（2026-09-26）：**先把输入整体归一化成近似 SDF**。
+    #   为什么必须：PDE 式重初始化的稳定性前提是 |grad phi| ~ 1。实测输入
+    #   |grad phi0| = 2（例如差分场 d = phi_k - phi_l 在紧挨界面时）会让 (gm-1) ~ 1，
+    #   每步位移 ~ dtau，而二阶 ENO 的 gm 会过冲 => **直接发散**：
+    #     实测 zero-level 从 0.012um 跑到 -0.82um(iters=100) -> -71um(iters=3000)，
+    #     带内 |grad phi| 变 nan；且**迭代越多越糟**（说明是发散不是收敛慢）。
+    #   归一化只除以一个**全局常数**（不改零等值面、只改斜率），是安全的前置步骤。
+    _probe = phi0
+    for _ax in range(3):
+        _probe = _probe  # no-op，保持维度一致
+    _g = np.gradient(phi0, dx)
+    _gn = np.sqrt(sum(_gi ** 2 for _gi in _g))
+    _gm = float(np.median(_gn))
+    if _gm > 1e-12 and abs(_gm - 1.0) > 0.2:
+        phi = phi / _gm
+        phi0 = phi0 / _gm
     S = phi0 / np.sqrt(phi0 ** 2 + dx ** 2)
     if dtau is None:
         dtau = 0.5 * dx / 3.0   # 一阶迎风、多维 CFL：dτ ≤ dx/3（|S|≤1）
