@@ -60,17 +60,23 @@
 
 | 任务 | 状态 |
 |---|---|
-| ① reinit 深查 | ✅ **完成** → `R1_REINIT_AUDIT.md`（子代理，565 行）+ `R1_ADVANCE_PARALLEL.md` §reinit 段 |
-| ② advance 多核改造 | ✅ **完成并实测验证** → `R1_ADVANCE_PARALLEL.md`；`windowB_par.py` |
-| ③ 实验 | 🚧 **进行中**：单个 `lath` / `mid` 在跑；`equi` 未跑；多元未跑 |
+| ① reinit 深查 | ✅ **完成** → `R1_REINIT_AUDIT.md` + `R1_ADVANCE_PARALLEL.md`；`iters=100` **保留**（膝点）；子盒否决 |
+| ② advance 多核改造 | ✅ **完成并实测** → 真实盒 ×2.57 @16 线程、逐位相同；`windowB_par.py` |
+| ③-单个 | ✅ **通过**（R24 上 `mid` 臂 `ΔL:ΔW:ΔT = 1:0.098:0.033` vs 设计 `1:0.10:0.03`）→ `R1_ROOTCAUSE_AND_FIX.md` |
+| ③-多个（4/5/6） | 🚧 **进行中**：`_exp/e4_lath6`、`_exp/e6_mid6` 在跑；`e5` 待槽位 |
+| ③-块自协调（7） | ⬜ 未开始（`e7` 设置已写好在 `_run_r1phase3.sh`） |
 
-**正在跑**（`setsid` 起的，会活过会话；到 `--max-hours 2.0` 会干净自停）：
-```
-_exp/lath1   lath  单核  24 µm/125 nm
-_exp/mid1    mid   单核  24 µm/125 nm
-```
-用 `wsl -e bash pipeline/ca_pf_framework/_r1_peek2.sh` 看进度；
-用 `python3 _r1_analyze.py _exp/lath1 _exp/mid1 --skip 3` 出判定。
+**★ 阶段③的关键设置**（已验收的组合）：
+`--N 192 --dx-nm 125 --norm-smooth 4 --layout line_w --line-gap-nm 1500 --variants 1`
+（实验 7 用 `--variants "1,2"` —— 同一 packet 内的两个变体）
+
+**★ 阶段③的判据**：`nc`（分量数，**降到 1 = 合并成块**）、`align_deg`（各分量长轴与 `a` 夹角）、
+`LWc`（逐分量 L:W）、`gap_w_nm`（相邻质心沿 w 间距）。
+⚠ `e4_lath6`/`e6_mid6` 的 **`gap_w_nm` 列因单位 bug 无效**（已修；可从 `snap_*.npz` 重算），
+`nc`/`align_deg`/`LWc`/`big_frac` **不受影响**。
+
+**⚠ 内存纪律（本轮出过一次险情）**：N=192 单进程峰值 ~8 GB，本机 22 GB 可用
+⇒ **同时最多 2 只 N=192，绝不能 3 只**。
 
 ---
 
