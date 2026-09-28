@@ -11,14 +11,29 @@ IMPLEMENTATION_PLAN §7.9 的 W-1）。
 
 物理与公式
 ----------
+★★ T5（2026-09-28）**符号约定的统一** —— 本模块此前有**两套约定**，靠调用方
+   （`windowB_b1._step_T` 里的一个补偿负号）弥合，而 docstring §(1)/§(2) 又互相矛盾。
+   现在**只保留一处显式换算**，两个量分开命名：
+
+     `dG_chem(T,T0,DS)`  = β 与 α′ 的**摩尔 Gibbs 能差** ΔG（热力学惯用约定）
+                         = -DS (T0 - T)  ⇒ **T < T0 时为负 = 转变有利**
+     `drive_of_T(...)`   = **驱动力**（本项目 `df` 的统一约定：**> 0 = 该变体有利**）
+                         = -dG_chem = **+DS (T0 - T)**  ⇒ T < T0 时为正
+     `drive_of_T(T,T0,DS) ≡ -dG_chem(T,T0,DS)` —— **全项目唯一的换算点**（有 assert 守着）。
+
+   ⇒ `PF3D.dG` / `LevelSetMulti.df[1:]` / Gibbs 面速度律里的 `Δf` **一律用 `drive_of_T`**，
+     代码里**不得再出现** `-dG_chem(...)` 这种隐式补偿（T5 已用 grep 核对过）。
+
 (1) 化学驱动力（每单位转变体积）[T]
-      dG_chem(T) = -DS * (T0 - T)        [J/m^3]
-    符号约定：dG < 0 表示 β→α′ 有利（与 PF3D/LevelSetMulti 的 df 约定一致）。
-      * T0 : β/α′ 的化学平衡温度（dG = 0）
+      dG_chem(T) = -DS * (T0 - T)        [J/m^3]   ← ΔG，T<T0 时为负
+      drive_of_T(T) = +DS * (T0 - T)     [J/m^3]   ← 驱动力，T<T0 时为正（= df 的约定）
+      * T0 : β/α′ 的化学平衡温度（dG = 0，也是 drive = 0）
       * DS : 转变熵 = ΔS_tr / V_m        [J/(m^3 K)]
 
 (2) 临界驱动力与 M_s [T]
-      dG_chem(M_s) = dG_crit   =>   T0 = M_s + dG_crit / DS
+      |dG_chem(M_s)| = dG_crit_mag   =>   T0 = M_s + dG_crit_mag / DS
+      （等价地 drive_of_T(M_s) = **+dG_crit_mag** > 0 —— 注意是**正**的；
+        此前 docstring 写成 `dG_chem(M_s) = dG_crit` 是**错的**，T5 已改。）
     ⚠ **成核是输入**（HYBRID_FRAMEWORK §8 item 4）⇒ 本模块**不预测 M_s**，只把它当锚点。
       模型给出的是「**生长**的平衡分数 f_eq(dG)」。
 
@@ -49,14 +64,39 @@ import numpy as np
 # =============================================================================
 # 一、锚点与量级（全部带来源标记）
 # =============================================================================
-
-M_S_TI64 = 848.0           # K  Ti-6Al-4V 马氏体开始温度（M_s）        [L] WINDOWB_PARAMS §1
-T_BETA_TI64 = 1268.0       # K  Ti-6Al-4V 的 β 转变温度（扩散平衡）    [L] WINDOWB_PARAMS
-DG_REF = -1.0e8            # J/m^3  马氏体化学驱动力的常见量级        [T] 与 M2 用的 Δf 同量级
-DG_CRIT_REF = 1.0e8        # J/m^3  临界驱动力**幅值**的参考（|dG(M_s)|）[T] 同量级（正数！）
-DS_REF = 3.0e5             # J/(m^3 K)  β→α′ 转变熵的参考量级       [T] 由
-                           #       「dG(298 K) 应为 O(1e8)」反推：DS·(848-298)=1.65e8
-DS_BAND = (1.5e5, 6.0e5)   # J/(m^3 K)  敏感度带（覆盖 ΔS_f(Ti)/V_m 的 1/4 ~ 1 倍）
+# ★★★ D7 结案（2026-09-28，用户批准"先找文献"）：**三个假设量换成 2 个文献值 + 1 个导出值**。
+#
+# 文献来源（本轮文献轨 L3 实读原文，非片段）：
+#   **Ji, Heo, Zhang & Chen (2016)**, *J. Phase Equilib. Diffus.* **37**(1) 51–64,
+#   DOI **10.1007/s11669-015-0436-9**（开放 PDF: personal.ems.psu.edu/~chen/publications/
+#   Ji_2016_Journal of Phase Equilibria and Diffusion_Theoretical.pdf）。该文的 f^α/f^β 来自
+#   **Zhang, Chen, Chang, Ma & Wang, J. Phase Equilib. Diffus. 28 (2007) 115–120**
+#   （CompuTherm / Pandat `PanTi` 系，**不是** Thermo-Calc TCTI）。
+#     [L1] **T0 = 1145 K（872 °C）**：由 `f^β(X0,T) = f^α(X0,T)` 定出（X_Al=0.1019, X_V=0.036）。
+#     [L2] **ΔG(M_s) = 1200 J/mol**：原文 "Assuming Ms = 873 K (600 °C), then this critical
+#          driving force can be estimated to be 1200 J/mol by ΔG = f^β(X0,Ms) − f^α(X0,Ms)."
+#     [L3] 摩尔体积 `V_m = 1.064e-5 m³/mol`（Boccardo 2024 附录 A.1 引 Singman 1984）。
+#
+#   ⇒ 单位换算（【推理】，除式本身是定义）：
+#       DG_CRIT = 1200 / 1.064e-5 = **1.128e8 J/m³**
+#       DS      = DG_CRIT / (T0 − M_s) = 1.128e8 / (1145 − 873) = **4.147e5 J/(m³·K)**
+#   ⇒ **一致性自检**：`T0_from_Ms(873, 1.128e8, 4.147e5) = 1145.0 K`（与 [L1] 逐位相符）✓
+#     —— 这是 D7 的关键：**三个数里只有两个是独立文献值，第三个由它们导出**，
+#     所以"三个都靠猜、且互相不自洽"的风险被消除。
+#
+# ⚠ 仍未消除的不确定度（如实记账）：
+#   ① `M_s = 873 K` 是 Ji 文**为估 ΔG 而取的名义值**，不是该文测量的 M_s；
+#      本项目旧的 848 K 来自另一条线（`WINDOWB_PARAMS §1`），差别 25 K。
+#   ② PanTi 系与 Thermo-Calc TCTI 的**数据库间差异**未量化（L3 子代理仍在跑）。
+#   ③ ΔG 是**摩尔量**（1200 J/mol）换成的体积量，`α′` 的 `V_m` 与 `β` 不同（本文用同一 V_m）。
+#   ⇒ 因此 `DS_BAND` **不删**，按"①+②"给 ±20%（见下），并在 A2 交付时**显式报带**。
+M_S_TI64 = 873.0           # K  Ti-6Al-4V 马氏体开始温度（M_s）   [L] Ji 2016（原文用于估 ΔG）
+T0_TI64 = 1145.0           # K  β/α′ 化学平衡温度（ΔG = 0）       [L] Ji 2016 CALPHAD（f^β = f^α）
+T_BETA_TI64 = 1268.0       # K  Ti-6Al-4V 的 β 转变温度（扩散平衡）[L] WINDOWB_PARAMS（Ji 2016 给 1249 K）
+DG_REF = -1.128e8          # J/m^3  马氏体化学驱动力的常见量级       [L] = ΔG(M_s)（Ji 2016）
+DG_CRIT_REF = 1.128e8      # J/m^3  临界驱动力**幅值**（|dG(M_s)|）  [L] 1200 J/mol ÷ V_m（正数！）
+DS_REF = 4.147e5           # J/(m^3 K)  β→α′ 转变熵                [T] = DG_CRIT_REF/(T0−M_s)
+DS_BAND = (3.32e5, 4.98e5)  # J/(m^3 K)  ±20% 敏感度带（覆盖 ① 的 M_s 差与 ② 的库间差）
 
 
 # =============================================================================
@@ -64,8 +104,95 @@ DS_BAND = (1.5e5, 6.0e5)   # J/(m^3 K)  敏感度带（覆盖 ΔS_f(Ti)/V_m 的 
 # =============================================================================
 
 def dG_chem(T, T0, DS):
-    """β→α′ 的化学驱动力 [J/m^3]（T<T0 时为负 = 有利）。[T]  支持标量/数组。"""
+    """β→α′ 的**摩尔 Gibbs 能差** ΔG [J/m^3]（T<T0 时为**负** = 有利）。[T]
+    标量/数组皆可。⚠ 这是**热力学量**，不是驱动力 —— 要驱动力请用 `drive_of_T`。"""
     return -float(DS) * (float(T0) - np.asarray(T, float))
+
+
+def drive_of_T(T, T0, DS):
+    """β→α′ 的**驱动力** [J/m^3]，本项目统一约定：**> 0 = 该变体有利**。[T]
+
+    ★★ T5（2026-09-28）：定义为 `-dG_chem`，并且是**全项目唯一的符号换算点**。
+       `PF3D.dG` / `LevelSetMulti.df[1:]` / Gibbs 面速度律的 `Δf` 一律用本函数，
+       调用方**不得**再写 `-dG_chem(...)`（那会让符号约定散落多处、无法核对）。
+       恒等式 `drive_of_T ≡ -dG_chem` 由 `selftest()` 与 `T5_verify_signs.py` 断言。
+    """
+    return -dG_chem(T, T0, DS)
+
+
+def T_G_from_calphad():
+    """D7 的**文献锚点自检**：返回 (T0, M_s, ΔG(M_s)) 并断言三者自洽。[T]
+
+    `DS_REF` 是由 (T0, M_s, ΔG(M_s)) 导出的 ⇒ 用 `T0_from_Ms(M_s, ΔG(M_s), DS_REF)`
+    必须**回到** T0。若哪天有人只改其中一个常数，本函数会立刻抛错。
+    """
+    T0_chk = T0_from_Ms(M_S_TI64, DG_CRIT_REF, DS_REF)
+    if abs(T0_chk - T0_TI64) > 0.5:
+        raise AssertionError(
+            'D7 锚点不自洽：T0_from_Ms(M_s,DG_CRIT,DS) = %.3f，而文献 T0 = %.3f。'
+            '三者中只有两个是独立文献值，第三个必须由它们导出。'
+            % (T0_chk, T0_TI64))
+    return T0_TI64, M_S_TI64, DG_CRIT_REF
+
+
+def linear_cool(T_start, T_end, t_cool):
+    """线性降温的**时间表** `T(t)`（`t ≥ t_cool` 后恒为 `T_end`）。[T]
+
+    ★ T6 记账：真实 LPBF 冷却曲线**不是**线性的（见文献轨 L2：冷速 10³–10⁸ K/s，
+      代表曲线段【未核实】）。线性只是**占位**，它的作用是让"驱动力随冷却增长"
+      这件事进模型；换真实曲线时**只需要换这个函数**（接口 `t → T`）。
+    """
+    Ts, Te, tc = float(T_start), float(T_end), float(t_cool)
+    if tc <= 0.0:
+        raise ValueError('linear_cool: t_cool 必须 > 0')
+    lo, hi = min(Ts, Te), max(Ts, Te)
+
+    def _T(t):
+        t = float(t)
+        if t <= 0.0:
+            return Ts
+        if t >= tc:
+            return Te
+        return Ts + (Te - Ts) * (t / tc)
+    _T.T_start, _T.T_end, _T.t_cool = Ts, Te, tc      # 便于记账/判据读取
+    _T.band = (lo, hi)
+    return _T
+
+
+def from_cooling_rate(q, T_start=T_BETA_TI64, T_end=298.0):
+    """由**冷速** `q` [K/s] 造线性时间表：`t_cool = (T_start − T_end)/q`。[T]
+
+    用途：把文献里的冷速区间（10³–10⁸ K/s）直接变成时间表 ⇒ T7/T8 的敏感度扫描用。
+    """
+    q = float(q)
+    if q <= 0.0:
+        raise ValueError('from_cooling_rate: q 必须 > 0')
+    return linear_cool(T_start, T_end, (float(T_start) - float(T_end)) / q)
+
+
+def selftest(verbose=False):
+    """T5 符号约定的自检（**入口断言**）：返回 True/False。"""
+    Ms, DS, dGc = M_S_TI64, DS_REF, DG_CRIT_REF
+    T0 = T0_from_Ms(Ms, dGc, DS)
+    Ts = np.linspace(300.0, 1400.0, 221)
+    dg = dG_chem(Ts, T0, DS)
+    dv = drive_of_T(Ts, T0, DS)
+    chk = [
+        ('drive ≡ -dG_chem（逐位）', bool(np.all(dv == -dg))),
+        ('dG_chem 随 T 单调递增', bool(np.all(np.diff(dg) > 0))),
+        ('drive 随 T 单调递减', bool(np.all(np.diff(dv) < 0))),
+        ('drive(T0) = 0', abs(float(drive_of_T(T0, T0, DS))) < 1e-9),
+        ('drive(M_s) = +|dG_crit|', abs(float(drive_of_T(Ms, T0, DS)) - dGc) < 1e-6 * dGc),
+        ('dG_chem(M_s) = -|dG_crit|', abs(float(dG_chem(Ms, T0, DS)) + dGc) < 1e-6 * dGc),
+        ('T < T0 ⇒ drive > 0（变体有利）', float(drive_of_T(Ms - 100.0, T0, DS)) > 0),
+        ('T > T0 ⇒ drive < 0（母相有利）', float(drive_of_T(T0 + 100.0, T0, DS)) < 0),
+        ('T0 > M_s（必须有过冷）', T0 > Ms),
+    ]
+    ok = all(c[1] for c in chk)
+    if verbose:
+        for name, v in chk:
+            print('   %-34s %s' % (name, 'PASS' if v else 'FAIL'))
+    return ok
 
 
 def T0_from_Ms(Ms, dG_crit_mag, DS):
@@ -81,8 +208,25 @@ def T0_from_Ms(Ms, dG_crit_mag, DS):
 
 
 def T_from_dG(dG, T0, DS):
-    """反解：给定 dG 求 T。[T]"""
+    """反解：给定 **`dG_chem`**（T<T0 时为**负**）求 T。[T]
+
+    ⚠⚠ **陷阱（2026-09-28 D7 自检时抓到）**：本函数的入参是 `dG_chem`，**不是**驱动力。
+       `dG_chem = −DS(T0−T)` ⇒ `T = T0 + dG_chem/DS`；若误把**驱动力**（正的）传进来，
+       会得到 **`T > T0`** 的反物理结果（实测：把 `drive=1.128e8` 当 `dG_chem` 传入得到
+       **1417 K**，而正确温度是 `T0 − 1.128e8/DS = 873 K`）。
+       ⇒ 要由驱动力反解请用 **`T_from_drive()`**（它有符号断言守着）。
+    """
     return float(T0) + float(dG) / float(DS)
+
+
+def T_from_drive(drive, T0, DS):
+    """反解：给定**驱动力**（本项目约定，`T < T0` 时为正）求 T。[T]
+
+    与 `T_from_dG` 的差别只在符号：`drive ≡ −dG_chem` ⇒ `T = T0 − drive/DS`。
+    带断言：驱动力为负（母相有利）时结果 `T > T0`，这是**允许**的（说明该温度下不变）；
+    但若调用者声称"这是驱动力"却拿到 `T > T0` 与预期不符，就说明传错了量。
+    """
+    return float(T0) - float(drive) / float(DS)
 
 
 def koistinen(T, Ms=M_S_TI64, alpha=None, f_end=None):

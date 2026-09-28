@@ -129,8 +129,19 @@ class B1Athermal(object):
     # ---------------------------------------------------------------- 演化
     def _step_T(self, T):
         g = self.g
-        g.df[1:] = -K.dG_chem(T, self.T0, self.DS)        # df>0 = 变体有利（已判决）
-        return float(g.df[1])
+        # ★★ T5（2026-09-28）：改用 `K.drive_of_T` —— **不再写 `-dG_chem(...)`**。
+        #   数值与旧写法**逐位相同**（drive_of_T ≡ -dG_chem），但符号换算只剩一处，
+        #   且下面加了入口断言，约定漂移会立刻炸出来。
+        df = float(K.drive_of_T(T, self.T0, self.DS))
+        T0 = float(self.T0)
+        if T < T0 and not (df > 0.0):
+            raise AssertionError('T5 符号约定：T(%.2f) < T0(%.2f) 时驱动力必须 > 0，得 %.6g'
+                                 % (T, T0, df))
+        if T > T0 and not (df < 0.0):
+            raise AssertionError('T5 符号约定：T(%.2f) > T0(%.2f) 时驱动力必须 < 0，得 %.6g'
+                                 % (T, T0, df))
+        g.df[1:] = df                      # df > 0 = 变体有利（统一约定）
+        return df
 
     def _record(self, t, T, dG):
         g = self.g

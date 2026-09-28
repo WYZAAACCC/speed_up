@@ -150,7 +150,8 @@ def e_density(C, e0, n):
 
 class PF3D(object):
     def __init__(self, N, L, C, eps0, gamma, w90, Lmob, dG=0.0, sigma_ext=None,
-                 workers=8, obstacle=False, k0_mode='free', T=None, dG_of_T=None):
+                 workers=8, obstacle=False, k0_mode='free', T=None, dG_of_T=None,
+                 phi_dtype=np.float64, lam_prec='f64'):
         self.k0_mode = k0_mode
         self.N, self.L, self.dim = N, L, 3
         self.C = C
@@ -188,7 +189,7 @@ class PF3D(object):
         self.dG = float(dG_of_T(T)) if (dG_of_T is not None and T is not None) else dG
         self.sigma_ext = np.zeros((3, 3)) if sigma_ext is None else np.asarray(sigma_ext, float)
         self.workers = workers
-        self.phi = np.zeros((self.nv, N, N, N))
+        # ★ T3：`self.phi` 的分配移到下面（与 `Lam` 一起，见 phi_dtype/lam_prec 的记账）
         # 变体的 6 分量张量分量 & 工程分量
         self.e0v = np.array([[self.eps0[v][i, j] for (i, j) in VOIGT] for v in range(self.nv)])
         self.e0v_eng = self.e0v * G6[None, :]
@@ -197,10 +198,38 @@ class PF3D(object):
         self.kv = 2 * np.pi * np.fft.fftfreq(N, d=self.dx)
         K = np.stack(np.meshgrid(*[self.kv] * 3, indexing='ij'), -1).reshape(-1, 3)
         self.K = K
-        self.Lam = lambda_packed(C, K, k0_mode=k0_mode)
+        # ★★ T3（2026-09-28）：`Lam` 是**常驻最大单项**（(N³,6,6) float64 = **288 B/胞**，
+        #   N=96 时 255 MB）。它是 FFT 空间的 Green 算子，量级 O(1)、条件数 O(1)，
+        #   用 float32 存的相对误差 ~1e-7（判据要求 <1e-5，见 T3_verify_fastpath 的正对照）
+        #   ⇒ 288 → 144 B/胞。`sigma_tensor` 的 einsum **强制 float32 输出**，
+        #   否则 numpy 会把 Lam 升成 float64 临时量（反而多 255 MB）。
+        #   `E_el()` 是**诊断路径**（不在每步热路径上），它显式升到 float64（有一次性临时量）。
+        self.phi_dtype = phi_dtype
+        self.phi = np.zeros((self.nv, N, N, N), dtype=phi_dtype)
+        # ★★ T3：`Lam` 用低精度存。`lam_prec` 为 'f32' 时存 float32（288→144 B/胞），
+        #   `sigma_tensor` 的 einsum 强制 float32 输出（否则 numpy 会把 Lam 升成
+        #   float64 临时量，反而多占 255 MB）。`E_el()` 走显式升精度（诊断路径）。
+        self._lam32 = (str(lam_prec).lower() in ('f32', 'float32', 'single'))
+        _lam = np.asarray(lambda_packed(C, K, k0_mode=k0_mode))
+        # ★★ T3 记账（本轮踩到）：`lambda_packed` 返回的是 **complex128**！
+        #   首版按 float32 存 ⇒ `np.asarray(..., float32)` **丢掉虚部**（只发一个
+        #   ComplexWarning），实测 `max|Δσ|/max|σ| = 0.50` ✗ —— 而**能量**只差 1.9e-9
+        #   （因为 `E_el` 的二次型对虚部不敏感）⇒ **只看能量会漏掉这个错**。
+        #   正确做法：复数就存 **complex64**（同样是 144 B/胞），实数才用 float32。
+        if self._lam32:
+            self.Lam = np.asarray(_lam, dtype=(np.complex64 if np.iscomplexobj(_lam)
+                                               else np.float32))
+        else:
+            self.Lam = np.asarray(_lam, dtype=(np.complex128 if np.iscomplexobj(_lam)
+                                               else np.float64))
+        self._lam_cplx = bool(np.iscomplexobj(self.Lam))
+        # ★ T3：K 只在建 Lam / _k2 时用到 ⇒ 存 float32（24→12 B/胞）；不再需要时可由
+        #   调用方置 None（`LevelSetMulti` 就这么做）。
+        self.K = np.asarray(K, dtype=np.float32) if self._lam32 else K
         self.N3 = float(N) ** 3
-        self._k2 = (K ** 2).sum(1)
+        self._k2 = (K.astype(np.float64) ** 2).sum(1)
         self.axs = (1, 2, 3)
+        del _lam, K
 
     # ---------------- 场 ----------------
     def eps0_fields(self):
@@ -210,28 +239,62 @@ class PF3D(object):
                 e[p] += self.e0v[v, p] * self.phi[v]
         return e
 
+    def eps0_fields_idx(self, idx):
+        """★★ T3（2026-09-28）：**按区域编号直接装配** ε⁰ 场，不走 nv 个指示场。
+
+        `idx`：(N,N,N) 整数，0 = 母相，v = 变体 v（1..nv，与 `region()`/`karr` 同约定）。
+
+        为什么需要：`eps0_fields` 的 `Σ_v e0v[v,p]·phi_v` 要 **6×nv = 72 次整场乘加**
+        （N=96 时每次 7 MB）；而每个格点**只属于一个区域** ⇒ 直接 gather 只要
+        **6 次**（`e[p] = e0v[idx-1, p]`，母相处置 0）。
+        实测这条是本框架弹性耗时的大头（T3 后弹性占比 24%）。
+        ⚠ 数值等价性：`Σ_v e0v[v,p]·[idx==v+1]` 与 `e0v[idx-1,p]·[idx>0]` 逐位相同
+        （每格只有一个 v 命中；母相两项都为 0）⇒ 由 `T3_verify_fastpath.py` T3-3 把关。
+        """
+        e = np.zeros((6, self.N, self.N, self.N))
+        pos = idx > 0
+        ii = np.clip(idx.astype(np.intp) - 1, 0, self.nv - 1)
+        for p in range(6):
+            e[p] = np.where(pos, self.e0v[ii, p], 0.0)
+        return e
+
     def _fft(self, x):
         return sfft.fftn(x, axes=self.axs, workers=self.workers)
 
     def _ifft(self, x):
         return sfft.ifftn(x, axes=self.axs, workers=self.workers)
 
-    def _epsh(self):
-        """工程应变分量的未归一化 FFT: (6, N,N,N)"""
-        e = self.eps0_fields()
+    def _epsh(self, idx=None):
+        """工程应变分量的未归一化 FFT: (6, N,N,N)。idx 给定时走 T3 的 gather 路径。"""
+        e = self.eps0_fields() if idx is None else self.eps0_fields_idx(idx)
         e[3:] *= 2.0
         return self._fft(e)
 
-    def sigma_tensor(self):
-        """sigma(x) = real(ifftn(-Lambda : fftn(eps)))  （见文件头归一化说明）"""
-        Eh = self._epsh().reshape(6, -1)
-        sh = -np.einsum('kpq,qk->pk', self.Lam, Eh)
+    def sigma_tensor(self, idx=None):
+        """sigma(x) = real(ifftn(-Lambda : fftn(eps)))  （见文件头归一化说明）
+
+        ★ T3：`lam_prec='f32'` 时**强制 float32 的 einsum**。若不强制，numpy 会把
+          float32 的 `Lam` 升成 float64 临时量（N=96 时多占 255 MB），白白吃掉收益。"""
+        Eh = self._epsh(idx).reshape(6, -1)
+        if self._lam32:
+            _dt = np.complex64 if self._lam_cplx else np.float32
+            sh = -np.einsum('kpq,qk->pk', self.Lam,
+                            Eh.astype(_dt, copy=False), dtype=_dt)
+        else:
+            sh = -np.einsum('kpq,qk->pk', self.Lam, Eh)
         sh = sh.reshape((6, self.N, self.N, self.N))
         return np.real(self._ifft(sh))
 
     def E_el(self):
+        """★ T3：这是**诊断路径**（不在每步热路径）。`lam_prec='f32'` 时显式升到 float64
+        以保证判据精度 —— 代价是一次性 255 MB 临时量（只在调用时存在）。"""
         Eh = self._epsh().reshape(6, -1) / self.N3
-        return 0.5 * self.V * float(np.real(np.einsum('pk,kpq,qk->', np.conj(Eh), self.Lam, Eh)))
+        if self._lam32:
+            Lam = self.Lam.astype(np.complex128 if self._lam_cplx else np.float64)
+        else:
+            Lam = self.Lam
+        return 0.5 * self.V * float(np.real(np.einsum('pk,kpq,qk->',
+                                                      np.conj(Eh), Lam, Eh)))
 
     def E_chem_grad(self):
         """返回 (E_barrier, E_chem, E_grad)"""
@@ -272,7 +335,14 @@ class PF3D(object):
         #   => **对既有判据数值零影响**；只有 dG!=0 的动力学路径会变（那正是 T2.1b 要的）。
         drive = self.dG
         for v in range(self.nv):
-            f[v] = -np.einsum('p,p...->...', self.e0v_eng[v], sig) + self.sext_e0[v]
+            # ★★ T1 修（P0-1，2026-09-28）：符号 `−` → `+`。
+            #   `forces()` 返回的是**驱动力**（判据：化学项写成 `+dG`、界面项写成 `−W(...)`），
+            #   而弹性驱动的驱动力是 **+ε⁰_v:σ**（变分法：驱动力 = −δF_el/δφ_v）。
+            #   独立数值判决见 `T1_verify_edsign.py`（球 R=120 nm：真实 D_corr=−1.43e8，
+            #   修前返回 +1.66e8 ⇒ 符号相反；修后比值 +1.12~+1.17 ∈ [0.8,1.3] ✓）。
+            #   ⚠ `dfdphi()` 里那一项是 **−ε⁰:σ**，**它是对的**（那是 dF/dφ，不是驱动力）
+            #   ⇒ 两处相差一个整体负号是**设计如此**，不要"统一"掉。
+            f[v] = +np.einsum('p,p...->...', self.e0v_eng[v], sig) + self.sext_e0[v]
             p = self.phi[v]
             f[v] += drive - self.W * (2 * p * (1 - p) * (1 - 2 * p)
                                       + 2 * p * (S2 - p ** 2))

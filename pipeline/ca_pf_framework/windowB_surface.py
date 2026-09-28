@@ -87,7 +87,76 @@ def grad_sym(phi, dx):
     return np.sqrt(acc)
 
 
-def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True):
+def interface_elastic_energy(C, eps0, k, l, n, N=32, dx=2.5e-8, k0_mode='clamped'):
+    """★★ T10（2026-09-28）：**相干界面的弹性能** `γ_el` [J/m²]（按面片身份 (k,l) 与法向 n）。
+
+    做法：在周期盒里用平面 `n·x = const` 把盒子分成两半（区域 k / l），
+    用**谱法**（`PF3D.E_el`）解弹性能 `E_el`，再除以**界面面积**（格点键测度）。
+    ★ 周期盒里一个周期有 **2 个** 界面；键测度把两个都数进去了 ⇒ 不需要额外的因子 2。
+
+    ★ 记账（判据形式，见 `_probe_paircompat.py` 的前置判决）：
+      真实 Ti64 的 Burgers 变体对**不是精确 rank-1 相容**（66 对里最好的对残余
+      仍有单变体尺度的 1.4e-3，最差 9.0e-2）⇒ **不能**要求 `γ_el = 0`（机器零）——
+      那是**不可达的判据**。可达的判据是：
+        ① 合成**精确** rank-1 对 ⇒ `γ_el = 0`（机器零）；
+        ② 真实变体 ⇒ `γ_el` 在 `ncmp[k,l]` 处**取最小**且随残余**单调**。
+
+    返回 `(gamma_el, E_el, A)`；`A = 0`（无界面）时返回 `(0.0, E_el, 0.0)`。
+    """
+    nv = len(eps0)
+    L = N * dx
+    g = LevelSetMulti(N, L, C=C, eps0=eps0, gamma=0.0, Mob=1.0,
+                      df=[0.0] * (nv + 1), workers=1, reinit_every=0,
+                      k0_mode=k0_mode)
+    rel = g.XYZ - np.array([L / 2] * 3)
+    nn = np.asarray(n, float)
+    d = rel @ (nn / (np.linalg.norm(nn) + 1e-300))
+    for j in range(g.nreg):
+        g.phi[j] = 1e3
+    g.phi[k] = d
+    g.phi[l] = -d
+    g.init_parent()
+    reg = g.region()
+    g.pf.phi[:] = False
+    for v in range(g.nv):
+        g.pf.phi[v] = (reg == v + 1)
+    E = float(g.pf.E_el())
+    A = 0
+    for ax in range(3):
+        A += int((reg != np.roll(reg, -1, axis=ax)).sum())
+    A *= dx ** 2
+    return (E / A if A > 0 else 0.0), E, A
+
+
+def _bbox_pad(mask, pad=1, wrap=True):
+    """布尔掩模的**包围盒**（外扩 pad 胞），返回切片元组；掩模为空返回 None。
+
+    T3 用它把"全场逐场算梯度"压到"只在该场活跃区算"。
+
+    ★★ 两处必须做对（首版都错了，判据 `T3_verify_fastpath.py` T3-2 抓到，记账）：
+      ① `pad ≥ 2`：`curvature_of` 用 `np.roll` 做周期中心差分，所以**写回胞的邻居**
+         也必须是"用中心差分算出来的"值。`np.gradient` 只在**最外一层**用单边公式
+         ⇒ 写回胞需距子盒边界 ≥1，其邻居需距边界 ≥1 ⇒ 写回胞需距边界 ≥2 ⇒ **pad=2**。
+      ② `wrap=True`：掩模贴到网格面时，**该轴必须取满整程** —— 否则 `np.roll` 会在
+         **子盒**内周期卷绕，而全盒算时是在**整盒**内卷绕，两者不同 ✗。
+    """
+    idx = np.argwhere(mask)
+    if idx.size == 0:
+        return None
+    n = np.asarray(mask.shape)
+    lo = np.maximum(idx.min(0) - pad, 0)
+    hi = np.minimum(idx.max(0) + pad + 1, n)
+    if wrap:
+        # ★ `np.roll` 把轴的**两端耦合**在一起 ⇒ 只要掩模碰到**任一端**，
+        #   该轴就必须取满整程（否则子盒内的卷绕对象与全盒不同）。
+        _touch = (idx.min(0) == 0) | (idx.max(0) == n - 1)
+        lo = np.where(_touch, 0, lo)
+        hi = np.where(_touch, n, hi)
+    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+
+
+def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True,
+                   band_cells=None):
     """④ 保亚胞位置的 PDE 式重初始化：解 φ_τ + S(φ0)(|∇φ|−1) = 0（一阶迎风）。
        零等值面在连续意义下不动 ✓（旧写法 `distance_transform_edt(mask)` 会把界面
        吸附到胞边界，O(0.5dx) 系统偏差 ✗）。
@@ -109,9 +178,30 @@ def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True):
     _probe = phi0
     for _ax in range(3):
         _probe = _probe  # no-op，保持维度一致
-    _g = np.gradient(phi0, dx)
+    _g = np.gradient(phi0, dx, edge_order=2)
     _gn = np.sqrt(sum(_gi ** 2 for _gi in _g))
-    _gm = float(np.median(_gn))
+    # ★★★ W1-2（2026-09-28，Gate A-1 选项①）：**统计量的域可选**。
+    #   `band_cells=None`（默认）⇒ 全域 ⇒ **现有全部调用者逐位不变**（向后兼容硬保证）。
+    #   为什么要能选"带内"（依据 `_probe_grad_fixpoint.py` + `_probe_fix_bandstats.py`，全实测）：
+    #     * 本算子用 `max(gm)` 定伪时间步。**同一场**实测：中心差分全域 max = **1.00**，
+    #       而**本算子实际驱动的** `upwind_grad2` 全域 max = **68.5** ⇒ `_dte/dtau` 只剩 **0.0146**；
+    #     * 原因是水平集场**必然存在中轴/脊线**（板条的圆边、区域的角），脊线上梯度**间断**
+    #       ⇒ `upwind_grad2` 在脊线处给出远大于 1 的伪值
+    #       ⇒ **一个远离界面的脊线胞，就把整个 reinit 冻结**；
+    #     * 实测（同一初态、同一算子、**只**改这一处统计量的域、iters=100）：
+    #       带内中位恢复率 **−2.7% → +97.1%**；`region()` 翻转 **0**、界面键 **1.0000×**（零几何损伤）；
+    #       反向对照（恒等算子）Δ ≡ **0.00e+00**（证明量具能分辨"没改动"）；
+    #       `band_cells ∈ {3,6,12}` ⇒ **96.9% / 97.1% / 46.3%** ⇒ **不是需要精调的魔法参数**，
+    #       且 **6 正是 `reinitialize()` 本来就在用的那个值**。
+    #   ⚠ **启用会改数** ⇒ 按 `R8` 必须全量重跑引用它的判据（Wave 2）。
+    #     启用方式：`LevelSetMulti(..., reinit_band_cells=6)` 或事后 `g.reinit_band_cells = 6`。
+    _sel = None
+    if band_cells is not None:
+        _sel = np.abs(phi0) <= float(band_cells) * dx
+        if not _sel.any():
+            # ★ 空带 ⇒ **显式退回全域**；**绝不**静默变成"全选"或"全不选"（本项目最忌讳的静默行为）。
+            _sel = None
+    _gm = float(np.median(_gn if _sel is None else _gn[_sel]))
     if _gm > 1e-12 and abs(_gm - 1.0) > 0.2:
         phi = phi / _gm
         phi0 = phi0 / _gm
@@ -134,11 +224,11 @@ def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True):
         elif grad == 'upwind2':
             gm = upwind_grad2(phi, S, dx)
         elif grad == 'central':
-            g = np.gradient(phi, dx)
+            g = np.gradient(phi, dx, edge_order=2)
             gm = np.sqrt(sum(gi ** 2 for gi in g))
         else:
             gm = grad_sym(phi, dx)
-        _gmax = float(np.max(gm))
+        _gmax = float(np.max(gm if _sel is None else gm[_sel]))
         _dte = min(dtau, 0.5 * dx / 3.0 / max(_gmax, 1.0))
         _upd = _dte * S * (gm - 1.0)
         phi = phi - np.clip(_upd, -0.5 * dx, 0.5 * dx)
@@ -225,6 +315,55 @@ def iface_crossings(field, dx, axis):
     return int(s.sum()), coord
 
 
+def upwind_flux_vec(phi, V, dx, order=1):
+    """★★ D17（2026-09-28）：**矢量速度**的迎风对流算子 `V·∇φ`（保几何平流的核心）。
+
+    为什么要它（P1 的结构性修法）
+    ---------------------------
+    界面推进的物理是"**零等值面沿自身法向平移**"。仓库此前两条路径分别是：
+      * `adv_grad='central'`：`φ ← φ − dt·v_n·|∇φ|_central` —— 用**中心差分**离散
+        Hamilton–Jacobi 型 `v_n|∇φ|`。中心型是**非单调（色散）**格式 ⇒ 在网格尺度上
+        产生伪振荡 ⇒ 界面**自发粗化**（P1；T16 实测界面胞数 601→4232 ×7）。
+      * `adv_grad='upwind'`：Godunov 迎风的 `|∇φ|` 型。它**单调**，球面不粗化；
+        但对**线性**（倾斜平面）数据 Godunov 给的是 `max_i|a_i|` 而不是 `|a|`
+        ⇒ 倾斜前沿有 **O(dx) 的取向相关慢化**（"阶梯慢化"；W1 实测各向异性被压低
+        ~8%，T11g 实测 `v/(MΔf)` 的 Δx 散布 0.558）。
+    两者都不对：前者保速度不保几何，后者保几何不保速度。
+
+    **本函数走第三条路：把速度投影成矢量场 `V = v_n·n`，再对 `φ_t + V·∇φ = 0`
+    用迎风通量。** 理由：
+      1. 迎风格式对**线性**数据是**精确**的（单边差对线性函数无截断误差）
+         ⇒ 倾斜平面**精确**平移、无阶梯慢化 ⇒ 修好 `upwind` 的那一半；
+      2. 迎风是**单调**格式 ⇒ 不产生网格尺度伪振荡 ⇒ 修好 `central` 的那一半；
+      3. 两个场用**同一个** `V` ⇒ 差分场 `d = φ_k − φ_l` 满足 `d_t + V·∇d = 0`
+         ⇒ `d` 只**平移**、`|∇d|` 不变（仓库注释里"d 被拉陡、|∇φ| 0.5→530"的病
+         在结构上被排除）。
+
+    ⚠ 记账（代价，如实登记）：一阶迎风有 `O(dx)` 的**数值扩散** ⇒ 曲面界面会被轻微
+      抹平（靠 `reinitialize` 重整；`order=2` 用 minmod 限制器把光滑区提到二阶）。
+      这就是本函数同时提供 `order=1/2` 的原因 —— 哪一档可用由 `T19_verify_proj.py`
+      的**已知答案正对照**决定，不靠推理。
+
+    `phi`：(N,N,N) 标量场；`V`：长度 3 的序列（逐胞矢量，可为逐胞 `np.where` 掩模后的场）；
+    `order=1` 一阶迎风；`order=2` 二阶 ENO(minmod) 迎风。
+    """
+    acc = 0.0
+    for ax in range(3):
+        Va = V[ax]
+        if not np.any(Va):
+            continue
+        dm = (phi - np.roll(phi, 1, axis=ax)) / dx          # D⁻
+        dp = (np.roll(phi, -1, axis=ax) - phi) / dx         # D⁺
+        if order >= 2:
+            dmm = np.roll(dm, 1, axis=ax)
+            dpp = np.roll(dp, -1, axis=ax)
+            dm = dm + 0.5 * _minmod(dm - dmm, dp - dm)
+            dp = dp - 0.5 * _minmod(dpp - dp, dp - dm)
+        # 迎风选边：V>0 ⇒ 信息来自上游(−x) ⇒ 用 D⁻；V<0 ⇒ 用 D⁺
+        acc = acc + np.where(Va > 0, Va * dm, Va * dp)
+    return acc
+
+
 def extend_along_normal(v, phi, dx, iters=12, dtau_fac=0.4):
     """把界面速度 v 沿**法向**延拓（标准 "extension velocity"：解
          v_τ + S(φ)·(n·∇v) = 0 ,  n = ∇φ/|∇φ|,  S(φ)=φ/√(φ²+dx²)
@@ -233,7 +372,7 @@ def extend_along_normal(v, phi, dx, iters=12, dtau_fac=0.4):
        ★ 相比 nearest-interface-point(distance_transform_edt) 延拓：局部、便宜
          （EDT 在 96³ 上每步 ~2 s，这里 ~30 ms），且是**光滑**延拓（无最近点跳变）。"""
     v = v.copy()
-    g = np.gradient(phi, dx)
+    g = np.gradient(phi, dx, edge_order=2)
     gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
     S = phi / np.sqrt(phi ** 2 + dx ** 2)
     dtau = dtau_fac * dx
@@ -279,14 +418,14 @@ class LevelSetSurface(object):
 
     # ---------- 面几何（全部来自 φ，连续、无台阶伪影）----------
     def normal(self):
-        g = np.gradient(self.phi, self.dx)
+        g = np.gradient(self.phi, self.dx, edge_order=2)
         gnorm = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
         return [gi / gnorm for gi in g], gnorm
 
     def curvature(self):
         """κ = ∇·(∇φ/|∇φ|)（level-set 标准式；凸面（产物在外）取正）"""
         n, _ = self.normal()
-        return sum(np.gradient(n[i], self.dx)[i] for i in range(3))
+        return sum(np.gradient(n[i], self.dx, edge_order=2)[i] for i in range(3))
 
     def interface_mask(self, band=1.5):
         """界面带：|φ| <= band·dx"""
@@ -397,7 +536,7 @@ class LevelSetSurface(object):
         """界面点 x_if 与法向 n（一阶投影到零等值面）：
              x_if = x − φ ∇φ/|∇φ|² ,  n = ∇φ/|∇φ|
            返回 (P (M,3), N (M,3))。zslice 给定时只在那一层取点（2D 柱体用）。"""
-        g = np.gradient(self.phi, self.dx)
+        g = np.gradient(self.phi, self.dx, edge_order=2)
         gn2 = sum(gi ** 2 for gi in g) + 1e-300
         if zslice is not None:
             sl = (slice(None), slice(None), int(zslice))
@@ -478,7 +617,9 @@ class LevelSetSurface(object):
         #   物理：界面迁移率与界面能一样由界面结构决定；{334} 型惯习面是"好界面"，
         #         其他取向的迁移率被结构缺陷拖低（faceted growth 的标准图像）。
         #   ★ 为什么必须走 M(n) 而不是继续调 gamma(n)：
-        #     P0.3 实测（_chk_mroute A-D，df=1e8 = dG_chem(M_s) 的真实值）：
+        #     P0.3 实测（_chk_mroute A-D，df = **drive_of_T(M_s)** = +1e8 J/m³ 的真实值
+        #       —— T5 记账：原文写 "dG_chem(M_s)"，而 dG_chem(M_s) = **−1e8**（ΔG 的约定），
+        #       与这里 df=+1e8 是**相反数**；量级对、名字错，已按 T5 统一）：
         #       aniso=0 与 aniso=0.9 的 M6 中位**都是 55.4 deg**，参考取向换对/换错也不动
         #     => 在真实驱动力下，"界面能 vs 驱动力"的幅度竞争根本不成立。
         #     而 M(n) 是**动力学**量，**没有热力学凸性约束**（不需要 gamma+gamma_tt>0）
@@ -521,6 +662,19 @@ class LevelSetSurface(object):
             # 对照用：中心差分 |∇φ|（对光滑 SDF 是二阶；迎风是一阶单边）
             _, gn_c = self.normal()
             gmag = gn_c
+        elif adv_grad in ('proj', 'proj2'):
+            # ★★ D17（2026-09-28）：**投影型保几何平流**（与 `LevelSetMulti.advance`
+            #   同一条路）：把 `v_n` 投影成矢量 `V = v_n·n`，再对 `φ_t + V·∇φ = 0`
+            #   用迎风通量。理由见 `upwind_flux_vec` 的记账（迎风对线性数据精确 +
+            #   单调 ⇒ 既无阶梯慢化、也不产生网格尺度伪振荡）。
+            nrm, _ = self.normal()
+            V = [vn * nrm[i] for i in range(3)]
+            self.phi -= dt * upwind_flux_vec(
+                self.phi, V, self.dx, order=(2 if adv_grad == 'proj2' else 1))
+            self._cnt = getattr(self, '_cnt', 0) + 1
+            if self.reinit_every and self._cnt % self.reinit_every == 0:
+                self.reinitialize()
+            return vn
         else:
             sgn = np.where(vn > 0, 1.0, -1.0)
             if adv_grad == 'upwind':
@@ -610,7 +764,24 @@ class LevelSetMulti(object):
     def __init__(self, N, L, C=None, eps0=None, gamma=0.15, Mob=1e-9, df=None,
                  Lam=0.0, k0_mode='clamped', workers=4, reinit_every=20, nv=None,
                  aniso_elastic=False, C_hex_tab=None, C_cub=None, sigma_ext=None,
-                 reinit_iters=100, reinit_dtau=None, reinit_grad='upwind2'):
+                 reinit_iters=100, reinit_dtau=None, reinit_grad='upwind2',
+                 dG_of_T=None, T=None, T_of_t=None, reinit_dt=None,
+                 reinit_band_cells=6.0):
+        # ★★★ W1-2（2026-09-28，**Gate A-1 选项① —— 用户已批准启用**）：pair reinit 的**统计量域**。
+        #   **默认 `6.0`（启用）**；显式传 `None` ⇒ 退回"全域"（改动前的旧行为，可复现归档）。
+        #   为什么必须改（`_probe_grad_fixpoint.py` 实测）：
+        #     算子用 `max(gm)` 定伪时间步。**同一场**：中心差分全域 max = **1.00**，
+        #     而算子实际驱动的 `upwind_grad2` 全域 max = **68.5** ⇒ `_dte/dtau` 只剩 **0.0146**。
+        #     水平集场**必然有中轴/脊线**，脊线上梯度间断 ⇒ `upwind_grad2` 伪尖峰
+        #     ⇒ **一个远离界面的脊线胞，把整个 reinit 冻结**。
+        #   效果（`_chk_w12.py` C-3，真实代码）：恢复率 **−11.0% → +88.0%**；
+        #     `region()` 翻转 **0**、界面键 **1.0000×**（**零几何损伤**）。
+        #   敏感性（`_probe_fix_bandstats.py`）：`band_cells ∈ {3,6,12}` ⇒ 96.9% / **97.1%** / 46.3%，
+        #     且 **6 正是 `reinitialize()` 本来就在用的那个值** ⇒ **不是新增的可调参数**。
+        #   ⚠ **这是"改数"的改动**（用户 2026-09-28 批准）⇒ 按 `R8` 必须全量重跑引用它的判据（Wave 2）。
+        #     **此前取得的几何读数（板厚/长径比/分组统计）已被本改动超越，必须重取。**
+        self.reinit_band_cells = (None if reinit_band_cells is None
+                                  else float(reinit_band_cells))
         # EXPERT-#3: reinit_iters 由硬编码 30 提到 100。依据 _tune_reinit.py：
         #   两变体平面界面 d=phi_k-phi_l 的零等值面 iters=30 停在 0.025um，
         #   iters>=100 落到 0.01200um = **解析值** => 残余偏差来自迭代不足。
@@ -622,11 +793,17 @@ class LevelSetMulti(object):
         self.gamma = gamma
         self.M = Mob
         self.reinit_every = reinit_every
+        # ★★ T11（2026-09-28）：**重初始化按物理时间**（而不是步数）。
+        #   为什么必须：CFL 给 `dt ∝ dx` ⇒ 固定 `reinit_every`（步数）时，
+        #   **物理上的重初始化间隔 `reinit_every·dt` 正比于 Δx** ⇒ 换个分辨率就换了物理！
+        #   给了 `reinit_dt`（秒）时按它触发；不给（默认 None）⇒ 沿用步数语义（逐位兼容）。
+        self.reinit_dt = None if reinit_dt is None else float(reinit_dt)
+        self._t_since_reinit = 0.0
         self.nv = (nv if nv is not None else (1 if eps0 is None else len(eps0)))
         self.nreg = self.nv + 1                      # 0 = 母相
-        x = (np.arange(N) + 0.5) * self.dx
-        X, Y, Z = np.meshgrid(x, x, x, indexing='ij')
-        self.XYZ = np.stack([X, Y, Z], -1)
+        # ★★ T3（2026-09-28）：`XYZ`（24 B/胞）**惰性分配** —— 它只在撒晶核时用到，
+        #   而生产跑里撒核是稀疏事件（B1 的 athermal 形核），却全程占着内存。
+        self._XYZ = None
         self.phi = np.full((self.nreg, N, N, N), 1e3)
         # 体相成分与面上过剩（Gibbs 面的状态量）
         try:
@@ -640,8 +817,10 @@ class LevelSetMulti(object):
             self.rho = 1.0129e5
         self.T = 1950.0
         self.c = np.full((N, N, N), 0.036)
-        self.Gam = np.zeros((N, N, N))
-        self.Gam_mol = np.zeros((N, N, N))   # ★ W-6c：面量的**权威状态**（摩尔/胞）
+        # ★★ T3：`Gam` / `Gam_mol`（16 B/胞）**惰性分配** —— `surface_chem=False`
+        #   （T4 的 B1 默认）时这两块从不被写入，却全程占着内存。
+        self._Gam = None
+        self._Gam_mol = None
         # ★★ W-6c（2026-09-25）：**面量的权威状态改按「摩尔/胞」存**（Gam_mol）。
         #   为什么： 里的 A_c 是 coarea 测度、**界面一动它就变** ⇒ 账面逐步漏
         #   （实测 advance 侧 rel 1.1e-5/步，30 步累积 1.2e-4；update_Gamma 侧是 2.5e-32）。
@@ -650,11 +829,54 @@ class LevelSetMulti(object):
         #   ，**与时间无关、必然闭合**。
         #   兼容：判据若直接写 （A3/H6/M3 的老写法），update_Gamma 开头会检测
         #   到不一致并以  为准重新同步 Gam_mol（见那里的 guard）。
-        self.J_edge = [np.zeros((N, N, N))] * 3     # 面扩散的边通量（ΣJ_s 判据/H7 用）
+        # ★★ T3（2026-09-28）：J_edge **惰性分配**（3×(N,N,N) = 24 B/胞）。
+        #   它只被面扩散用到，而 `surface_chem=False`（B1 默认）时那条路径整段关闭。
+        #   旧写法 `[np.zeros(...)] * 3` 还顺带把**同一个数组引用了三遍**（潜在别名 bug）。
+        #   对外仍是 `g.J_edge`（property，读时才分配）⇒ 判据脚本 `_chk_h6.py` 不受影响。
+        self._J_edge = None
         self.df = np.zeros(self.nreg) if df is None else np.asarray(df, float)
+        # ---- ★★ T6（2026-09-28）：把"**温度的钟**"接进 level-set 引擎 ----
+        #   物理：B1 是 athermal 位移型相变 ⇒ 驱动力**只由温度决定**（不是时间）
+        #     `df(T) = drive_of_T(T; T0, DS)`（`windowB_km`，T5 已统一为 `>0 = 变体有利`）。
+        #   ⇒ 本引擎只认 `df`，不认温度；`dG_of_T` 是**唯一**把温度换成驱动力的人口，
+        #     由 `set_T()` 调用。`T_of_t` 是**时间表**（冷却曲线），由 `advance_T()` 驱动。
+        #   记账：`windowB_km` 因此被**降级为"钟"** —— 它只是把 T 历史换成驱动历史的
+        #     换算器，`DS` 带 **4 倍**不确定度（`DS_BAND = 1.5e5…6.0e5`），
+        #     **不预测 `f(T)`**（`D1′`）。
+        #   关掉（`dG_of_T=None`，默认）⇒ 与旧行为**逐位相同**（`set_T` 只记历史、不动 df）。
+        self.dG_of_T = dG_of_T
+        self.T_of_t = T_of_t
+        self.T = None if T is None else float(T)
+        self.t = 0.0
+        self.Thist = dict(t=[], T=[], df=[])
+        if self.dG_of_T is not None and self.T is not None:
+            self.set_T(self.T)
+        # ---- ★★ T4（2026-09-28）：B1 的**溶质通道默认关闭** ----
+        #   物理依据（`pipeline/RESEARCH_INTENT.md` §一/§4.2 D2′）：B1 是 β→α′ 的
+        #   **位移型、无扩散**相变 ⇒
+        #     ① 界面扫过时溶质**原样继承**（k_part = 1.0）⇒ 无分配、无溶质拖曳；
+        #     ② 界面**不富集**溶质（Γ ≡ 0）—— 界面化学 Γ_i 属 **Window C，本轮不做**。
+        #   记账：这**推翻了此前 `k_part = 0.6303` 的用法** —— 那个数是**液/固分配
+        #     系数**（弥散界面 PF 里凝固用的），被误用到位移型马氏体相变上。
+        #     凡依赖溶质再分配的归档结论**全部作废**（见 `WINDOWB_P0_REGISTER.md` §T4）。
+        #   判据（`T4_verify_no_partition.py`）：200 步后 `max|c − c0| == 0`（逐位）。
+        #   回退路径：需要溶质通道时显式写 `g.k_part = 0.6303; g.surface_chem = True`。
+        self.k_part = 1.0
+        self.surface_chem = False
+        # ★★ T9（2026-09-28）：界面刚度 γ(n) 按**面片身份** (I⁻,I⁺) 查表
+        #   （`facet_nref`：变体-母相 ⇒ `npref[k]`；变体-变体 ⇒ `ncmp[k,l]`）。
+        #   `False` ⇒ 退回 T9 之前"只用 winner 的 `npref[k]`"的行为（供对照）。
+        self.facet_id_gamma = True
+        # ★★ T10：保存建对象时的 C / eps0 引用，供 `gel_facet` 在**自己的小盒**里
+        #   量相干界面弹性能（不复用本对象的大盒 —— 那会白烧机时）。
+        self._C_ref = C
+        self._eps0_ref = None if eps0 is None else [np.asarray(e, float) for e in eps0]
         # ---- T2.1a (2026-09-25): external stress sigma_ext -------------------
         # Driving-force convention, identical to `PF3D.forces()` / `dfdphi()`:
-        #     df_v = -eps0_v : sigma_int  +  sigma_ext : eps0_v
+        #     df_v = +eps0_v : sigma_int  +  sigma_ext : eps0_v
+        # ★★ T1 修（P0-1，2026-09-28）：**第一项的符号由 `−` 改为 `+`**（原注释写的就是错的）。
+        #   驱动力 = −δF_el/δφ_v = +ε⁰_v:σ；外载项 `sigma_ext:eps0_v` 本来就对、不动。
+        #   ⇒ 两项现在**同号约定**：正 = 该变体有利。
         # (the second term is the work done by the applied stress as the
         # transformation strain develops).  sigma_ext = None reproduces the old
         # behaviour bit-for-bit (sext_e0 is then identically zero).
@@ -672,7 +894,22 @@ class LevelSetMulti(object):
             from windowB_pf3d import PF3D, VOIGT, G6 as _G6, _lam_full
             self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
                            workers=workers, k0_mode=k0_mode,
-                           sigma_ext=self.sigma_ext)
+                           sigma_ext=self.sigma_ext,
+                           # ★★ T3（2026-09-28）：level-set 路径只把 `pf.phi` 当**指示场**用
+                           #   ⇒ 存 bool（96 → **12 B/胞**）。`ZERO/ONE` 语义不变
+                           #   （`eps0_fields` 里 `float*bool` 自动升 float64）。
+                           phi_dtype=bool,
+                           # ★★ Λ 精度（T3 实测判决，2026-09-28）：**必须 float64**。
+                           #   试过 float32（省 144 B/胞）：`Lam` 的元素量级是
+                           #   **1.2e10–1.3e11**（不是 O(1)），σ 是 6 项大数相消的结果
+                           #   ⇒ 实测 **点位 σ 相对误差 RMS 0.70、max 0.50**；
+                           #   **界面带内 100% 的胞 `ed` 误差 > 1%** ⇒ 会直接污染界面速度。
+                           #   ⚠ 陷阱：`|ΔE_el|/E_el` 只有 **1.9e-9**（能量由精确的低 k
+                           #   模态主导）⇒ **只看能量判据会放过这个错**。
+                           #   这条否掉了原计划里的"Λ 存 complex64"（方向对、但精度不够）。
+                           lam_prec='f64')
+            # ★ T3：K 表只在建 Lam/_k2 时用到 ⇒ 建完释放（24 B/胞）
+            self.pf.K = None
             self.e0v_eng = np.array([[eps0[v][i, j] for (i, j) in VOIGT]
                                      for v in range(self.nv)]) * _G6[None, :]
             self._G6 = _G6
@@ -799,6 +1036,439 @@ class LevelSetMulti(object):
     def region(self):
         return np.argmin(self.phi, axis=0).astype(np.int8)
 
+    # ================= 长大中的形核（D18，2026-09-28 用户批准并入）=================
+    def nuc_cfg(self, R_nuc, t_nuc, gamma=0.15, n_init=0, p_auto=0.0,
+                harden_f=1.0, sym_gap_cells=2, max_per_step=1, seed=11,
+                var_rule='ed', use_fcrit=False):
+        """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
+        （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
+        `WINDOWB_AUDIT_REGISTER.md` D4/A7。三种处置任选其一，**但必须显式**：
+          (a) 传 `harden_f≈0.1` 才真正启用"母相硬化 ⇒ 改形核其它变体"这条阶段③规则；
+          (b) 保持 1.0 并**明确声明"本次运行不启用阶段③"**；
+          (c) 改默认值（会改数，须按 `R8` 重跑引用它的判据）。
+        ⚠ 另：即使触发，`k` 会被覆盖为**全体变体均匀抽样** ⇒ 可能抽到未形核变体而
+        静默空转（`idx.size==0` 无计数，见 A6③）。**当前实现下阶段③只能算"骨架"**。
+
+        配置形核通道。**必须显式调用才生效** ⇒ 默认（不调用）行为与归档逐位相同。
+
+        物理依据（全部有文献锚，见 `lit/NUCLEATION_ANCHORS.md`、`WINDOWB_LATH_GAP_ROOTCAUSE §3.3`）
+        ------------------------------------------------------------------
+        * **形核是必须的**：`RESEARCH_INTENT` 第 100–102 行「α′ 以板条为单位**形核 + 长大**」。
+          文献明确否定"只在 t=0 撒一次核"：Khan 1990（剑桥博士论文）§5.3.2 预存缺陷密度
+          "not large enough to explain the kinetics"；Villa 2014（DTU）§2.7.3 自发形核位
+          `1e11–1e13 m^-3` "far too small"，"**autocatalytic nucleation dominates**"。
+        * **板条厚 = 形核属性**，不是长大属性：Morito 2005 实测板条宽 0.2 µm 在 prior-γ 晶粒
+          **2.3→370 µm（160×）**内"does not change"；Chakraborty 2022："the TRANSVERSE (WIDTH)
+          GROWTH OF LATHS WITHIN BLOCKS **ESSENTIALLY DEPENDS ON THE NUCLEATION OF ADJACENT
+          HIERARCHICAL UNITS**"。
+        * **block = 同变体反复形核**：Furuhara 2008「A BLOCK IS FORMED BY **REPEATED NUCLEATION
+          OF THE SAME VARIANT** OF LATHS ADJACENT TO EACH OTHER」。
+        * **三阶段规则**（Morito 2022）：① 起点 = prior-β 晶界；② 主通道 = 已有板条周围由
+          释放位错/应力驱动、优先**同变体**；③ 母相硬化到阈值 ⇒ 抑制同变体传播 ⇒ 改形核**其它变体**。
+          ⇒ 本实现用 `harden_f`（转变分数）当阶段 ②→③ 的开关（是母相硬化的**代理量**，
+          不是硬化本身 —— 见 `T27` 的判据）。
+        * **两条通道**：
+            `fresh`（独立）：变体取该点 `argmax_k ed[k]`（弹性能变化最小，Du 2017 的规则）。
+                    ✅ **W1-4（2026-09-28）：形核判据 `f_nuc^ch > f_nuc^crit = 4γ/d` 已接线**，
+                    由 `use_fcrit=True` 打开（默认 False ⇒ 逐位向后兼容）。
+                    判定式 `(df + max_k ed_k) > fcrit`；`df` 经 `nucleate(df=…)` 传入。
+                    ⚠ 仍**只覆盖 `fresh`**；`stack` 通道未加此判据（已知范围缺口）。
+                    ⚠ `d` 取核厚 `t`，**其定义未从原文核实** ⇒ 措辞见上（不得称"实现了 Du 2017 的判据"）。
+            `stack`（sympathetic/自催化）：在已有板条的**惯习面内**平移一整片处置**同变体**新核，
+                    中间**留一层残余母相**（Chen 1979 LBL 博士论文：新核"spatially separate from
+                    the pre-existing plate"、平行生长、"leaving a layer of retained austenite"）。
+        * **参数锚点**：`t_nuc` 取 **LPBF α′ 实测板条厚 0.51–0.88 µm**（Shuai 2026,
+          doi 10.3390/ma19061049）⇒ `t/Δx = 14` @Δx=50 nm，**过约束①**。
+          ⚠ **记账**：文献的**形核胚**直径是 **40 nm**（Salama 2024, doi 10.1016/j.commatsci.2024.113033），
+          在 Δx=50 nm 下 `t/Δx = 0.8` ⇒ **不可解析**。故本实现把 `t_nuc` 当**亚网格输入**，
+          取"文献板条厚"而非"文献核径"，二者不是同一个量（Du 2017 的结论正是
+          "the individual lath is not distinguishable"，厚度在其模型里不是预测量）。
+        """
+        self._nuc = dict(R=float(R_nuc), t=float(t_nuc), gamma=float(gamma),
+                         p_auto=float(p_auto), harden_f=float(harden_f),
+                         gap=int(sym_gap_cells), cap=int(max_per_step),
+                         var_rule=str(var_rule),
+                         use_fcrit=bool(use_fcrit),
+                         rng=np.random.default_rng(seed))
+        # ★★ 记账（Round 63 接线；**Round 84 更正依据**——`ReferenceAudit` #14）：
+        #   `p_auto` **已接线并使用**（见下面 sympathetic 分支的 `_gain`）。
+        #   ⛔ **但它的函数形式没有一手文献依据**：原写"取自 Bhadeshia
+        #      *Theory of Transformations in Steel* (2023) §5 式 (5.24) 的形状"，
+        #      而文献核查确认**该书正文不在出版社预览内、该式无法核实**
+        #      （`docs/refcheck/REFERENCE_AUDIT.md` #14）；最接近的一手来源
+        #      **Khan 1990 §5.3.2** 给的是 `dN = dN_i + d(p·f)`、`N_i = (1−f)N_V⁰`
+        #      —— **括号里没有分母**，也没有 `4f(1−f)` 这个形状。
+        #   ⇒ **`p_auto` 必须读作「本项目自设的无量纲增益」**，不是文献参数：
+        #      增益 = 1 + p_auto · 4f(1−f)   （f = 0.5 处为 1+p_auto）
+        #      定义：「转变量过半时，sympathetic 形核的**尝试次数**相对无自催化情形增加的倍数」。
+        #   ⚠ 实测（`_t24pa0.log` vs `_t24pa6.log`，同规格只差 `p_auto=0/6`）：block 13 vs 13、
+        #      中位 508.3 vs 508.6 nm ⇒ **在下游形态层面无分辨力**（且见 A5：它改的是"尝试次数"、
+        #      还被 `cap` 卡死、`round()` 量化、`f=0` 时 `gain≡1`）。
+        #   ⇒ **不要再用 `p_auto` 作为"标定自催化强度"的说法**；要标定请先给出有依据的率律。
+        self._nuc_events = []
+        self._nuc_n_init = int(n_init)
+        if n_init > 0:
+            self._nuc_place_initial(int(n_init))
+
+    def _nuc_place_initial(self, n):
+        """t=0 撒下 `n` 个**待机**核（不立即 `seed_plate`：位点合法即可，激活时再种）。"""
+        c = self._nuc
+        rng = c['rng']
+        R, t = c['R'], c['t']
+        pad = R + 2 * self.dx
+        sites, ns = [], 0
+        for _ in range(n * 20):
+            if ns >= n:
+                break
+            ctr = rng.random(3) * (self.L - 2 * pad) + pad
+            k = int(rng.integers(1, self.nreg))
+            sites.append((k, ctr))
+            ns += 1
+        self._nuc['sites'] = sites
+
+    def _nuc_safe_mask(self, R_nuc, gap_cells=2):
+        """到任何非母相胞的欧氏距离 ≥ `R_nuc + gap` 的母相胞（用 EDT，避免手工盒扫描）。"""
+        from scipy import ndimage
+        par = (self.region() == 0)
+        if not par.any():
+            return np.zeros_like(par), par
+        dt = ndimage.distance_transform_edt(par) * self.dx
+        return (dt >= (R_nuc + gap_cells * self.dx)) & par, par
+
+    def nucleate(self, ed, R_nuc=None, t_nuc=None, n_fresh=0, n_stack=0,
+                 f_now=0.0, drive_min=None, df=0.0):
+        """**每步调用一次**：按三阶段规则新增核。返回本轮新种下的 `[(k, mode)]`。
+
+        `ed` = `elastic_driving()` 的返回（`(nreg,N,N,N)`）。
+        **只有先 `nuc_cfg()` 才有效**（否则本方法不会被调用 —— 调用方负责）。
+        """
+        c = getattr(self, '_nuc', None)
+        if c is None:
+            return []
+        R = c['R'] if R_nuc is None else float(R_nuc)
+        t = c['t'] if t_nuc is None else float(t_nuc)
+        rng = c['rng']
+        nv = self.nreg - 1
+        out = []
+        cap = max(1, c['cap'])
+        # ---------- 形核判据 `f_nuc^crit = 4γ/d`（Du 2017）
+        # ✅ **W1-4（2026-09-28）：本判据已接线**，由 `nuc_cfg(use_fcrit=True)` 打开。
+        #   * 判定式：`(df + max_k ed_k) > fcrit`，其中 `fcrit = 4γ/t`（`drive_min` 给了则覆盖）；
+        #   * `df` 由调用方经 `nucleate(..., df=Δf)` 传入；
+        #   * 被拒的位点计入 `dbg['fcrit']`（**显式可诊断**，不再静默）。
+        #   ⚠ **默认 `use_fcrit=False` ⇒ 完全不比较 ⇒ 与归档行为逐位相同**（启用会改数 ⇒ `R8`）。
+        #   ⚠ 历史（留痕）：Round 86 时本条是"**算了却从不比较**"——代码算了 `fcrit` 却从未使用，
+        #     而 docstring 声称"按 `f_nuc^ch > f_nuc^crit` 筛选形核点" ⇒ 未实现的声称。
+        #     该问题**已于本轮修复**；`gamma` / `drive_min` 现在**确有作用**（当 `use_fcrit=True`）。
+        #   ⚠ **`d` 的定义未从 Du 2017 原文核实**（本实现取核厚 `t`）
+        #     ⇒ 措辞只能是"实现了登记表 §9 所载的判定式"，**不得**写成"实现了 Du 2017 的判据"。
+        fcrit = 4.0 * c['gamma'] / max(t, 1e-30)
+        if drive_min is not None:
+            fcrit = float(drive_min)
+        nrm_all = getattr(self, '_npref_list', None)
+
+        # ---------- ① 待机核：按 `argmax_k ed` 激活（Du 2017 的"弹性能变化最小"）
+        sites = c.get('sites', [])
+        if sites and n_fresh > 0:
+            # ★★ Round 103 修（`WINDOWB_AUDIT_REGISTER.md` A8）：原来写
+            #   `cl = np.clip(ed[1:], None, None)` —— **两端都是 `None` ⇒ 恒等变换**
+            #   （实测 `np.clip([-1,2],None,None) == [-1,2]`），却每步**复制**一整个
+            #   `(nv,N³)` 数组（N=96、nv=12 时 ~85 MB），而本函数只用到 3 个数。
+            #   变量名 `cl` 是"只留有利变体"的残留 —— 正是 **D1（`4γ/d` 判据未接线）**
+            #   留下的现场痕迹。
+            #   ⇒ 改成**基本切片**：`ed[1:]` 返回**视图**（零拷贝），数值逐位相同。
+            cl = ed[1:]                                         # 视图，不是拷贝
+            nfr_done = 0
+            for i in range(len(sites) - 1, -1, -1):
+                # ★ 记账（T27 冒烟抓到）：原写法只受 `cap` 约束、**不受 `n_fresh` 约束**
+                #   ⇒ 一次调用就把名额全用光，后面的 `stack` 通道永远拿不到名额
+                #   ⇒ 实测 `stack=0`（sympathetic/block 通道静默失效）。
+                if len(out) >= cap or nfr_done >= n_fresh:
+                    break
+                _, ctr = sites[i]
+                ci = np.clip((ctr / self.dx).astype(int), 0, self.N - 1)
+                drv = cl[:, ci[0], ci[1], ci[2]]
+                # ★ Round 77：核的**变体选择规则**（两种都有文献锚，可切换；默认 `ed`）
+                #   `ed`     —— `argmax_k ed[k]`（弹性能变化最小；Du 2017 波鸿博士论文）
+                #   `random` —— **随机抽 1 个**（Salama et al. 2024, Comput. Mater. Sci. 241,
+                #               113033 的配方是"每个形核点随机抽 2 个 K-S 变体"）
+                #   动机（实测）：`M6p` p25 在形核档退化到 **23.9°–25.4°，超 D16c 门槛 20°**
+                #   ⇒ 需要检验"是不是 `argmax ed` 这条规则把取向选坏了"。
+                #   ⚠ 默认仍是 `ed` ⇒ **归档行为不变**。
+                # ★★ Round 93 修（`WINDOWB_AUDIT_REGISTER.md` C2，**实测语义**）：
+                #   `np.argmax` 遇到 NaN **返回第一个 NaN 的下标、不报错**
+                #   （实测 `argmax([nan,1,3])=0`、`argmax([1,nan,3])=1`）
+                #   ⇒ 若 `ed` 含 NaN，会**静默选中一个 NaN 变体**。
+                #   `ed` 的 NaN 来源：`eps0`/`sigma_ext`/`C` 自带 NaN、
+                #   `aniso_elastic=True` 的极化迭代发散、或近奇异声学张量。
+                #   ⇒ 这里加**显式守卫**：非有限就跳过该位点并计数，绝不静默选一个 NaN 变体。
+                _ok_drv = np.isfinite(drv)
+                if not bool(_ok_drv.all()):
+                    _c3 = c.setdefault('dbg', dict(att=0, oob=0, cov=0, exc=0, ok=0, nocand=0))
+                    _c3['nan_ed'] = _c3.get('nan_ed', 0) + 1
+                    continue
+                # ★★★ W1-4（2026-09-28）：**接线 `f_nuc^crit = 4γ/d` 判据**（登记表 §9 D1/A1）。
+                #   默认 `use_fcrit=False` ⇒ **完全不比较** ⇒ 与归档行为**逐位相同**。
+                #   判定式：`(df + max_k ed_k) > 4γ/d`（`drive_min` 给了就覆盖 `4γ/d`）。
+                #   为什么是 `+`：`ed` 存的是"弹性能**变化**"，而上面用 `argmax_k ed` 选
+                #   "弹性能变化**最小**"的变体 ⇒ `ed` 越大越有利 ⇒ 驱动力 = `df + max_k ed_k`，
+                #   与选法自洽。
+                #   ⚠ **`d` 的定义未从 Du 2017 原文核实**，本实现取核厚 `t`
+                #     ⇒ 措辞只能是"实现了登记表 §9 所载的判定式"，
+                #       **不得**写成"实现了 Du 2017 的判据"（措辞红线，见 MEASUREMENT_SPEC R10 同类纪律）。
+                #   ⚠ **只覆盖 `fresh` 通道**；`stack`（sympathetic）通道**未**加该判据 —— 这是**已知的范围缺口**，
+                #     不得把本实现说成"两条通道都过了驱动力判据"。
+                if c.get('use_fcrit', False):
+                    _dmax = float(np.max(drv))
+                    if (float(df) + _dmax) <= fcrit:
+                        _c4 = c.setdefault('dbg', dict(att=0, oob=0, cov=0, exc=0,
+                                                       ok=0, nocand=0))
+                        _c4['fcrit'] = _c4.get('fcrit', 0) + 1
+                        continue
+                # ★★★ W1-6（2026-09-28，**用户决策 D-2**）：变体选择规则加 **`doublet`**。
+                #   文献配方（Salama et al. 2024, Comput. Mater. Sci. 241, 113033）：
+                #     **每个形核点随机抽 2 个 K-S 变体**（不重复）。
+                #   动机（实测）：`M6p` p25 在形核档落到 **19–31°（随构型）**，**超 D16c 门槛 20°**
+                #     ⇒ 需要检验"是不是 `argmax ed` 这条规则把取向选坏了"。
+                #   ⚠ **向后兼容硬约束**：`'ed'`（默认）下 `_ks` 只有 1 个元素、**且不消耗 `rng`**
+                #     （原式在 `'ed'` 下也不调 `rng`）⇒ 默认路径**逐位不变**（由 `_chk_w16.py` D-1 证明）。
+                #   ⚠ `n_fresh` 限的是**事件数**（与现有一致）⇒ `doublet` 下每个位点占 **2 个** `n_fresh` 名额。
+                _rule = c.get('var_rule', 'ed')
+                if _rule == 'random':
+                    _ks = [int(rng.integers(1, nv + 1))]
+                elif _rule == 'doublet':
+                    _ks = [int(x) for x in rng.choice(np.arange(1, nv + 1), size=2,
+                                                      replace=False)]
+                else:                                   # 'ed'（默认）
+                    _ks = [int(np.argmax(drv)) + 1]
+                # ★★ Round 89 修（`WINDOWB_AUDIT_REGISTER.md` A2，**实测已证**）：
+                #   原来 `fresh` 通道**没有任何重叠守卫**，而 `seed_plate` 的
+                #   `phi[j] = max(phi[j], -sdf)` 会把新核盘内的**已有变体删掉**——
+                #   实测把 k=2 的核种在已有 k=1 盘的芯部 ⇒ k=1 由 2912 胞掉到 2496 胞
+                #   （**−416 胞 / −14.3%**），而 `T27` 的 N-6 判据（聚合区域数）看不见。
+                #   唯一现成的守卫工具 `_nuc_safe_mask()` 全仓零调用（死代码），
+                #   故此处**直接复用 stack 通道已验证的 `cover` 判据**（几何与 `seed_plate`
+                #   的 sdf 定义完全一致，审计已确认"不是近似"）。
+                _any_ok = False
+                for _vidx, kk in enumerate(_ks):
+                    if len(out) >= cap or nfr_done >= n_fresh:
+                        break
+                    _nrm = np.asarray(self._npref_of(kk), float)
+                    _nrm = _nrm / (np.linalg.norm(_nrm) + 1e-300)
+                    # ★★★ W1-6 修（Round 134，`_chk_w16.py` D-2 抓到）：
+                    #   **同一站点的多个变体不能占同一个盘** —— 第一个变体种下后，
+                    #   第二个变体的 `cover` 守卫会发现那个盘已被**兄弟核**占据 ⇒ **必然被挡**
+                    #   （实测 `doublet` 退化成"1 事件/站点 + 一次浪费的尝试"，阻挡 7 vs `ed` 的 1）。
+                    #   ⇒ 除第一个变体外，其余变体在**面内**错开 `2R + gap`（两盘相切不重叠）后再试。
+                    #   ⚠ 对 `'ed'`（`_ks` 长度 1）`_vidx` 恒为 0 ⇒ `_cands` 恒为 `[ctr]`
+                    #     ⇒ 与旧写法**逐位等价**（由 `_chk_w16.py` D-1b 证明）。
+                    _cands = [ctr]
+                    if _vidx > 0:
+                        _u = np.array([1.0, 0.0, 0.0])
+                        if abs(float(_u @ _nrm)) > 0.9:
+                            _u = np.array([0.0, 1.0, 0.0])
+                        _u = _u - (_u @ _nrm) * _nrm
+                        _u = _u / (np.linalg.norm(_u) + 1e-300)
+                        _v = np.cross(_nrm, _u)
+                        _off = 2.0 * R + c['gap'] * self.dx
+                        _cands = _cands + [ctr + _off * (np.cos(_t) * _u + np.sin(_t) * _v)
+                                           for _t in np.linspace(0.0, 2.0 * np.pi, 8,
+                                                                 endpoint=False)]
+                    _placed = False
+                    for _cc in _cands:
+                        _rel = self.XYZ - _cc
+                        _dd = _rel @ _nrm
+                        _rp = np.linalg.norm(_rel - _dd[..., None] * _nrm, axis=-1)
+                        _cover = (np.abs(_dd) <= t / 2) & (_rp <= R)
+                        if (not bool(_cover.any())) or \
+                                (not bool((self.region()[_cover] == 0).all())):
+                            continue                     # 该候选位置不行 ⇒ 试下一个
+                        try:
+                            self.seed_plate(kk, _cc, _nrm, R, t)
+                            _placed = True
+                            _any_ok = True
+                            out.append((kk, 'fresh'))
+                            nfr_done += 1
+                            c['n_activated'] = c.get('n_activated', 0) + 1
+                        except ValueError:
+                            continue
+                        break
+                    if not _placed:
+                        _c2 = c.setdefault('dbg', dict(att=0, oob=0, cov=0, exc=0, ok=0, nocand=0))
+                        _c2['fresh_blocked'] = _c2.get('fresh_blocked', 0) + 1
+                        # ⚠ `doublet` 下这里是**试下一个变体**，不再跳过整个位点
+                        continue
+                if _any_ok and i < len(sites):
+                    sites.pop(i)                        # 位点用过即移除（只移一次）
+        c['pending_fresh'] = len(sites)
+
+        # ---------- ② sympathetic：母相未硬化时优先**同变体**侧向邻位
+        if n_stack > 0:
+            # ★★★ 2026-09-28（Round 63）**接线 `p_auto`**：自催化项的**无量纲**形式
+            #   Bhadeshia, *Theory of Transformations in Steel* (2023) §5 式 (5.24)：
+            #       N_V = [ N_V⁰ + p_a·V_V^{α′}/(…) ] · ( 1 − V_V^{α′} )
+            #   其中 `(…)` 的分母我**没有读到**（子代理只摘了式子的骨架）⇒ **不臆造**。
+            #   本实现只取该式的**形状** `V_V^{α′}(1−V_V^{α′})`（在 f=0.5 处取最大 1，
+            #   故用 `4f(1−f)` 归一化 ⇒ **不含任何自由常数**），并把它定义成
+            #   sympathetic 事件数的**增益**：
+            #       gain = 1 + p_auto · 4·f·(1−f)        （f = 0.5 处 gain = 1 + p_auto）
+            #   ⇒ **`p_auto` 的定义（先写死，不得事后挪动）：**
+            #      「转变量过半时，自催化形核速率相对**无自催化**情形增加的**倍数**」。
+            #   ⇒ `p_auto = 0` 时 `gain ≡ 1` ⇒ **与接线前逐位相同**（向后兼容，
+            #     已由 `T27` N-2 的"默认不生效"保证同一类性质）。
+            #   ⛔ **原"标定靶：block:lath ≈ 26（Morito 2009）"已撤回**
+            #     （2026-09-28，`MEASUREMENT_SPEC R10` / `REFERENCE_AUDIT` #6）：
+            #     **那是钢**（IF 钢 Fe-0.0049C-3.14Mn…1473 K 水淬），与 Ti-6Al-4V 跨材料。
+            #   ✅ **同材料同工艺的靶只有两个**：板条厚 **0.51–0.68 µm**
+            #     （Shuai 2026，P=173 W 时达 0.88）；几何长:厚 **≈ 9:1**
+            #     （Wang 2026，8.1±2.0 × 0.9±0.4 µm）。
+            #   ⚠ `block:lath` 仍可作为**本项目自设的机制自检量**（不用文献靶），
+            #     因为 **LPBF Ti-64 的 block/packet 尺寸在公开文献里查不到**。
+            _gain = 1.0 + c['p_auto'] * 4.0 * max(0.0, min(1.0, f_now)) * (1.0 - max(0.0, min(1.0, f_now)))
+            _nst = int(round(n_stack * _gain))
+            # ★★ Round 65 诊断计数（回答"为什么 `stack` 落位被拒"）：
+            #   `att` 尝试次数、`oob` 越界、`cov` 被 `cover` 守卫拒、`exc` `seed_plate` 抛错、
+            #   `ok` 成功。**只读记账、不改行为**（默认不影响任何结果）。
+            _dbg = c.setdefault('dbg', dict(att=0, oob=0, cov=0, exc=0, ok=0, nocand=0))
+            hardened = f_now >= c['harden_f']
+            reg = self.region()
+            ks = [k for k in np.unique(reg) if k > 0]
+            if ks:
+                for _ in range(_nst):
+                    if len(out) >= cap:
+                        break
+                    # ★★ Round 84 修（`WINDOWB_AUDIT_REGISTER.md` A4）：
+                    #   原来 `reg` 是**循环外的一次快照**，而 `seed_plate` 在同一调用内就改
+                    #   `self.phi` ⇒ `cover` 守卫**看不见同一次调用里刚种下的核**；
+                    #   且 k 每次迭代重抽 ⇒ 第二个事件可落在第一个上、甚至**不同变体把前一个抹掉**。
+                    #   `T24/T27` 传 `max_per_step=8` ⇒ 每调用最多 8 个事件，风险实存。
+                    reg = self.region()
+                    k = int(ks[rng.integers(0, len(ks))])
+                    if hardened:                                # 阶段③：换变体
+                        k = int(rng.integers(1, nv + 1))
+                    m = (reg == k)
+                    idx = np.argwhere(m)
+                    if idx.size == 0:
+                        continue
+                    c0 = (idx.mean(0) + 0.5) * self.dx
+                    nrm = np.asarray(self._npref_of(k), float)
+                    nrm = nrm / np.linalg.norm(nrm)
+                    pos = (idx.astype(float) + 0.5) * self.dx
+                    # ★ 记账（T27 第 2 版抓到）：原来只试 **1 个偏移距离 × 8 个方向**，
+                    #   而 `off = 半展宽 + R + gap` 是个**固定值** ⇒ 在 f 已不小的盒子里
+                    #   几乎必然越界或被 `cover` 守卫拒 ⇒ 实测 `stack=0`（通道静默失效）。
+                    #   现在：16 个方向 × 3 档偏移（`off`、`off+2(R+gap)`、`off+4(R+gap)`）。
+                    done = False
+                    for _try in range(16):
+                        if done:
+                            break
+                        _dbg['att'] += 1
+                        v = rng.normal(size=3)
+                        v = v - (v @ nrm) * nrm
+                        if np.linalg.norm(v) < 1e-6:
+                            continue
+                        v = v / np.linalg.norm(v)
+                        pv = pos @ v
+                        base = 0.5 * float(pv.max() - pv.min()) + R + c['gap'] * self.dx
+                        # ★★ Round 67 修（针对 Round 65 实测的 **90% 越界**）：
+                        #   原来只试 `s ∈ {base, base+2(R+gap), base+4(R+gap)}`，**只会越走越远**
+                        #   ⇒ 在大核 + 小盒下 `base` 本身就常出界（实测 425/471 次越界、成功率 1%）。
+                        #   真正的物理约束是"**不重叠**"，而它由下面的 `cover` 守卫精确执行
+                        #   ⇒ 允许**更近**的落位（最小间距 `R+gap`）既合法又大幅提高成功率。
+                        #   现在按 `s` 从大到小扫描：`base` → `R+gap`，取第一个过界内+`cover` 的。
+                        _s_hi = base
+                        _s_lo = R + c['gap'] * self.dx
+                        for j in range(4):
+                            s_ = _s_hi - j * (_s_hi - _s_lo) / 3.0
+                            cc = c0 + s_ * v
+                            if np.any(cc < R + 0.3e-6) or np.any(cc > self.L - R - 0.3e-6):
+                                _dbg['oob'] += 1
+                                continue
+                            rel = self.XYZ - cc
+                            dd = rel @ nrm
+                            rp = np.linalg.norm(rel - dd[..., None] * nrm, axis=-1)
+                            cover = (np.abs(dd) <= t / 2) & (rp <= R)
+                            # ★★ Round 83 修（`WINDOWB_AUDIT_REGISTER.md` A3，实测）：
+                            #   **空掩模上 `(x==0).all()` 返回 True**（numpy 语义）⇒
+                            #   `t/2 < ~dx/2`（薄核）时 `cover` 为空 ⇒ 守卫被"真空真"绕过，
+                            #   `seed_plate` 仍改写数万胞的 phi（实测 26006 胞、最大 Δ=1.09 µm）
+                            #   而 `region()` 完全不变 ⇒ **核根本不存在**，代码却记 `ok+=1`。
+                            if not bool(cover.any()):
+                                _dbg.setdefault('empty', 0)
+                                _dbg['empty'] += 1
+                                continue
+                            if not bool((reg[cover] == 0).all()):
+                                _dbg['cov'] += 1
+                                continue
+                            try:
+                                self.seed_plate(k, cc, nrm, R, t)
+                                out.append((k, 'stack'))
+                                _dbg['ok'] += 1
+                                done = True
+                            except ValueError:
+                                _dbg['exc'] += 1
+                            if done:
+                                break
+        self._nuc_events += out
+        # ★★★ W1-3（2026-09-28，`C4`）：**本轮确有事件** ⇒ 置标志，由 `_finish_advance` 消费，
+        #   强制做一次 reinit（跳过容差对它不生效）。
+        #   依据：`seed_plate` 在盘内**覆写** `φ_j`（`max(φ_j, −sdf)`）、盘外保留旧值
+        #   ⇒ 盘边界出现 O(|旧 φ_j|) 的跳变（可达 −1 µm 量级），而 `region()` 靠 argmin 仍然正确
+        #   ⇒ **不报错、但 φ 已不是距离函数**。定时 reinit 是唯一的兜底，而它可能被跳过。
+        #   ⚠ 只在 `out` 非空（真有事件）时置位 ⇒ 不形核的算例**逐位不变**。
+        if out:
+            self._need_reinit = True
+        return out
+
+    def _npref_of(self, k):
+        """变体 `k` 的惯习面法向（由 `advance(npref=...)` 缓存的 `self.npref_tab`）。
+
+        ★★ Round 85 修（`WINDOWB_AUDIT_REGISTER.md` A12）：原来表缺失/无该 `k` 时
+        **静默返回 `[0,0,1]`** 且无告警 ⇒ 若走 `per_field=True` 路径（`advance` 在 2121
+        提前 return，而 `self.npref_tab` 原本在 2187 才赋值 ⇒ **那条路径永远拿不到表**），
+        **所有新核的惯习面会静默变成 z 轴**、形核取向全错而无任何提示。
+        ⇒ 现在**硬失败**：拿不到就抛错，绝不静默给一个假法向。"""
+        tab = getattr(self, 'npref_tab', None)
+        if tab is None:
+            raise RuntimeError(
+                '_npref_of: `npref_tab` 未设置 —— `advance(npref=...)` 尚未被调用过，'
+                '或走的是 `per_field=True` 路径（该路径现在也会在入口处缓存表）。')
+        try:
+            v = tab.get(k)
+        except AttributeError:
+            raise TypeError('_npref_of: `npref` 必须是 dict（得到 %s）' % type(tab).__name__)
+        if v is None:
+            raise KeyError('_npref_of: `npref` 表里没有变体 %r' % (k,))
+        return np.asarray(v, float)
+
+    def _sep_conv3(self, f, k):
+        """周期边界下的**可分离** 1D 卷积（沿三个轴各做一次 `k`）。
+
+        用途：`advance(norm_smooth=m)` 里对差分场的**梯度分量**做盒式平滑
+        （`MEASUREMENT_SPEC R3` 记录的"对法向做平滑/粗 stencil"口径）。
+        `np.pad(mode='wrap')` + `np.convolve(..., 'valid')` ⇒ 严格周期、无边界污染。
+        已对 `scipy.ndimage.uniform_filter(mode='wrap')` 逐位校验（`_chk_sepconv.py`，
+        3 档 m，最大差 ≤4.4e-16）+ 常值场正对照 + 负对照。"""
+        out = np.asarray(f, float)
+        n = len(k) // 2
+        # ★★ Round 83 修（`WINDOWB_AUDIT_REGISTER.md` C1，实测）：`m >= N` 时
+        #   `np.convolve(...,'valid')` 的长度规则 `max(M,N)-min(M,N)+1` 会**反过来**取核的
+        #   valid 段，且 `n >= N` 时 `out[-n:]` 被裁剪成只有一份数组 ⇒ **pad 不是真 halo**
+        #   ⇒ 输出形状错（实测 N=8: m=9→(6,6,6)、m=11→(2,2,2)），下游要么广播报错
+        #   （**报错指向 advance，极难查**），要么在 `3N-2m==1` 的巧合下**静默广播**
+        #   ⇒ 全部胞共用一个法向、`M(n)` 各向异性退化成标量。
+        #   边界恰好是 `m == N`（实测 m=N 时仍逐位正确）⇒ 断言写 `m <= N`。
+        if n > out.shape[0]:
+            raise ValueError(
+                '_sep_conv3: norm_smooth 半径 %d 超过数组边长 %d（会静默出错）'
+                % (n, out.shape[0]))
+        for ax in range(3):
+            out = np.moveaxis(out, ax, 0)
+            pad = np.concatenate([out[-n:], out, out[:n]], axis=0) if n > 0 else out
+            out = np.apply_along_axis(lambda v: np.convolve(v, k, 'valid'), 0, pad)
+            out = np.moveaxis(out, 0, ax)
+        return out
+
     def seed_sphere(self, k, center, R):
         c = np.asarray(center, float)
         r = np.linalg.norm(self.XYZ - c, axis=-1)
@@ -807,7 +1477,7 @@ class LevelSetMulti(object):
             if j != k:
                 self.phi[j] = np.maximum(self.phi[j], R - r)   # 其它区域让位
 
-    def seed_plate(self, k, center, normal, R, t, elong=1.0, along=None):
+    def seed_plate(self, k, center, normal, R, t, elong=1.0, along=None, flat_end=False):
         """薄板晶核：法向 normal、半径 R、厚 t。
 
            P3 (2026-09-26): elong/along 支持**长条形**种子（面内椭圆）。
@@ -842,6 +1512,22 @@ class LevelSetMulti(object):
                     'elongated seed exceeds domain: elong*R=%.4g um > margin %.4g um. '
                     'Enlarge L, reduce R, or reduce elong.'
                     % (elong * R, _margin))
+        if flat_end and elong > 1.0 and along is not None:
+            # 判据：把**长轴两端做成平端面**（矩形棱柱），而不是椭圆圆角。
+            #   动机（_dbg_3face.py）：椭圆种子的长轴端是圆角 => 界面法向**从不接近 a**
+            #   => "沿 a 的生长"只能靠斜界面，而斜界面同时增大 W/T => 三方向同比长大。
+            #   矩形棱柱的端面严格垂直 a => 它是唯一能"只增加 L"的面。
+            al = np.asarray(along, float)
+            al = al / (np.linalg.norm(al) + 1e-300)
+            e_par = u @ al
+            e_per = np.linalg.norm(u - e_par[..., None] * al, axis=-1)
+            sdf = np.maximum(np.maximum(np.abs(d) - t / 2, np.abs(e_par) - elong * R),
+                             e_per - R)
+            self.phi[k] = np.minimum(self.phi[k], sdf)
+            for j in range(self.nreg):
+                if j != k:
+                    self.phi[j] = np.maximum(self.phi[j], -sdf)
+            return
         sdf = np.maximum(np.abs(d) - t / 2, rperp - R)         # 椭/圆盘 SDF（近似）
         self.phi[k] = np.minimum(self.phi[k], sdf)
         for j in range(self.nreg):
@@ -879,7 +1565,7 @@ class LevelSetMulti(object):
         reg = self.region()
         A = np.zeros_like(self.phi[0])
         for k in range(self.nreg):
-            g = np.gradient(self.phi[k], self.dx)
+            g = np.gradient(self.phi[k], self.dx, edge_order=2)
             # ★★ 记账（本轮修的真 bug，M3/A3 的 `nan` 就是它）：**不能给 gn 加 ε**。
             #   旧写法 `gn = |∇φ| + 1e-30` ⇒ 带外（|∇φ| = 0）的胞也得到 A_c = 1e-48 > 0
             #   ⇒ 掩模 `A_c > 0` **恒为真（全域）**、`A_c` 在带外是 1e-48 量级。
@@ -910,10 +1596,55 @@ class LevelSetMulti(object):
             return 0, np.inf, False
         karr = np.argsort(self.phi, axis=0)[0]
         phiw = np.take_along_axis(self.phi, karr[None], 0)[0]
-        gn = np.sqrt(sum(gi ** 2 for gi in np.gradient(phiw, self.dx)))
+        gn = np.sqrt(sum(gi ** 2 for gi in np.gradient(phiw, self.dx, edge_order=2)))
         med = float(np.median(gn[m]))
         ok = (med < 5.0) and (int(m.sum()) > 0.002 * self.phi.shape[1] ** 3)
         return int(m.sum()), med, bool(ok)
+
+    # ★★ T3（2026-09-28）：`XYZ` / `Gam` / `Gam_mol` 惰性分配（见 __init__ 的记账）。
+    #   对外接口完全不变（可读可写）⇒ 判据脚本与既有调用点不受影响。
+    @property
+    def XYZ(self):
+        if getattr(self, '_XYZ', None) is None:
+            x = (np.arange(self.N) + 0.5) * self.dx
+            self._XYZ = np.stack(np.meshgrid(x, x, x, indexing='ij'), -1)
+        return self._XYZ
+
+    @XYZ.setter
+    def XYZ(self, v):
+        self._XYZ = v
+
+    @property
+    def Gam(self):
+        if getattr(self, '_Gam', None) is None:
+            self._Gam = np.zeros((self.N, self.N, self.N))
+        return self._Gam
+
+    @Gam.setter
+    def Gam(self, v):
+        self._Gam = v
+
+    @property
+    def Gam_mol(self):
+        if getattr(self, '_Gam_mol', None) is None:
+            self._Gam_mol = np.zeros((self.N, self.N, self.N))
+        return self._Gam_mol
+
+    @Gam_mol.setter
+    def Gam_mol(self, v):
+        self._Gam_mol = v
+
+    # ★★ T3（2026-09-28）：`J_edge` 惰性分配（3×(N,N,N) = 24 B/胞，只在面扩散用到）。
+    #   对外接口不变（`g.J_edge[i]` 可读可写）⇒ `_chk_h6.py` 等判据脚本不受影响。
+    @property
+    def J_edge(self):
+        if getattr(self, '_J_edge', None) is None:
+            self._J_edge = [np.zeros((self.N,) * 3) for _ in range(3)]
+        return self._J_edge
+
+    @J_edge.setter
+    def J_edge(self, v):
+        self._J_edge = v
 
     def Gamma_eq(self, c):
         """Langmuir/McLean 平衡过剩（mol/m²），复用 pipeline/gibbs 的单一参数来源"""
@@ -937,7 +1668,14 @@ class LevelSetMulti(object):
              (1) 与体相按局部平衡交换（同一胞等量反号 ⇒ 精确守恒；含 ρ_mol 换算）
              (2) 沿面扩散：**切向 Laplace–Beltrami 算子**（② 本轮修：旧写法用 6 邻域格点键，
                  含法向邻居 ⇒ Γ 会跨界面扩散 = 物理错 ✗）
-             (3) 离开界面带的胞，其面过剩**还给体相**（⑥ 本轮修：旧写法直接清零 ⇒ 溶质泄漏 ✗）"""
+             (3) 离开界面带的胞，其面过剩**还给体相**（⑥ 本轮修：旧写法直接清零 ⇒ 溶质泄漏 ✗）
+
+        ★★ T4（2026-09-28）：`self.surface_chem = False`（B1 默认）时**整段关闭**。
+           物理：位移型无扩散 ⇒ 界面既不分配也不富集溶质；界面化学 Γ_i 属 Window C。
+           判据：`max|c − c0| == 0`（逐位）。需要溶质通道时显式置 `g.surface_chem = True`。
+        """
+        if not getattr(self, 'surface_chem', True):
+            return 0.0                      # Γ ≡ 0，体相 c 不动（T4）
         if not hasattr(self, 'Gam'):
             self.Gam = np.zeros_like(self.phi[0])
         A_c = self.cell_area_geom()      # ★ P1：用几何（coarea）测度，替换格子键测度
@@ -998,7 +1736,7 @@ class LevelSetMulti(object):
             #   数组（实测报 "allocate 512 GiB" ✗）。正确写法是 `take_along_axis`
             #   （与 `advance` 里既有写法一致）。
             phiw = np.take_along_axis(self.phi, karr[None], 0)[0]
-            gk = np.gradient(phiw, self.dx)
+            gk = np.gradient(phiw, self.dx, edge_order=2)
             nrm = np.stack(gk, -1)
             nn = np.linalg.norm(nrm, axis=-1, keepdims=True) + 1e-30
             nhat = nrm / nn
@@ -1051,7 +1789,7 @@ class LevelSetMulti(object):
         self.Gam = np.where(m, self.Gam, 0.0)
 
     def _normal_of(self, k):
-        g = np.gradient(self.phi[k], self.dx)
+        g = np.gradient(self.phi[k], self.dx, edge_order=2)
         gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
         return [gi / gn for gi in g]
 
@@ -1082,16 +1820,231 @@ class LevelSetMulti(object):
         ms = float(self.Gam_mol.sum())
         return mb, ms
 
-    def curvature_of(self, k):
+    def wrap_axes(self, k=None):
+        """★★ T12（D12a，2026-09-28）：**周期盒绕盒检测**。
+
+        为什么必须有：周期边界下，长过 `L/2` 的板条会**绕盒**，其"长度"读数会超过 `L`
+        却**没有任何报错**。审计实测（`_audit_geom.py`）：**9/9 个单核算例的"长"都 > L**，
+        占投影上限 `L·Σ|u_i|` 的 **70%–96%**（C1 95.8%、A1 91.9%、N1 89.2% …）
+        —— 而那批正是 `EXPERT_REVIEW_RESPONSE.md §5` 当作"第一批干净板条数据"的算例。
+        ⇒ 没有守卫时，绕盒会静默污染所有"板条长度/长径比"的结论。
+
+        做法（**周期连通性**，不是"包围盒"）：
+          ① 对区域掩模做 6-邻域连通标记（非周期）；
+          ② 把跨盒面的周期邻居对**并查集合并**（只有两侧都在掩模内才合并）；
+          ③ 若某个合并后的连通分量**同时**触及某个轴的**两个对立面** ⇒ 该轴**绕盒**。
+
+        返回绕盒的轴列表（`k=None` 时用全部变体区域 `region()>0` 的并集）。
+        """
+        from scipy import ndimage
+        reg = self.region()
+        m = (reg > 0) if k is None else (reg == k)
+        if not m.any():
+            return []
+        lab, n = ndimage.label(m)                      # 6-邻域（默认 structure）
+        parent = list(range(n + 1))
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+        for ax in range(3):
+            a0 = np.take(m, 0, axis=ax)
+            a1 = np.take(m, -1, axis=ax)
+            l0 = np.take(lab, 0, axis=ax)
+            l1 = np.take(lab, -1, axis=ax)
+            both = a0 & a1
+            if both.any():
+                for x, y in zip(l0[both].ravel(), l1[both].ravel()):
+                    union(int(x), int(y))
+        out = []
+        for ax in range(3):
+            l0 = np.take(lab, 0, axis=ax)
+            l1 = np.take(lab, -1, axis=ax)
+            r0 = {find(int(v)) for v in l0[l0 > 0].ravel()}
+            r1 = {find(int(v)) for v in l1[l1 > 0].ravel()}
+            if r0 & r1:
+                out.append(ax)
+        return out
+
+    def wrap_axes_any(self):
+        """★★ T12-D12a 修正（2026-09-28）：**逐变体**查绕盒。
+
+        为什么必须改语义：`wrap_axes(None)` 判的是"**所有变体区域的并集**是否周期贯通"。
+        但**碰撞之后变体网络本来就会渗流贯通** —— 那正是 impingement 的定义！
+        ⇒ 并集口径会把"**网络已连通**"误报成"**某条板条绕盒**"。
+
+        实测（`T13_recheck_wrap.py`）：多核 RVE 在 `f = 0.05–0.17` 就被并集口径判为"绕盒"，
+        而那时**没有任何单条板条**能跨过 `L`（种子面内半径只有 ~0.5 µm，`L/2 = 1.6 µm`）。
+
+        正确判据：**只有某一个变体自身的区域贯通周期盒**，才说明那条板条绕了盒。
+        返回 `{k: [轴...]}`（空 dict = 无变体绕盒）。
+        """
+        out = {}
+        for k in range(1, self.nreg):
+            ax = self.wrap_axes(k)
+            if ax:
+                out[k] = ax
+        return out
+
+    def check_wrap(self, k=None, strict=None, tag=''):
+        """绕盒守卫的**入口**：`strict=True`（或 `self.wrap_strict`）时直接抛错。"""
+        ax = self.wrap_axes(k)
+        if ax and (strict if strict is not None
+                   else getattr(self, 'wrap_strict', False)):
+            raise RuntimeError(
+                'T12/D12a 绕盒守卫：区域 %s 沿轴 %s **绕盒**（周期性贯通）'
+                '⇒ 长度/长径比读数无效。请放大 L、缩短板条或缩小种子。%s'
+                % ('全部变体' if k is None else k, ax, tag))
+        return ax
+
+    def region_extent(self, k=None):
+        """区域在各轴上的**朴素包围盒长度**（未解绕）与"若绕盒则不可信"的标记。"""
+        reg = self.region()
+        m = (reg > 0) if k is None else (reg == k)
+        idx = np.argwhere(m)
+        if idx.size == 0:
+            return None, []
+        ext = (idx.max(0) - idx.min(0) + 1).astype(float) * self.dx
+        return ext, self.wrap_axes(k)
+
+    def curvature_of(self, k, grad=None, gn=None, field=None):
         """kappa = div(grad phi / |grad phi|)。
+
            AUDIT-#8 修：np.gradient 默认 edge_order=1（边界一阶）=> 对界面靠近边界、
            或只有数胞厚的薄片，kappa 在边界/薄向上误差大。改用 **edge_order=2**。
            记账：这不能解决"薄片只有 2-3 胞厚时二阶导本身不可信"的根本问题
-           （那是分辨率问题，见 LATH_CODE_AUDIT #8/#2 与 C 节），只去掉边界那一项误差。"""
-        g = np.gradient(self.phi[k], self.dx, edge_order=2)
-        gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
-        n = [gi / gn for gi in g]
-        return sum(np.gradient(n[i], self.dx, edge_order=2)[i] for i in range(3))
+           （那是分辨率问题，见 LATH_CODE_AUDIT #8/#2 与 C 节），只去掉边界那一项误差。
+
+           ★★ T3（2026-09-28）：① 接受**预计算的梯度/模长**（调用方本来就要算，旧写法
+             在这里又算一遍 ⇒ 每场 2 次 `np.gradient`）；② 只算**对角项** `∂_i n_i` ——
+             旧写法 `np.gradient(n[i], dx)[i]` 会算出 3 个偏导、丢掉 2 个（3× 浪费）；
+             ③ 对角项用**周期中心差分**（`np.roll`），对周期盒比 `np.gradient` 的单边
+             边界**更正确**（旧写法在首末两层用单边差分 = 周期盒里没有的边界）。
+             ⚠ 记账：②③ 让首末两层的 kappa 与旧值**不同**（内部逐位相同，若 grad 相同）。
+             影响面：`T3_verify_fastpath.py` 的正对照给出对照量级。
+           `field` 可传**子盒切片**（T3 的包围盒加速用）。"""
+        arr = self.phi[k] if field is None else field
+        g = np.gradient(arr, self.dx, edge_order=2) if grad is None else grad
+        if gn is None:
+            gn = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+        out = None
+        for i in range(3):
+            ni = g[i] / gn
+            di = (np.roll(ni, -1, axis=i) - np.roll(ni, 1, axis=i)) / (2.0 * self.dx)
+            out = di if out is None else out + di
+        return out
+
+    def facet_nref(self, k, larr, npref):
+        """★★ T9（2026-09-28）：按**面片身份** `(I⁻, I⁺) = (k, l)` 给**每胞**一个参考取向。
+
+        物理：Gibbs 面的本构量（γ(n)、M(n)）是**面自己的性质**，由界面两侧的相决定：
+
+          * `(k, 0)`（变体 k / 母相）⇒ 变体 k 与母相的**惯习面**法向 `npref[k]`
+          * `(k, l)`（两变体）      ⇒ 两变体的 **rank-1 相容（不变）平面** `ncmp[k,l]`
+
+        ★ 修的是什么：在 T9 之前，**迁移率** `M(n)` 已经按配对查表（`nd_ref`），
+          但**界面刚度** `γ(n)` 只用了 **winner 自己的 `npref[k]`**
+          ⇒ 变体-变体界面上 γ 的择优方向用错对象（那是 k 与**母相**的惯习面，
+          不是 k 与 l 的不变平面）。两者在 f→1（界面几乎全是变体-变体）时差别最大。
+
+        返回 `(…,3)`；`ncmp` 缺失/非有限时该胞退回 `npref[k]`；`npref[k]` 也没有时返回 None。
+        """
+        ncl = getattr(self, 'ncmp', None)
+        if ncl is None or npref is None or npref.get(k) is None:
+            return None
+        nk = np.asarray(npref[k], float)
+        nk = nk / (np.linalg.norm(nk) + 1e-300)
+        out = np.broadcast_to(nk, np.shape(larr) + (3,)).copy()
+        has_pair = np.asarray(larr) > 0
+        if has_pair.any():
+            li = np.clip(np.asarray(larr), 0, self.nreg - 1)
+            cand = ncl[np.clip(int(k), 0, self.nreg - 1), li]
+            good = has_pair & np.isfinite(cand).all(-1)
+            if good.any():
+                out = np.where(good[..., None], cand, out)
+        return out
+
+    def gel_facet(self, k, l, N=32, dx=2.5e-8):
+        """★★ T10：面片身份 `(k,l)` 的**相干界面弹性能** `γ_el` [J/m²]（带缓存）。
+
+        法向取该面片的**本征法向**：`(k,l)` 都在变体里 ⇒ `ncmp[k,l]`；
+        否则退回 `npref[k]`（变体-母相的惯习面）。与 `facet_nref` **同一套身份约定**
+        ⇒ γ 的"结构部分"与"弹性部分"作用在同一张面上 ✓。
+        缓存键 `(k, l)`；`lambda_el=0`（`advance` 默认）时本表**从不被调用** ⇒ 逐位兼容。
+        """
+        key = (int(k), int(l))
+        if not hasattr(self, '_gel_cache'):
+            self._gel_cache = {}
+        if key in self._gel_cache:
+            return self._gel_cache[key]
+        n = None
+        try:
+            n = self.facet_nref(int(k), np.array(int(l)), self.npref)
+        except Exception:
+            n = None
+        if n is None:
+            val = 0.0
+        else:
+            nv_ = np.asarray(n, float).reshape(-1, 3)[0]
+            val = interface_elastic_energy(self._C4gel(), self._eps0_4gel(),
+                                           int(k), int(l), nv_, N=N, dx=dx)[0]
+        self._gel_cache[key] = float(val)
+        return float(val)
+
+    def _eps0_4gel(self):
+        return getattr(self, '_eps0_ref', None)
+
+    def _C4gel(self):
+        return getattr(self, '_C_ref', None)
+
+    def gel_facet_sub(self, k, larr):
+        """按 `(k, larr)` 逐胞给 `γ_el`（`larr==0` ⇒ 变体-母相面片）。"""
+        out = np.zeros(np.shape(larr))
+        for l in np.unique(np.asarray(larr)):
+            m = (np.asarray(larr) == l)
+            out[m] = self.gel_facet(k, int(l))
+        return out
+
+    def _stiff_of(self, k, g, gn, npref, aniso, gamma0, herring, facet_lam, facet_eps,
+                  nref_cell=None):
+        """单个场的界面**刚度** gamma + gamma_tt（T3：从 `advance` 里抽出来，
+           好让"只对活跃场、只在包围盒内"这条路径复用同一份逻辑，避免两处分叉）。
+
+        ★★ T9：`nref_cell` 给定时按**面片身份**逐胞取参考取向（见 `facet_nref`）；
+          不给则退回 T9 之前的行为（一律用 winner 的 `npref[k]`）⇒ 可做对照。"""
+        gk = self.gamma if gamma0 is None else gamma0
+        if facet_lam > 0.0 and npref is not None and npref.get(k) is not None:
+            # ★ P3：尖点界面能（只在给了 npref 的场上用）
+            n = np.stack([gi / gn for gi in g], -1)
+            nd = np.asarray(npref[k], float)
+            nd = nd / (np.linalg.norm(nd) + 1e-300)
+            c2f = np.clip((n @ nd) ** 2, 0.0, 1.0)
+            gk = herring_stiffness_cusp(c2f, gk, facet_lam, facet_eps)
+        # ★ 记账（2026-09-26 的 bug）：这里必须是 **elif**。
+        #   第一版写成独立的 if => 当 aniso>0 时，下面 sin^2 分支会把 facet 的 gk
+        #   **整个覆盖** => facet_lam=0/0.4/1.0 三档结果**逐位相同**（实测抓到）。
+        elif aniso > 0 and nref_cell is not None:
+            # ★★ T9：按**面片身份**逐胞查表
+            n = np.stack([gi / gn for gi in g], -1)
+            nd = nref_cell / (np.linalg.norm(nref_cell, axis=-1, keepdims=True) + 1e-300)
+            c2 = np.clip(np.einsum('...i,...i->...', n, nd) ** 2, 0.0, 1.0)
+            gk = herring_stiffness(c2, gk, aniso, herring)
+        elif aniso > 0 and npref is not None and npref.get(k) is not None:
+            n = np.stack([gi / gn for gi in g], -1)
+            # ★ 各向异性刚度：**统一走 `herring_stiffness`**（原来这里内联的写法与
+            #   `LevelSetSurface` 各写一份 ⇒ 已合并，避免两处分叉）
+            nd = np.asarray(npref[k], float)
+            nd = nd / (np.linalg.norm(nd) + 1e-300)
+            c2 = np.clip((n @ nd) ** 2, 0.0, 1.0)
+            gk = herring_stiffness(c2, gk, aniso, herring)
+        return gk
 
     # ================= ④ 数值格式：Godunov 迎风 |∇φ| 与 Sussman 重初始化 =================
     def _upwind_grad(self, phi, sgn):
@@ -1101,11 +2054,13 @@ class LevelSetMulti(object):
     def sussman_reinit(self, phi, iters=None):
         """委托给模块级 `sussman_reinit`。
            EXPERT-#3: 默认改用 self.reinit_iters 并透传 dtau/grad
-           （原来这里硬编码 iters=30，且丢掉了 dtau/grad）。"""
+           （原来这里硬编码 iters=30，且丢掉了 dtau/grad）。
+           ★ W1-2: 再透传 `band_cells=self.reinit_band_cells`（默认 None ⇒ 全域 ⇒ 逐位兼容）。"""
         return sussman_reinit(phi, self.dx,
                               iters=(self.reinit_iters if iters is None else iters),
                               dtau=getattr(self, 'reinit_dtau', None),
-                              grad=getattr(self, 'reinit_grad', 'upwind2'))
+                              grad=getattr(self, 'reinit_grad', 'upwind2'),
+                              band_cells=getattr(self, 'reinit_band_cells', None))
 
     def _advance_phi(self, k, vn, dt):
         """④ 用迎风 |∇φ| 推进：φ_t + v_n|∇φ| = 0"""
@@ -1126,7 +2081,18 @@ class LevelSetMulti(object):
 
     # ---------- 体相驱动：谱法微弹性 ----------
     def elastic_driving(self, soft=None):
-        """返回 (nreg, N,N,N)：-ε⁰_k:σ（对母相为 0）。
+        """返回 (nreg, N,N,N)：**+ε⁰_k:σ**（对母相为 0）。
+
+           ★★ T1 修（P0-1，2026-09-28）：本函数的**符号**由 `−ε⁰:σ` 改为 `+ε⁰:σ`。
+             依据（变分法）：F_el = ½∫(ε−ε⁰):C:(ε−ε⁰)，机械平衡下 δF_el/δφ_v = −ε⁰_v:σ；
+             演化 ∂φ/∂t = −L δF/δφ ⇒ **驱动力 = +ε⁰_v:σ**。
+             独立数值判决（`T1_verify_edsign.py` / `_audit_edsign2.py`，单变体球 R=120 nm，
+             N=48/dx=20 nm）：真实 D_corr = −(dE/dV) = **−1.43e8 J/m³**
+             （coarea 面积；用精确 4πR² 得 −1.49e8），修前返回 **+1.66e8**
+             ⇒ **符号相反**（比值 −1.17）；修后比值 **+1.12 ~ +1.17 ∈ [0.8,1.3]** ✓
+             ⇒ 这是**纯符号错误、量级本来正确**。
+             ⚠ 记账：本改动**改变了全部用过 `elastic_driving` 的归档结果的数值**，
+             与修前的产物**不可比较**（影响面清单见 `WINDOWB_P0_REGISTER.md` §P0-1）。
 
            AUDIT-#9 修：原来一律用 **hard region** 指示场（@B@pf.phi[v] = (reg==v+1)@B@）
            => 界面胞的 eps0 分布是阶梯状 => FFT 谱法解出的 sigma 在界面处有 O(1) 阶梯噪声
@@ -1159,13 +2125,17 @@ class LevelSetMulti(object):
                 init=getattr(self, '_ae_eps', None))
             self._ae_eps = self.ae.eps
             for v in range(self.nv):
-                out[v + 1] = (-np.einsum('p,p...->...', self.e0v_eng[v], sig6)
+                # ★★ T1 修（P0-1，2026-09-28）：符号 `−` → `+`（见 `elastic_driving` 的记账）。
+                out[v + 1] = (+np.einsum('p,p...->...', self.e0v_eng[v], sig6)
                               + self.sext_e0[v])
             self._ae_nit = _nit
             return out
         if self.pf is None:
             return out
         if soft:
+            if self.pf.phi.dtype == np.bool_:
+                # ★ T3：布尔指示场装不下"软"剖面 ⇒ 按需一次性转成浮点（默认不走这条路）
+                self.pf.phi = self.pf.phi.astype(np.float64)
             # AUDIT-#9: 平滑指示场（level-set 的 phi 是 SDF => 0.5*(1-tanh) 是自然选择）
             _w = 1.5 * self.dx
             for v in range(self.nv):
@@ -1173,11 +2143,81 @@ class LevelSetMulti(object):
         else:
             for v in range(self.nv):
                 self.pf.phi[v] = (reg == v + 1)
-        sig = self.pf.sigma_tensor()
+        # ★★ T3：走 gather 路径（`region` 已经算过 ⇒ 不必再建 nv 个指示场）
+        sig = self.pf.sigma_tensor(reg)
         for v in range(self.nv):
-            out[v + 1] = (-np.einsum('p,p...->...', self.e0v_eng[v], sig)
+            # ★★ T1 修（P0-1，2026-09-28）：符号 `−` → `+`（见 `elastic_driving` 的记账）。
+            out[v + 1] = (+np.einsum('p,p...->...', self.e0v_eng[v], sig)
                           + self.sext_e0[v])
         return out
+
+    # ================= ★★ T6：温度的钟（T → 驱动力） =================
+    def set_T(self, T, t=None):
+        """把温度设到 `T`：`df[1:] = dG_of_T(T)`（**只对变体给驱动，母相恒 0**）。
+
+        ★ T6：这是**唯一**把温度变成驱动力的入口。
+        ★ 约定（T5 统一）：`df > 0 = 变体有利` ⇒ `T < T0` 时 `df > 0`、`T > T0` 时 `df < 0`。
+        ★ `dG_of_T=None` 时**只记历史、不动 `df`** ⇒ 与 T6 之前的行为**逐位相同**。
+        """
+        self.T = float(T)
+        if t is not None:
+            self.t = float(t)
+        if self.dG_of_T is not None:
+            self.df[1:] = float(self.dG_of_T(self.T))
+        self.Thist['t'].append(float(self.t))
+        self.Thist['T'].append(self.T)
+        self.Thist['df'].append(float(self.df[1]))
+        return float(self.df[1])
+
+    def T_now(self, t=None):
+        """按时间表取温度（`T_of_t=None` 时返回当前 `self.T`）。[T]"""
+        if self.T_of_t is None:
+            return self.T
+        return float(self.T_of_t(self.t if t is None else t))
+
+    def advance_T(self, dt, **kw):
+        """按 `T_of_t` 时间表推进一步：先 `t += dt`、`set_T(T_of_t(t))`，再 `advance(dt)`。
+
+        ★ athermal 语义：马氏体**没有热激活** ⇒ 每个 T 上系统趋向该 T 的平衡分数，
+          动力学只决定"多快到达"、不决定"到达哪"。所以**温度必须随步推进**，
+          不能在循环外一次性设好（那会漏掉驱动力的时间演化）。
+        """
+        self.t = self.t + float(dt)
+        if self.T_of_t is not None:
+            self.set_T(self.T_of_t(self.t), t=self.t)
+        return self.advance(dt, **kw)
+
+    def elastic_driving_pair(self, karr, larr):
+        """★ T3（2026-09-28）：**只算 winner / runner-up 两个场**的弹性驱动。
+
+        下游（`advance` 的非 per_field 路径）只用 `ed[karr]` 与 `ed[larr]`，
+        而旧写法先造一个 (nreg,N,N,N)（12 份多余）并做 **12 次 einsum**。
+        这里改成"按 winner/runner-up 索引 gather 后加权求和"：
+          ed_v = Σ_p e0v_eng[v,p]·σ_p + sext_e0[v]      （母相恒为 0）
+        ⇒ 内存 (nreg,N³) → 2×(N³)，算术 12×(6乘5加) → 6×(gather+乘+加)。
+        ⚠ 记账：求和次序与 einsum 不同 ⇒ 末位可能有 ~1e-16 相对差（不是逐位相同）；
+          由 `T3_verify_fastpath.py` 判据把关。
+        `aniso_elastic` / 无弹性 时退回通用实现（那些路径需要完整表）。"""
+        if self.pf is None:
+            z = np.zeros(self.phi.shape[1:])
+            return z.copy(), z
+        if self.aniso_elastic:
+            ed = self.elastic_driving()
+            return (np.take_along_axis(ed, karr[None], 0)[0],
+                    np.take_along_axis(ed, larr[None], 0)[0])
+        reg = self.region()
+        # ★★ T3：走 gather 路径（不再建 nv 个指示场、不再做 72 次整场乘加）
+        sig = self.pf.sigma_tensor(reg)
+        e0p = np.concatenate([np.zeros((1, 6)),
+                              np.asarray(self.e0v_eng, float)], 0)     # 0 = 母相
+        sep = np.concatenate([[0.0], np.asarray(self.sext_e0, float)])
+
+        def _ed(idx):
+            out = np.zeros(sig.shape[1:])
+            for p in range(6):
+                out += e0p[idx, p] * sig[p]
+            return out + sep[idx]
+        return _ed(np.clip(karr, 0, self.nv)), _ed(np.clip(larr, 0, self.nv))
 
     # ---------- 界面推进（PDE）----------
     # AUDIT-#1 (2026-09-26)： 的**默认值**由 'upwind' 改为 'central'。
@@ -1187,10 +2227,34 @@ class LevelSetMulti(object):
     #   ⚠ 记账：**这改变了后续所有结果的数值**，与审计前的归档结果不可逐位比较。
     #   若某算例出现失稳（陡梯度），显式传 adv_grad='upwind' 可回退。
     def advance(self, dt, aniso=0.0, npref=None, gamma0=None, herring=True,
-                adv_grad='central', extend='edt', band_cells=20, iface_band=2.0,
+                adv_grad='proj2', extend='edt', band_cells=20, iface_band=2.0,
                 drag=None, pair_kernel=False, per_field=False, pair_aniso=False,
                 mob_aniso=0.0, pin_min=True, mob_beta=0.0, mob_beta_w=0.0,
-                facet_lam=0.0, facet_eps=0.05):
+                facet_lam=0.0, facet_eps=0.05, lambda_el=0.0, band_len=None,
+                norm_smooth=0):
+        # ★★★ D17（2026-09-28，用户批准）：**默认平流格式由 `'central'` 改为 `'proj2'`**。
+        #   依据（`T19_verify_proj.py`，球 + 常数驱动、已知答案 `R(t)=R0+v·t`；
+        #   判定点取**同一物理半径** `R=0.38L` 上插值）：
+        #     | 格式    | R/R_ex−1 | 键数/干净阶梯键测度 | 判定 |
+        #     | central | **+4.16%** | **2.237**（界面自发粗化，P1）| ✗ |
+        #     | upwind  | −2.14%   | 1.016 | ✗（数值扩散致收缩）|
+        #     | proj    | −2.22%   | 1.009 | ✗（同上，一阶）|
+        #     | **proj2** | **−0.54%** | **0.998** | **★可用** |
+        #   ⇒ 旧默认 `central` 用**非单调（色散）**格式离散 HJ 型 `v_n|∇φ|`，在网格尺度
+        #     产生伪振荡 ⇒ 界面自发粗化（P1；T16 前置实测界面胞数 601→4232×7、
+        #     `M6p` p25 3.5°→18.2°）。`proj2` 把 `v_n` **投影**成矢量 `V = v_n·n`
+        #     再做**二阶 ENO(minmod) 迎风**对流 ⇒ 单调（不粗化）+ 对线性数据精确
+        #     （无阶梯慢化）+ 两场共用同一个 `V`（差分场只平移）。
+        #   ⚠ 记账：**D17 之前的所有归档读数都是在 `central` 下跑的**；要复现它们
+        #     必须显式传 `adv_grad='central'`。`central` 路径**保留且未改动**。
+        # ★★ T11：`band_len`（米）给定时**按物理长度**定延拓带宽：
+        #   `band_cells = round(band_len/dx)`。为什么必须：`band_cells` 是**胞数**
+        #   ⇒ 物理带宽 `band_cells·dx` 随 Δx 变 ⇒ 界面速度会**依赖分辨率**
+        #   （实测 `v/(MΔf)` 在 Δx=40/50/62.5 nm 上分别为 0.923/0.843/0.818）。
+        if band_len is not None:
+            band_cells = max(1, int(round(float(band_len) / self.dx)))
+        # ★★ T10：`lambda_el` = **相干界面弹性能 γ_el 的敏感度旋钮**（默认 0 = 不计入
+        #   ⇒ 与 T10 之前**逐位相同**）。λ_el=1 时 `stk += γ_el(面片身份)`。
         # ★ 记账（本轮 P1 重标定）：`iface_band=2.0` 而非 1.0 —— 界面种子必须是
         #   **≥2 层胞**。实测 pair_kernel 下 `iface_band=1.0`（|∇d|≈2 ⇒ 种子只有
         #   1 层）时，`extend_along_normal` 的迎风延拓**退化**（v/MΔf = 0.125 ✗）；
@@ -1202,50 +2266,113 @@ class LevelSetMulti(object):
            两侧 φ 一致更新（φ_k 减、φ_l 增）。旧写法让每个 φ_k 各用自己 v_k ⇒
            实测界面有效速度只有 **v/2** ✗（因为 VDF 里 |∇(φ_k−φ_l)|=2）。
            判据 W2 用"平界面 + 常数驱动"直接量界面速度验证。"""
+        # ★★★ A3（2026-09-28）**自述平流格式**（防"改一半"的静默陷阱，AGENTS §3.24）。
+        #   审计发现：全仓只有 **3 个诊断脚本**显式传 `adv_grad='central'`；
+        #   而**全部生产/验证脚本**（T12/T13/T14/T15/T16/T20/T21/T24…）都是**不传**、
+        #   吃默认值。D17 把默认从 `central` 改成 `proj2` 之后：
+        #     ⇒ 重跑任何一个归档脚本都会给出**与报告里不同的数**，而脚本/输出里
+        #       **没有任何标识**说明它换过格式 —— 这正是"改一半比不改更危险"。
+        #   ⇒ 每个进程**首次**调用时打印一行自述（之后静默），使任何重跑都自我记账。
+        if not getattr(self, '_adv_banner_done', False):
+            _explicit = 'explicit' if adv_grad != 'proj2' else 'DEFAULT'
+            print('[WindowB] 平流格式 adv_grad=%r（%s）；D17 之前默认是 central，'
+                  '归档读数需显式传 central 才能复现。' % (adv_grad, _explicit),
+                  flush=True)
+            self._adv_banner_done = True
         reg0 = self.region()
-        ed = self.elastic_driving()
         nreg = self.nreg
-        gn = np.zeros_like(self.phi)
-        kap_all = np.zeros_like(self.phi)
-        stiff = np.ones((nreg,) + self.phi.shape[1:])
-        for k in range(nreg):
-            g = np.gradient(self.phi[k], self.dx)
-            gn[k] = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
-            kap_k = self.curvature_of(k)
-            gk = self.gamma if gamma0 is None else gamma0
-            if facet_lam > 0.0 and npref is not None and npref.get(k) is not None:
-                # ★ P3：尖点界面能（只在给了 npref 的场上用）
-                n = np.stack([gi / gn[k] for gi in g], -1)
-                nd = np.asarray(npref[k], float)
-                nd = nd / (np.linalg.norm(nd) + 1e-300)
-                c2f = np.clip((n @ nd) ** 2, 0.0, 1.0)
-                gk = herring_stiffness_cusp(c2f, gk, facet_lam, facet_eps)
-            # ★ 记账（2026-09-26 的 bug）：这里必须是 **elif**。
-            #   第一版写成独立的 if => 当 aniso>0 时，下面 sin^2 分支会把 facet 的 gk
-            #   **整个覆盖** => facet_lam=0/0.4/1.0 三档结果**逐位相同**（实测抓到）。
-            elif aniso > 0 and npref is not None and npref.get(k) is not None:
-                n = np.stack([gi / gn[k] for gi in g], -1)
-                # ★ 各向异性刚度：**统一走 `herring_stiffness`**（原来这里内联的写法与
-                #   `LevelSetSurface` 各写一份 ⇒ 已合并，避免两处分叉）
-                nd = np.asarray(npref[k], float)
-                nd = nd / (np.linalg.norm(nd) + 1e-300)
-                c2 = np.clip((n @ nd) ** 2, 0.0, 1.0)
-                gk = herring_stiffness(c2, gk, aniso, herring)
-            stiff[k] = gk
-            kap_all[k] = kap_k
+        # ★★ T3（2026-09-28）**去空算 + 降内存**（旧实现见 git 历史）：
+        #   ① 旧写法为**全部 nreg 个场**算 `|∇φ|`、曲率、刚度并各存一份 (nreg,N,N,N)
+        #      ⇒ 3×(13·N³) float64 = **276 MB**（N=96），而下游只用
+        #      `take_along_axis(·, karr)` / `(·, larr)` —— 即每胞**只用 winner/runner-up**。
+        #   ② 每个场还算了**两次** `np.gradient`（本循环 1 次 + `curvature_of` 内部 1 次），
+        #      且 `curvature_of` 里 `np.gradient(n[i])[i]` 把 3 个偏导全算出来、丢掉 2 个。
+        #   ③ 实测（`T3_mem_probe.py` + `_prof_step.py`，N=96）：`np.gradient` **87 次/步**
+        #      占 24% 时间；单步临时峰值 **1072 B/胞**；常驻 592 B/胞。
+        #   改法：只对**活跃场**（出现在 karr 或 larr 里）算，且只在
+        #      **该场活跃胞的包围盒**（外扩 1 胞）内算，再散点写回按 winner/runner-up
+        #      索引的 (N,N,N) 数组 ⇒ 常驻 276→14 MB，时间同降。
+        #   ★ 为什么外扩 1 胞就够：`np.gradient` 在子盒**内部**用中心差分（与全盒逐位相同），
+        #      只有子盒最外一层用单边差分；写回时只写**未外扩**的 `mk` ⇒ 用到的值全在内部 ✓。
+        #      （`mk` 贴到网格边界时，子盒边界 = 网格边界 ⇒ 与旧写法的单边处理一致 ✓。）
+        #   ⚠ `per_field=True` 需要**完整的** stiff 表，保留旧路径（非生产默认）。
+        _shape = self.phi.shape[1:]
+        # ★★ Round 85 修（`WINDOWB_AUDIT_REGISTER.md` A12）：把 `npref` 表的缓存**提到入口处**。
+        #   原来它在 2187 才赋值，而 `per_field=True` 会在 2121 附近**提前 return** ⇒
+        #   那条路径下 `self.npref_tab` 永远是 None ⇒ `_npref_of()` 静默返回 `[0,0,1]`
+        #   ⇒ **所有新核的惯习面变成 z 轴**且无告警。配合新的硬失败 `_npref_of()`，
+        #   这条路径现在会给出明确报错而不是错的取向。
+        #   （默认路径 `per_field=False` 行为不变：同一对象、只是提前几行赋值。）
+        self.npref_tab = npref
         # winner / runner-up
-        order = np.argsort(self.phi, axis=0)
-        karr, larr = order[0], order[1]
+        # ★★ T3：`np.argsort(phi, axis=0)` 会造一个 (nreg,N³) **int64** 临时量
+        #   （104 B/胞，N=96 时 92 MB）—— 而下游只要前两名。
+        #   改法：`argmin` 拿 winner，再用 nreg 次"掩模内取更小"扫出 runner-up
+        #   ⇒ 不产生 (nreg,N³) 临时量；数值与 argsort 前两名**逐位相同**（无并列时）。
+        karr = np.argmin(self.phi, axis=0)
+        larr = np.empty(karr.shape, dtype=karr.dtype)
+        _best = np.full(karr.shape, np.inf)
+        for _j in range(nreg):
+            _pj = self.phi[_j]
+            _mj = (karr != _j) & (_pj < _best)
+            larr[_mj] = _j
+            _best[_mj] = _pj[_mj]
         if per_field:
+            ed = self.elastic_driving()
             # ★★ 按**场**推进（2026-09-25 新增，方案 (a)）—— 见 `_advance_perfield` 的记账。
             #   走这条分支时后面那套"winner/runner-up 两场"逻辑整段跳过。
-            self._advance_perfield(dt, karr, larr, ed, stiff, iface_band,
+            gn_f = np.zeros_like(self.phi)
+            stiff_f = np.ones((nreg,) + _shape)
+            for k in range(nreg):
+                g = np.gradient(self.phi[k], self.dx, edge_order=2)
+                gn_f[k] = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+                stiff_f[k] = self._stiff_of(k, g, gn_f[k], npref, aniso, gamma0,
+                                            herring, facet_lam, facet_eps)
+            self._advance_perfield(dt, karr, larr, ed, stiff_f, iface_band,
                                    band_cells, adv_grad)
-            return self._finish_advance(reg0)
+            return self._finish_advance(reg0, dt)
+        kap_w = np.zeros(_shape)          # winner 的曲率（按 winner 索引）
+        stk_w = np.ones(_shape)           # winner 的刚度
+        stl_w = np.ones(_shape) if pair_kernel else None
+        act = np.unique(np.concatenate((np.unique(karr), np.unique(larr))))
+        self._t3_nact = int(act.size)
+        for k in act:
+            k = int(k)
+            mw = (karr == k)
+            ml = (larr == k)
+            mk = mw | ml
+            bb = _bbox_pad(mk, 2)
+            if bb is None:
+                continue
+            gsub = np.gradient(self.phi[k][bb], self.dx, edge_order=2)
+            gnsub = np.sqrt(sum(gi ** 2 for gi in gsub)) + 1e-30
+            kapsub = self.curvature_of(k, grad=gsub, gn=gnsub)
+            # ★★ T9：刚度按**面片身份** (k, larr) 逐胞查表（`facet_id_gamma=False` 时退回旧行为）
+            _nref_sub = (self.facet_nref(k, larr[bb], npref)
+                         if getattr(self, 'facet_id_gamma', True) else None)
+            stksub = self._stiff_of(k, gsub, gnsub, npref, aniso, gamma0, herring,
+                                    facet_lam, facet_eps, nref_cell=_nref_sub)
+            # ★★ T10：把**相干界面弹性能** `γ_el` 按面片身份加到界面上
+            #   （`stk` 是"γ + γ_tt"，量纲 J/m² ⇒ 与 `γ_el` 可直接相加）。
+            #   `lambda_el=0`（默认）⇒ **整段跳过** ⇒ 与 T10 之前逐位相同。
+            #   `lambda_el` 是**敏感度旋钮**：1.0 = 全量计入，0 = 不计。
+            if lambda_el > 0.0 and self._eps0_ref is not None:
+                _gel = self.gel_facet_sub(k, np.asarray(larr[bb]))
+                stksub = stksub + float(lambda_el) * _gel
+            mwb = mw[bb]
+            kap_w[bb][mwb] = kapsub[mwb]
+            if np.ndim(stksub) == 0:
+                stk_w[bb][mwb] = float(stksub)
+                if stl_w is not None:
+                    stl_w[bb][ml[bb]] = float(stksub)
+            else:
+                stk_w[bb][mwb] = stksub[mwb]
+                if stl_w is not None:
+                    stl_w[bb][ml[bb]] = stksub[ml[bb]]
         # 每胞的配对速度（正 = winner 长大）
-        edk = np.take_along_axis(ed, karr[None], 0)[0]
-        edl = np.take_along_axis(ed, larr[None], 0)[0]
-        stk = np.take_along_axis(stiff, karr[None], 0)[0]
+        # ★ T3：只算 winner/runner-up 两份（旧写法造 (nreg,N,N,N) 再 take_along_axis）
+        edk, edl = self.elastic_driving_pair(karr, larr)
+        stk = stk_w                       # T3：已按 winner 索引（原来是 take_along_axis(stiff,…)）
         pha = np.take_along_axis(self.phi, karr[None], 0)[0]
         phb = np.take_along_axis(self.phi, larr[None], 0)[0]
         # ---- P0.2 (2026-09-26): 按**配对**选各向异性参考取向 ------------------
@@ -1254,13 +2381,41 @@ class LevelSetMulti(object):
         #   旧写法一律用 winner 的 npref[k] => 在 f->1 时对绝大多数界面用错对象.
         #   界面法向用**差分场** d = phi_k - phi_l 的梯度 (两侧对称, 且就是该界面的法向).
         _need_ref = (pair_aniso and aniso > 0) or (mob_aniso > 0.0) or (mob_beta > 0.0)
+        # ★ D18 记账：把 `npref` 缓存到实例上，供 `nucleate()` 取新核的惯习面法向。
+        #   （`nucleate()` 是在 `advance()` **之外**被每步调用的，拿不到这个局部变量。）
+        self.npref_tab = npref
         nd_ref_ = None
         # AUDIT-#4 修：原来这里还要求 self.ncmp is not None，而 ncmp 只在
         #   (C is not None and eps0 is not None) 时才建 => 跑"单变体 vs 母相"(nv=1、
         #   不给 eps0) 时 ncmp=None => 整块被跳过 => **mob_beta 静默不生效**。
         #   现在：ncmp 缺失时退化为"只用 npref"，并在下面 has_pair 分支做保护。
         if _need_ref:
-            gd_ = np.gradient(pha - phb, self.dx)
+            gd_ = np.gradient(pha - phb, self.dx, edge_order=2)
+            # ★★★ 2026-09-28（根因报告 ① 的候选修法，**默认关闭**）：`norm_smooth>0`
+            #   时把差分场的梯度各分量做一次 `(2m+1)³` 盒式平滑再归一化。
+            #   动机（`_probe_LT.py` + `_probe_LT_ed.log` 实测）：
+            #     `M(n)=M0exp[−β_h(n·n*)²−β_w(n·w)²]` 在**慢方向的极小值附近很陡**，
+            #     而界面法向取自 `∇d`，带内 `|∇d|` 中位只有 **0.70–0.93**（应 ≈1）
+            #     ⇒ 法向有散布 ⇒ **噪声把慢方向的迁移率抬高**、压缩各向异性对比。
+            #   实测证据：设计 长:厚 = 33，Δx=50 nm 只有 **8.45**、Δx=25 nm 回到 **14.34**
+            #     ⇒ 确为离散效应；而 `ed` 在三个面几乎相同（−2.80/−3.05/−2.90e8）
+            #     ⇒ **不是弹性顶住**，只能是 `M(n)` 的输入（法向）被污染。
+            #   这正是 `MEASUREMENT_SPEC R3` 早已记录的口径：
+            #     "局部法向（中心差分）阶梯上振荡 ⇒ 或对法向做平滑/粗 stencil"。
+            #   ⚠ 记账：本改动**默认 `norm_smooth=0`（不生效）**，归档结果不受影响；
+            #     要用必须显式传参，并按 `MEASUREMENT_SPEC R8` 重跑引用它的判据。
+            if norm_smooth > 0:
+                # ★★ Round 92 修（`WINDOWB_AUDIT_REGISTER.md` A15 第②条，**静默失效**）：
+                #   `0 < norm_smooth < 1`（如 0.5）⇒ `2*int(0.5)+1 = 1` ⇒ `_k = [1.0]`
+                #   ⇒ **恒等滤波**：参数"看起来生效、实则什么也没做"。
+                #   ⇒ 改为显式拒绝。`norm_smooth` 的语义是**胞数半径**，必须是 ≥1 的整数。
+                if not float(norm_smooth).is_integer() or int(norm_smooth) < 1:
+                    raise ValueError(
+                        'norm_smooth 必须是 >=1 的整数（单位=胞）；得到 %r。'
+                        '0<x<1 会退化成恒等滤波（静默失效），负值整段关闭。' % (norm_smooth,))
+                _m = int(norm_smooth)
+                _k = np.ones(2 * _m + 1) / (2 * _m + 1)
+                gd_ = [self._sep_conv3(g_, _k) for g_ in gd_]
             gdn_ = np.sqrt(sum(g_ ** 2 for g_ in gd_)) + 1e-30
             ndir_ = np.stack([g_ / gdn_ for g_ in gd_], -1)
             ndir_ = ndir_ / (np.linalg.norm(ndir_, axis=-1, keepdims=True) + 1e-300)
@@ -1299,31 +2454,127 @@ class LevelSetMulti(object):
         #   改成用**差分场** d = φ_karr − φ_larr 的曲率（对两侧严格对称、且保持 winner 的
         #   符号约定）与**成对平均刚度** ⇒ 界面速度成为该配对的单一标量，两侧一致。
         if pair_kernel:
-            dd = pha - phb
-            gd = np.gradient(dd, self.dx)
+            # ★★ T11j（2026-09-28）：差分场**按区域编号定向**（`σ = sign(l−k)`）。
+            #   旧写法 `dd = pha - phb` 用的是 winner/runner-up 次序，而 `karr/larr`
+            #   **跨界面会互换** ⇒ `∇dd` 的方向跨界面翻转 ⇒ `div(∇dd/|∇dd|)` 翻号
+            #   ⇒ 界面两侧的曲率项互相抵消。**这解释了仓库注释里
+            #   "pair_kernel 平界面标定实测 0.00 ✗"** —— 当年失败的原因就是这个。
+            dd = np.where(karr < larr, 1.0, -1.0) * (pha - phb)
+            gd = np.gradient(dd, self.dx, edge_order=2)
             gdn = np.sqrt(sum(g ** 2 for g in gd)) + 1e-30
             nd = [g / gdn for g in gd]
-            kap_pair = sum(np.gradient(nd[i], self.dx)[i] for i in range(3))
-            stk_pair = 0.5 * (stk + np.take_along_axis(stiff, larr[None], 0)[0])
+            kap_pair = sum(np.gradient(nd[i], self.dx, edge_order=2)[i] for i in range(3))
+            # ★★★ A1（2026-09-28）：**同一条 winner 定向因子**（病灶与修法见下面 else 分支
+            #   的长记账）。`dd = σ(pha−phb)` 是按区域编号定向的 ⇒ `div(∇dd/|∇dd|)`
+            #   的正号含义是"**编号较小**的区域凸"，而下游要的是"**winner** 凸"
+            #   ⇒ 乘 `σ` 换回 winner 口径。
+            if not getattr(self, '_pc_legacy', False):
+                kap_pair = np.where(karr < larr, 1.0, -1.0) * kap_pair
+            stk_pair = 0.5 * (stk + stl_w)      # T3：stl_w 已按 runner-up 索引
             kap_cell = kap_pair
             stk = stk_pair
         else:
-            kap_cell = np.take_along_axis(kap_all, karr[None], 0)[0]
-            # EXPERT-#4：默认 pair_kernel=False 时，变体-变体界面用的是 **winner 场的曲率**，
-            #   而真实界面曲率应来自差分场 d=phi_k-phi_l => 两侧不对称（仓库注释已记载：
-            #   可致 d 被拉陡、|grad phi| 由 ~1 涨到数百）。这里**显式告警**（不静默），
-            #   提醒结论可能被污染；修 pair_kernel 判据后再改默认。
-            if (not getattr(self, '_warned_pair_kernel', False)):
+            # ★★ T11h（2026-09-28，修 EXPERT-#4）：曲率改用**差分场** `d = φ_karr − φ_larr`。
+            #
+            #   病灶（T11-C 实测）：旧写法取 **winner 场自己的曲率** ⇒ 界面两侧不对称：
+            #     内侧（winner = 区域 1）`κ = div(∇φ₁/|∇φ₁|) = +2/r`
+            #     外侧（winner = 区域 0）`κ = div(∇φ₀/|∇φ₀|) = −2/r`  ← **符号翻转**
+            #   ⇒ 两侧的 `−γ·κ` 一正一负、**互相抵消** ⇒ 曲率驱动被系统性削弱。
+            #   **实测**：Gibbs–Thomson 平衡半径应为 `2γ/Δf = 300 nm`，而球长到 1850 nm
+            #   仍不停 ⇒ `γ_eff/γ = 5.9–6.2`（≈6 倍削弱）✓ 与该机制定量吻合。
+            #
+            #   为什么差分场是对的：`∇d = 2∇φ_k`、`|∇d| = 2`（本轮实测恰好 **2.0000**）
+            #   ⇒ `div(∇d/|∇d|) ≡ div(∇φ_k/|∇φ_k|) = κ_k`，**且跨界面连续**
+            #   （`d` 翻号但 `∇d` 方向不变）⇒ 两侧拿到**同一个**κ ✓
+            #   —— 与 T2 的 `pair reinit` 用的是同一套"差分场才是界面"的道理。
+            #   ⚠ 记账：这**改变了所有用曲率的归档结果**（板条尖端、Gibbs–Thomson、
+            #     Ostwald）。回归守卫：T11-A′（速度）与 T11-B（面积）不得退化。
+            # ★★★ A1（2026-09-28）：**默认改为走差分场曲率**（`pair_curvature` 的默认值
+            #   由 False 改为 True）。依据（`T22_verify_paircurv.py`）：
+            #     ① **在旧路径本来正确的地方，新路径逐位相同**：两区域（变体-母相）算例上
+            #        `σ·div(∇(σΔφ)/|∇(σΔφ)|)` 与 `kap_w` 的最大相对差 = **0.000e+00** ✓
+            #        （因为那里 `∇φ_0 = −∇φ_1`、两个场都是单位 SDF）。
+            #     ② **在旧路径错的地方，新路径才对**：多核演化态里实测变体-变体界面的
+            #        `|∇φ_k|/|∇φ_l|` 中位 = **2.762**（理想 1.000）、`|cos(∇φ_k,∇φ_l)|` = 0.810
+            #        ⇒ 那里的 winner 场**不是单位 SDF** ⇒ `div(∇φ_k/|∇φ_k|)` **不是**
+            #        界面的几何曲率；而 `div(∇d/|∇d|)` 做了归一化、与各场的尺度无关 ⇒
+            #        **才是**几何曲率。
+            #     ③ 已知答案两连（新路径）：纯曲率流下凸球**单调收缩**（V/V0 0.912→0.661）；
+            #        Gibbs–Thomson 理论 `R_c = 2γ/Δf = 125 nm`，实测 `R0=R_c` 时 `V/V0 = 0.989`
+            #        （应 1.000）✓ —— 曲率项**定量正确**。
+            #   ⚠ 记账：这**改变了所有用曲率的归档结果**（板条尖端、Gibbs–Thomson、Ostwald）。
+            #     回归守卫：T9-D（最薄角 <20°）、T19-C（键/干净阶梯 ≤1.15）、T11-A′/B。
+            if getattr(self, 'pair_curvature', True):
+                # ★★ 定向：**必须按区域编号** `σ = sign(l−k)`，不能沿用 winner/runner-up 次序 ——
+                #   `karr/larr` 跨界面会互换 ⇒ `∇(φ_karr−φ_larr)` 的方向跨界面翻转
+                #   ⇒ `div(∇d/|∇d|)` **跟着翻号**（实测：外侧 κ<0 ⇒ −γκ>0 ⇒ 反而加速，
+                #   连 R0=100 nm 的球都涨 4783×）。按编号定向后 `d` 的符号一侧恒负、一侧恒正，
+                #   `∇d` 方向一致 ⇒ κ 跨界面连续 ✓
+                _sg = np.where(karr < larr, 1.0, -1.0)
+                _dd = _sg * (pha - phb)
+                _gd = np.gradient(_dd, self.dx, edge_order=2)
+                _gn = np.sqrt(sum(_g ** 2 for _g in _gd)) + 1e-30
+                _kap_idx = self.curvature_of(0, grad=_gd, gn=_gn)
+                # ★★★ A1（2026-09-28）**补上丢掉的 winner 定向因子** —— 这是 T11j
+                #   "`pair_curvature=True` 仍全涨（R0=100 nm 都涨 6185×）"的**真正原因**。
+                #
+                #   病灶：`_dd = σ·(φ_karr−φ_larr)` 是**按区域编号**定向的（为了使 κ 跨界面连续），
+                #     所以 `_dd < 0` 恒在**编号较小**的那个区域里 —— 而**不是**在 winner 里。
+                #     而下游的符号约定是 `dG = ... − stk·κ`，要求
+                #     **κ > 0 ⟺ winner 区域是凸的**（凸 ⇒ 回退 ⇒ v<0）。
+                #     于是当 `karr > larr` 时，编号定向给出的 `κ` 与"winner 凸"**恰好反号**
+                #     ⇒ 曲率项把"回退"变成"前进" ⇒ 球无限涨 ✓ 与实测（全涨）吻合。
+                #
+                #   修法（一行）：`κ_winner = σ · div(∇(σ·Δφ)/|∇(σ·Δφ)|)`。
+                #     验算：`karr<larr`（σ=+1）⇒ `_dd=φ_karr−φ_larr`，∇_dd 由 winner 指向外
+                #       ⇒ 凸 winner 给 `div=+2/R` ⇒ `κ=+2/R` ✓；
+                #     `karr>larr`（σ=−1）⇒ `_dd=φ_larr−φ_karr`，∇_dd 由外指向 winner
+                #       ⇒ 凸 winner 给 `div=−2/R` ⇒ `κ=(−1)(−2/R)=+2/R` ✓。
+                #     ⇒ 两种情况都给 `κ=+2/R`（winner 凸）⇒ **跨界面连续且符号正确**。
+                kap_cell = _kap_idx if getattr(self, '_pc_legacy', False) else _sg * _kap_idx
+            else:
+                kap_cell = kap_w                  # T3：已按 winner 索引（旧行为）
+            # ★★★ A1（2026-09-28）：**旧告警的前提被证伪，改成"条件告警"**。
+            #   旧告警断言："`pair_kernel=False` 时变体-变体界面的曲率取自 winner 场
+            #   ⇒ 两侧不对称 ⇒ 形貌结论可能有偏"。
+            #   `T22_verify_paircurv.py` 实测这条**不成立**：
+            #     · 约定是 `v = M(Δf − γκ)`、**winner 长大为正**；跨界面时 winner 互换
+            #       ⇒ 两侧算的是**同一个物理速度**（要求 `κ_l ≈ −κ_k`），不是互相抵消。
+            #     · 凸球 + γ>0 + Δf=0 ⇒ 默认路径**单调收缩**（V/V0 0.912→0.661）✓
+            #     · Gibbs–Thomson：理论 `R_c = 2γ/Δf`；实测 `R0 = R_c` 时 `V/V0 = 0.989`
+            #       （≈ 不动 ✓）、`0.5R_c` 收缩、`2R_c` 长大 ⇒ **定量正确** ✓
+            #     · 反面对照：把 σ 去掉的旧写法（`_pc_legacy`）**不收缩**（1.000→0.969）、
+            #       **没有临界半径**（全涨）⇒ 对照有分辨力 ✓
+            #   ⇒ 默认路径**不是缺陷**。真正的**前提条件**是"两个场的 SDF 在界面附近
+            #     互为镜像"（`∇φ_k ≈ −∇φ_l`、`|∇φ_k| ≈ |∇φ_l|`）—— 这里**直接量它**，
+            #     只在被违反时告警（避免"每天都在打印一条不成立的告警"）。
+            if (not getattr(self, '_mirror_checked_step', None)) or True:
+                # ★ A1 记账：**必须每一步都量**（首版只在第一次 `advance` 时量一次，
+                #   而那时种子还没碰撞 ⇒ 测到的是"没有变体-变体界面"的状态）。
                 _hp = (karr > 0) & (larr > 0)
+                self._n_vv = int(_hp.sum())
                 if _hp.sum() > 0:
-                    import warnings as _w
-                    _w.warn('pair_kernel=False: detected %d variant-variant interface cells; '
-                           'their curvature is taken from the winner field, not from '
-                           'the difference field phi_k-phi_l => the two sides are '
-                           'asymmetric and morphology conclusions may be biased '
-                           '(see LATH_CODE_AUDIT / expert review EXPERT-#4).'
-                           % int(_hp.sum()), RuntimeWarning, stacklevel=2)
-                    self._warned_pair_kernel = True
+                    _gk = np.gradient(pha, self.dx, edge_order=2)
+                    _gl = np.gradient(phb, self.dx, edge_order=2)
+                    _nk = np.sqrt(sum(t ** 2 for t in _gk)) + 1e-30
+                    _nl = np.sqrt(sum(t ** 2 for t in _gl)) + 1e-30
+                    _cos = sum(_gk[i] * _gl[i] for i in range(3)) / (_nk * _nl)
+                    self._pair_mirror = float(np.median(np.abs(_cos)[_hp]))
+                    self._pair_scale = float(np.median((_nk / _nl)[_hp]))
+                    if (self._pair_mirror < 0.8 or not (0.7 < self._pair_scale < 1.4)) \
+                            and not getattr(self, '_warned_pair_kernel', False):
+                        import warnings as _w
+                        _w.warn('variant-variant interfaces: mirror-SDF precondition FAILS '
+                                '(median |cos| = %.3f, |grad k|/|grad l| = %.3f) => the '
+                                'winner-field curvature would NOT be the interface '
+                                'curvature; the difference-field path is used instead '
+                                '(see T22_verify_paircurv.py).'
+                                % (self._pair_mirror, self._pair_scale),
+                                RuntimeWarning, stacklevel=2)
+                        self._warned_pair_kernel = True
+                else:
+                    self._pair_mirror = np.nan
+                    self._pair_scale = np.nan
         dG_cell = (self.df[karr] - self.df[larr]) + (edk - edl) - stk * kap_cell
         # ★★ 记账（2026-09-25，查明 M2"塌缩"的真凶）：把本步驱动力存下来，供
         #   `suggest_dt` 按**总驱动**定 CFL。**只用 Δf 估 dt 会严重低估界面速度** ——
@@ -1429,7 +2680,7 @@ class LevelSetMulti(object):
             #    把两侧种子放一起会**互相抵消** ✗）；(ii) 带按 `|∇d|` 折算（`d` 不是
             #    距离函数、|∇d|≈2 ⇒ 旧写法 `|d| ≤ 1.0dx` 在 48³ 上只选到 **1 层**胞）。
             dfield = pha - phb
-            gdd = np.gradient(dfield, self.dx)
+            gdd = np.gradient(dfield, self.dx, edge_order=2)
             gdn = np.sqrt(sum(g ** 2 for g in gdd)) + 1e-30
             iface = (np.abs(dfield) <= iface_band * self.dx * gdn) \
                 & (np.abs(v_cell) > 0)
@@ -1466,7 +2717,17 @@ class LevelSetMulti(object):
                 same_pair = ((karr == kat) & (larr == lat)) | \
                             ((karr == lat) & (larr == kat))
                 band = (dist <= band_cells) & same_pair
-                coef = np.where(band, sigma * v_at[tuple(ind)], 0.0)
+                # ★★ T11e（2026-09-28）：**配对符号的来源**（默认不改行为，供判决实验）。
+                #   现写法用**本胞**的 `sigma`；而 `v_at[ind]` 带的已经是**种子胞**的
+                #   规范形（`vcanon = sigma_种子 · v_cell`）⇒ 两者相乘 =
+                #   `sigma_本胞/ sigma_种子 · v_cell`，**跨界面次序翻转时会变号**。
+                #   `pair_sig_from_seed=True` 时改用**种子胞的 sigma**，
+                #   使 `coef` 跨界面**连续**（这正是注释里写的设计意图）。
+                if getattr(self, 'pair_sig_from_seed', False):
+                    _sig_at = sigma[tuple(ind)]
+                else:
+                    _sig_at = sigma
+                coef = np.where(band, _sig_at * v_at[tuple(ind)], 0.0)
             else:
                 band = np.zeros(self.phi.shape[1:], bool)
                 for k in range(nreg):
@@ -1474,6 +2735,25 @@ class LevelSetMulti(object):
                                                            <= band_cells * self.dx)
                 band = band & (np.abs(v_cell) > 0)
                 coef = np.where(band, sigma * vcanon, 0.0)
+        # ★★ D17（2026-09-28）**投影型（保几何）平流** —— P1 的结构性修法。
+        #   把"法向速度"投影成**矢量**速度场 `V = v_canon·n_orient`，再用
+        #   `upwind_flux_vec` 对 `φ_t + V·∇φ = 0` 做迎风通量。
+        #   ① `v_canon_ext = sigma·coef`：两个分支下都等于"带内延拓后的标量 v_canon"
+        #      （延拓分支 `coef = sigma·v_at[ind]` ⇒ `sigma·coef = v_at[ind]`；
+        #        退化分支 `coef = sigma·vcanon` ⇒ `sigma·coef = vcanon`），**跨界面连续** ✓
+        #   ② `n_orient = ∇d/|∇d|`，`d = sigma·(φ_karr−φ_larr)` —— 与 T11j 修的
+        #      `pair_kernel` 用**同一个**定向（按区域编号，不按 winner 次序）
+        #      ⇒ `∇d` 跨界面不翻号 ✓（这是仓库里踩过的坑，不要再改回去）
+        #   ③ 两个场共用同一个 `V` ⇒ 差分场 d 只平移（结构性保证）
+        _is_proj = (adv_grad in ('proj', 'proj2'))
+        if _is_proj:
+            _vc_ext = sigma * coef
+            _dd = np.where(karr < larr, 1.0, -1.0) * (pha - phb)
+            _gd = np.gradient(_dd, self.dx, edge_order=2)
+            _gn = np.sqrt(sum(_g ** 2 for _g in _gd)) + 1e-30
+            Vvec = [_vc_ext * (_g / _gn) for _g in _gd]
+        else:
+            Vvec = None
         for k in range(nreg):
             # ④ 推进：默认 Godunov 迎风（鲁棒）；`adv_grad='central'` 用于"光滑 SDF +
             #   需要无偏各向异性幅度"的场合（W1/H1 判据实测：迎风把各向异性压低 ~8%，
@@ -1483,16 +2763,22 @@ class LevelSetMulti(object):
             vnk = coef * (np.where(karr == k, 1.0, 0.0)
                           - np.where(larr == k, 1.0, 0.0))
             if np.any(vnk != 0):
-                if adv_grad == 'central':
-                    g = np.gradient(self.phi[k], self.dx)
+                if _is_proj:
+                    # ★★ D17：矢量速度 + 迎风通量（两场共用同一个 V）
+                    self.phi[k] = self.phi[k] - dt * upwind_flux_vec(
+                        self.phi[k], Vvec, self.dx,
+                        order=(2 if adv_grad == 'proj2' else 1))
+                elif adv_grad == 'central':
+                    g = np.gradient(self.phi[k], self.dx, edge_order=2)
                     gmag = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+                    self.phi[k] = self.phi[k] - dt * vnk * gmag
                 else:
                     sgn = np.where(vnk > 0, 1.0, -1.0)
                     gmag = self._upwind_grad(self.phi[k], sgn)
-                self.phi[k] = self.phi[k] - dt * vnk * gmag
-        return self._finish_advance(reg0)
+                    self.phi[k] = self.phi[k] - dt * vnk * gmag
+        return self._finish_advance(reg0, dt)
 
-    def _finish_advance(self, reg0):
+    def _finish_advance(self, reg0, dt=None):
         """推进一步的**收尾**（两条推进路径共用，避免两处分叉）：
            区域/计数、按平流取 `reg_adv`、定期重初始化、Stefan 记账。
            ★ 记账：Stefan 必须只对"**平流**扫过的胞"记账。旧写法在 `reinitialize()`
@@ -1504,8 +2790,29 @@ class LevelSetMulti(object):
         #   逻辑本来就对（此处仍在 reinitialize 之前 => 只反映【平流】造成的扫过），
         #   只是重复计算；直接复用 reg。
         reg_adv = reg
-        if self.reinit_every and self._cnt % self.reinit_every == 0:
+        # ★★ T11：重初始化的触发改成"**物理时间**优先"（见 __init__ 的记账）
+        if dt is not None:
+            self._t_since_reinit = getattr(self, '_t_since_reinit', 0.0) + float(dt)
+        _do_re = False
+        if getattr(self, 'reinit_dt', None):
+            if self._t_since_reinit >= self.reinit_dt:
+                _do_re = True
+        elif self.reinit_every and self._cnt % self.reinit_every == 0:
+            _do_re = True
+        if _do_re:
             self.reinitialize()
+            self._t_since_reinit = 0.0
+        # ★★★ W1-3（2026-09-28，`C4`）：**种核后的强制 reinit**。
+        #   为什么单独一条：`nucleate()` 是在 `advance()` **之外**被每步调用的，
+        #   它由 `seed_plate` 在盘内覆写 `φ_j` ⇒ 盘边界有 O(|旧 φ_j|) 的跳变，
+        #   而定时 reinit 可能因跳过容差而不执行 ⇒ 跳变一路带下去（**且不报错**）。
+        #   ⇒ 只要`nucleate()` 本轮真发生过事件（`_need_reinit`），就**强制**补一次。
+        #   ⚠ 不形核的算例**逐位不变**（标志不会被置位）。
+        if getattr(self, '_need_reinit', False):
+            self._need_reinit = False
+            self.reinitialize(force=True)
+            self._t_since_reinit = 0.0
+            self._forced_reinit = getattr(self, '_forced_reinit', 0) + 1
         self._stefan(reg0, reg_adv)
         return reg
 
@@ -1531,11 +2838,11 @@ class LevelSetMulti(object):
         for k in range(self.nreg):
             lk = np.where(karr == k, larr, karr)     # k 的最近竞争者
             d = self.phi[k] - np.take_along_axis(self.phi, lk[None], 0)[0]
-            gd = np.gradient(d, self.dx)
+            gd = np.gradient(d, self.dx, edge_order=2)
             gdn = np.sqrt(sum(g ** 2 for g in gd))
             scale = np.maximum(gdn, 1e-30)           # d 不是距离函数（|∇d| ≈ 2）
             nd = [g / scale for g in gd]
-            kap = sum(np.gradient(nd[i], self.dx)[i] for i in range(3))
+            kap = sum(np.gradient(nd[i], self.dx, edge_order=2)[i] for i in range(3))
             edl = np.take_along_axis(ed, lk[None], 0)[0]
             stk = 0.5 * (stiff[k] + np.take_along_axis(stiff, lk[None], 0)[0])
             V = self.M * ((self.df[k] - self.df[lk]) + (ed[k] - edl) - stk * kap)
@@ -1550,8 +2857,21 @@ class LevelSetMulti(object):
                 Vext = np.where(band & (np.abs(V) > 0), V, 0.0)
             if not np.any(Vext != 0):
                 continue
+            if adv_grad in ('proj', 'proj2'):
+                # ★ 守卫（D17 记账）：`_advance_perfield` 也必须支持 proj 系列，
+                #   否则把 `adv_grad='proj2'` 传进来会**静默退化**成 Godunov 迎风
+                #   （那是语义分叉，不是等价）。这条正是 AGENTS §3.24「改一半」的教训。
+                #   这里 `Vext` 就是"场 k 自己的法向速度"⇒ 投影成 `V_k·n_k` 再迎风对流。
+                gk_ = np.gradient(d, self.dx, edge_order=2)
+                gnk_ = np.sqrt(sum(g_ ** 2 for g_ in gk_)) + 1e-30
+                Vv = [Vext * (g_ / gnk_) for g_ in gk_]
+                self.phi[k] = self.phi[k] - dt * upwind_flux_vec(
+                    self.phi[k], Vv, self.dx, order=(2 if adv_grad == 'proj2' else 1))
+                vmax = float(np.max(np.abs(Vext)))
+                self.dG_max = (vmax / self.M) if self.M else 0.0
+                continue
             if adv_grad == 'central':
-                g = np.gradient(self.phi[k], self.dx)
+                g = np.gradient(self.phi[k], self.dx, edge_order=2)
                 gmag = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
             else:
                 sgn = np.where(Vext > 0, 1.0, -1.0)
@@ -1574,12 +2894,27 @@ class LevelSetMulti(object):
         if dt_prev is not None:
             dt = min(dt, grow_max * dt_prev)
         return dt
-    def _stefan(self, reg0, reg1, k_part=0.6303, dbg=None):
+    def _stefan(self, reg0, reg1, k_part=None, dbg=None):
         """③ 本轮修：Stefan 跳跃的**正确去向**——界面扫过时被排出的溶质
            **先存进面过剩 Γ**（即 ∂Γ/∂t 那一项），再由 update_Gamma 的面-体交换与
            面扩散分发出去；**不再直接甩给邻居**（旧写法既非物理、又带 1.6% 不守恒 ✗）。
            收缩时反向：产物胞变母相需要的溶质，**先从面 Γ 取**，不足的部分才由邻居补
-           （记账：Γ 不足时从邻居补，仍是精确守恒 ✓）。"""
+           （记账：Γ 不足时从邻居补，仍是精确守恒 ✓）。
+
+        ★★ T4（2026-09-28）：`k_part` 默认改为**取实例属性 `self.k_part`**（B1 = 1.0）。
+           `k_part=1.0` ⇒ `ctgt == self.c` ⇒ `dq ≡ 0` ⇒ `amount ≡ 0` ⇒ **c 逐位不变**，
+           且 `Gam_mol` 不被写入 ⇒ 这条路径对 B1 是**恒等变换**。
+           （旧默认 0.6303 是**液/固**分配系数，被误用到位移型相变上。）"""
+        if k_part is None:
+            k_part = float(getattr(self, 'k_part', 1.0))
+        # ★★ T3（2026-09-28）：`k_part == 1.0` ⇒ `ctgt ≡ self.c` ⇒ `dq ≡ 0` ⇒ `amount ≡ 0`
+        #   ⇒ 整段是**恒等变换**；而 `surface_chem=False`（T4 的 B1 默认）时 Γ 通道本就关闭
+        #   ⇒ 可以直接返回。旧写法每步仍做 `surface_band()` + `cell_area_geom()`
+        #   （实测占单步 **14%**，`_prof_step.py`），纯属空算。
+        #   ⚠ 等价性前提：Gam/Gam_mol 此前为 0（`surface_chem=False` 期间不会被写），
+        #     所以跳过的 `self.Gam = Gam_mol/A_c` 同步也是恒等变换 ✓。
+        if k_part == 1.0 and not getattr(self, 'surface_chem', True):
+            return
         m = self.surface_band()
         A_c = self.cell_area_geom()
         if not hasattr(self, 'Gam_mol') or self.Gam_mol.shape != A_c.shape:
@@ -1662,7 +2997,7 @@ class LevelSetMulti(object):
                 dbg['log'].append((dbg['step'], kind, (b1 + s1) - dbg['t0'], int(swept.sum())))
                 dbg['t0'] = b1 + s1
 
-    def reinitialize(self, band_cells=6, mode='pair'):
+    def reinitialize(self, band_cells=6, mode='pair', force=False):
         """★ EXPERT-#3 修（2026-09-26）：**按界面配对**重初始化（默认 mode='pair'）。
 
         为什么必须改：多区域的真实界面由  决定，**不是** 。
@@ -1693,6 +3028,7 @@ class LevelSetMulti(object):
                 self.phi[k] = np.where(near, newp, self.phi[k])
             return
         reg = self.region()
+        self._reinit_band_before = self._band_bonds(reg)
         # 活跃配对：区域数少时可全对；否则用 region 的邻居关系先筛
         pairs = set()
         for ax in range(3):
@@ -1712,30 +3048,94 @@ class LevelSetMulti(object):
         _karr, _larr = _order[0], _order[1]
         delta = np.zeros_like(self.phi)
         for (k, l) in pairs:
-            d = self.phi[k] - self.phi[l]
-            near = np.abs(d) <= band_cells * self.dx
+            # ★★ T2 修（P0-3，2026-09-28）：对**半差分** d2 = (φ_k−φ_l)/2 做重初始化，
+            #   目标 |∇d2| = 1  ⟺  |∇d| = 2  ⟺  |∇φ_k| = |∇φ_l| = 1（VDF 的正确 SDF 条件）。
+            #   旧写法对 **d 本身**做 Sussman、目标 |∇d| = 1 ⇒ 把 |∇φ_k| 推向 **0.5**
+            #   并继续塌陷。实测（`_audit_faces2.py`，单因素：reinit 0 vs 25）：
+            #     reinit=0  : 带内 median|∇φ| 0.81–0.96，带胞 7824
+            #     reinit=25 : 带内 median|∇φ| **0.867 → 0.157**，带胞 **20871**（膨胀 2.7×）
+            #   ⇒ 这不是"轻微不守恒"，而是**把界面带撑大、把几何测度静默改掉**。
+            #   为什么 d2 是对的：VDF 里 ∇φ_k = +n、∇φ_l = −n（界面法向）
+            #     ⇒ ∇d = 2n、|∇d| = 2，而 d2 = d/2 满足 |∇d2| = 1 —— 正是 Sussman 的不动点。
+            d2 = 0.5 * (self.phi[k] - self.phi[l])
+            near = np.abs(d2) <= band_cells * self.dx
             if not near.any():
                 continue
             # EXPERT-#3c 记账：本路径的正确性依赖"窄带 + 输入近似 SDF"。
-            #   Sussman 的不动点是 |grad| = 1 的场；若带内 |grad d| 明显偏离 1，
+            #   Sussman 的不动点是 |grad| = 1 的场；若带内 |grad d2| 明显偏离 1，
             #   迭代会把斜率推向 1 并**同时移动零等值面**（不是 bug，是必然）。
             #   这里加**运行期告警**，避免将来在别处误用这条路径。
-            _gd = np.gradient(d, self.dx)
+            _gd = np.gradient(d2, self.dx, edge_order=2)
             _gdn = np.sqrt(sum(_gi ** 2 for _gi in _gd))
             _med = float(np.median(_gdn[near]))
+            # ★★★ A2（2026-09-28）：**"已经够 SDF 就不要动它"**。
+            #   依据（`T23_verify_reinit.py` 实测）：Sussman 的不动点是 `|∇d2| = 1` 的场；
+            #   输入偏离 1 时，迭代在把斜率推向 1 的**同时**会把**零等值面平移** ——
+            #   实测**每次 reinit 移动零等值面最多 0.054 胞**（`Δmedian(φ_karr)/Δx`），
+            #   且**不幂等**（第 4/5 次 `ΔV/V` 非零）。
+            #   ⇒ 若带内 `|∇d2|` 中位已经在 1±`reinit_skip_tol` 内，**reinit 只会带来害处**
+            #     （位移）而几乎没有好处（场已经是 SDF）⇒ 直接跳过。
+            #   ★ 这同时省机时：`reinit_iters=100` 的 Sussman 已是单步相对瓶颈（T12 记账）。
+            _skip_tol = float(getattr(self, 'reinit_skip_tol', 0.05))
+            self._reinit_last_med = _med
+            # ★★★ W1-3（2026-09-28）：`force=True` ⇒ **跳过容差不生效**（`C4` 的修法之一）。
+            #   为什么需要：`seed_plate` 的 `phi[j]=max(phi[j],−sdf)` 会在新核盘边界造出
+            #   O(|旧 φ_j|) 的**跳变**，而兜底是定时 reinit。若那一刻恰被判据跳过，
+            #   跳变就会一路带到后续推进里（`region()` 仍正确 ⇒ **不报错**）。
+            #   ⇒ 种核之后**强制**做一次 reinit，不看跳过容差。
+            if (not force) and abs(_med - 1.0) <= _skip_tol:
+                self._reinit_skipped = getattr(self, '_reinit_skipped', 0) + 1
+                continue
+            self._reinit_done = getattr(self, '_reinit_done', 0) + 1
             if abs(_med - 1.0) > 0.5:
                 import warnings as _w
-                _w.warn('pair reinit: band |grad d| median=%.3f 明显偏离 1; '
+                _w.warn('pair reinit: band |grad(d/2)| median=%.3f 明显偏离 1; '
                        'Sussman will move the zero-level set (input not SDF).'
                        % _med, RuntimeWarning, stacklevel=2)
-            dn = self.sussman_reinit(d)
-            corr = np.where(near, dn - d, 0.0)
+            dn = self.sussman_reinit(d2)
+            corr2 = np.where(near, dn - d2, 0.0)      # 对 **d2** 的修正量
             # 该胞的界面身份必须是 (k,l)（无序）
             is_kl = ((_karr == k) & (_larr == l)) | ((_karr == l) & (_larr == k))
-            corr = np.where(is_kl, corr, 0.0)
-            delta[k] += 0.5 * corr
-            delta[l] -= 0.5 * corr
+            corr2 = np.where(is_kl, corr2, 0.0)
+            # 回写：φ_k += c、φ_l −= c  ⇒  d_new = d + 2c = 2·d2_new ✓，
+            #       且 φ_k+φ_l 逐位不变（不引入整体漂移）✓
+            delta[k] += corr2
+            delta[l] -= corr2
         self.phi = self.phi + delta
+        # ★★★ A2（2026-09-28）**硬守卫：区域指派必须逐个胞保持不变**。
+        #   为什么用这个判据：多区域 VDF 里"几何"的**定义**就是 `argmin_k φ_k`
+        #   ⇒ "零等值面不动"的**精确、离散、可逐位核对**的表述就是 `region()` 不变。
+        #   （T23 首版用 `ΔV/V` 与 `Δmedian(φ_karr)` 都是**间接**量：前者受整数计数限制、
+        #     后者是统计量，两者都会漏掉少量翻转的胞。）
+        #   做法：把发生翻转的那些胞的修正量**原样退回** ⇒ `region()` **由构造保证**不变，
+        #   其余胞照常享受 SDF 重整。退回造成的不连续被修正量本身（~0.1 Δx）界定。
+        if getattr(self, 'reinit_guard_region', True):
+            _reg_new = self.region()
+            _flip = (_reg_new != reg)
+            _nf = int(_flip.sum())
+            self._reinit_reg_flips = getattr(self, '_reinit_reg_flips', 0) + _nf
+            self._reinit_reg_flips_last = _nf
+            if _nf:
+                self.phi = self.phi - np.where(_flip[None], delta, 0.0)
+        # ---- 修后健康度检查（判据可升级为硬失败，供 T2 判据脚本使用）----
+        _n1 = self._band_bonds(self.region())
+        self._reinit_band_after = _n1
+        if getattr(self, 'reinit_strict', False) and self._reinit_band_before > 0:
+            _ratio = _n1 / float(self._reinit_band_before)
+            if _ratio > 1.2:
+                raise RuntimeError(
+                    'pair reinit 后界面带胞数膨胀 %.3f× (%d -> %d)：'
+                    '重初始化把界面带撑大了，几何测度已不可信（P0-3 的指纹）。'
+                    % (_ratio, self._reinit_band_before, _n1))
+
+    @staticmethod
+    def _band_bonds(reg):
+        """界面"键"总数（6 邻域逐轴跨界计数）—— 带健康度的**离散测度**。
+        用途：P0-3 的判据"reinit 不得把界面带撑大 > 1.2×"。"""
+        n = 0
+        for ax in range(3):
+            n += int((reg != np.roll(reg, -1, axis=ax)).sum())
+        return n
 
 
 def M1_multiregion_conservation(N=48, nstep=20):

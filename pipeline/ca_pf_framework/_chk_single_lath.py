@@ -30,6 +30,10 @@ ap.add_argument('--elong', type=float, default=1.0)  # 种子面内长/宽比（
 ap.add_argument('--gamma', type=float, default=0.15)      # 0 = 关曲率项
 ap.add_argument('--reinit_every', type=int, default=25)   # 0 = 关重初始化
 ap.add_argument('--noelastic', type=int, default=0)       # 1 = 关弹性驱动
+ap.add_argument('--band_cells', type=int, default=20)     # 速度扩展带宽（胞）
+ap.add_argument('--flat_end', type=int, default=0)        # 1 = 矩形棱柱（平端面）种子
+ap.add_argument('--nplate', type=int, default=1)          # 同变体的**平行板条**根数（集束判据）
+ap.add_argument('--pitch', type=float, default=0.0)       # 相邻板条沿 w 的间距 [m]（0=用 2R）
 ap.add_argument('--tag', default='')
 ap.add_argument('--N', type=int, default=64)
 ap.add_argument('--dx', type=float, default=5e-8)
@@ -70,8 +74,20 @@ if a.elong > 1.0:
     _w = np.asarray(g.wtab[k], float) if getattr(g, 'wtab', None) is not None else None
     _al = np.cross(_n, _w) if _w is not None else np.array([1.0, 0.0, 0.0])
     _al /= (np.linalg.norm(_al) + 1e-300)
-g.seed_plate(k, [L / 2, L / 2, L / 2], npref[k], a.R, a.t,
-             elong=a.elong, along=_al)
+_c0 = np.array([L / 2, L / 2, L / 2])
+_w_dir = None
+if getattr(g, 'wtab', None) is not None:
+    _wv = np.asarray(g.wtab[k], float)
+    if np.isfinite(_wv).all():
+        _w_dir = _wv / np.linalg.norm(_wv)
+if _w_dir is None:
+    _w_dir = np.array([0.0, 1.0, 0.0])
+_pitch = a.pitch if a.pitch > 0 else 2.0 * a.R
+for _i in range(a.nplate):
+    _off = (_i - (a.nplate - 1) / 2.0) * _pitch
+    _cc = _c0 + _off * _w_dir
+    g.seed_plate(k, _cc, npref[k], a.R, a.t,
+                 elong=a.elong, along=_al, flat_end=bool(a.flat_end))
 g.init_parent()
 g.c[:] = 0.036
 V0 = g.volume(k)
@@ -83,7 +99,7 @@ print('=== D11 single-lath: beta=%.2f beta_w=%.2f facet=%.2f N=%d dx=%.1f nm L=%
 t0 = time.time()
 track = []
 for it in range(1, a.nstep + 1):
-    g.advance(dt, aniso=0.4, npref=npref, band_cells=20, mob_beta=a.beta,
+    g.advance(dt, aniso=0.4, npref=npref, band_cells=a.band_cells, mob_beta=a.beta,
               mob_beta_w=a.beta_w, facet_lam=a.facet, facet_eps=a.facet_eps)
     if it % 50 == 0:
         print('   step %4d  V/V0=%.2f  用时 %.0f s' % (it, g.volume(k) / V0, time.time() - t0),

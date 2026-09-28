@@ -32,10 +32,10 @@
 
 | 文件 | 作用 |
 |---|---|
-| `pipeline/RESEARCH_INTENT.md` | **研究意图与路线的权威记录（已改写为 v2）** |
+| `pipeline/RESEARCH_INTENT.md` | **研究意图与路线的权威记录（2026-09-27 修订：Window B = 体相场 + Gibbs 面）** |
 | `IMPLEMENTATION_PLAN.md` | 实施计划：阶段、判据、依赖、算力预算、风险 |
 | `CALPHAD_REQUEST.md` | 热力学参数数据任务书 |
-| `pipeline/archive/RESEARCH_INTENT_v1_2026-09-20.md` | v1 归档（2x2 轨道框架） |
+| `HYBRID_FRAMEWORK.md` | **Window B 的「体相场 + Gibbs 面」数学框架与判据** |
 
 ## 一分钟看懂结论
 
