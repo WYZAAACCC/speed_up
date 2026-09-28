@@ -240,8 +240,16 @@ def report(g, K, a_ax, w_ax, n_hab, dx, tag, prev, ed_all=None, bh=0.0, bw=0.0):
 
 
 ap = argparse.ArgumentParser()
-ap.add_argument('--N', type=int, default=64)
-ap.add_argument('--dx-nm', type=float, default=166.7)
+# ★★★ 2026-09-29（`R24`，用户指定）：**默认改成标准计算域 24 µm / Δx = 125 nm**。
+#   原默认 `--N 64 --dx-nm 166.7` ⇒ 盒 10.669 µm = 板条长（8.1 µm）的 **1.32 倍** ⇒ 勉强一根、无长大余量；
+#   而实跑过的 `--N 48 --dx-nm 83.35`（4.008 µm）只有 **0.49 倍** ⇒ **连一根板条都装不下**。
+#   ⇒ 见 `MEASUREMENT_SPEC §18 R24`。
+ap.add_argument('--N', type=int, default=192)
+ap.add_argument('--dx-nm', type=float, default=125.0)
+ap.add_argument('--lath-len-nm', type=float, default=8100.0,
+                help='板条长的文献值（Wang 2026 = 8.1 µm），用于盒长守卫（R24）')
+ap.add_argument('--allow-small-box', action='store_true',
+                help='⛔ 明知盒长 < 16 µm 仍要继续（结论只能写成"盒内行为"）')
 ap.add_argument('--steps', type=int, default=150)
 ap.add_argument('--every', type=int, default=25)
 ap.add_argument('--kv', type=int, default=1)
@@ -309,6 +317,18 @@ print('_probe_shape —— **形状本身**（截面积剖面 / 中段截面 / �
 print('  N=%d Δx=%.1f nm L=%.2f µm steps=%d every=%d arms=%s adv=%s norm_smooth_override=%d'
       % (a_ap.N, a_ap.dx_nm, L * 1e6, a_ap.steps, a_ap.every, a_ap.arms, a_ap.adv,
          a_ap.norm_smooth))
+# ---- R24 盒长守卫：盒长 < 2×板条长 ⇒ 形态结论无效（会在盒壁上被截断）----
+_box_ratio = L / (a_ap.lath_len_nm * 1e-9)
+print('  ★ R24 盒长守卫：L = %.3f µm = **%.2f × 板条长(%.1f µm)**'
+      % (L * 1e6, _box_ratio, a_ap.lath_len_nm / 1000.0))
+if _box_ratio < 2.0:
+    print('     ⛔ **盒长 < 2× 板条长** ⇒ 板条会被盒壁截断，**本算例的 L / L:W / L:T 一律无效**；')
+    print('        结论只能写成"盒内行为"，不得写成"板条形貌"（`MEASUREMENT_SPEC R24`）。')
+    if not a_ap.allow_small_box:
+        print('        标准域是 `--N 192 --dx-nm 125`（24 µm）。确实要用小盒请显式加 `--allow-small-box`。')
+        sys.exit(2)
+else:
+    print('     ✅ 盒长 ≥ 2× 板条长 ⇒ L 方向不受盒壁限制（标准域 24 µm ⇒ 2.96×）')
 print('=' * 100)
 
 # ============================================================================
