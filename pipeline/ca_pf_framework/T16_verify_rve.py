@@ -41,16 +41,16 @@ from windowB_ti64_variants import variants                      # noqa: E402
 C = C_cubic(134.0e9, 110.0e9, 36.0e9)
 EPS0, _F, _M = variants()
 NV = len(EPS0)
-_rng = np.random.default_rng(0)
+# ★★★ 2026-09-29 Round 141 修复：**单一真源**。
+#   原写法在本文件里**自己重抽 400 个随机法向**求 `argmin_n 0.5·eps:Lam(C,n):eps`，
+#   与引擎 `LevelSetMulti.__init__` 里的抽样**序列不同** ⇒ 实测两者在一半变体上
+#   差 **~90°**（`_chk_axes.py`，日志 `_w2_axes.log`），
+#   且 `E(NPF)/E_min` = **21–654** ⇒ 两边都**从未收敛**。
+#   ⇒ 现在**直接向引擎要**，两边必然一致。
+from windowB_pf3d import argmin_normal as _argmin_normal      # noqa: E402
 NPF = {}
 for v in range(NV):
-    best, bn = None, None
-    for n in _rng.normal(size=(400, 3)):
-        n = n / np.linalg.norm(n)
-        val = 0.5 * float(np.einsum('ij,ijkl,kl->', EPS0[v], _lam_full(C, n), EPS0[v]))
-        if best is None or val < best:
-            best, bn = val, n
-    NPF[v + 1] = bn
+    NPF[v + 1] = _argmin_normal(C, np.asarray(EPS0[v], float))[0]
 
 # ★★★ 2026-09-28 **D7 落实 + 门控判据**：
 #   `_probe_growth.py` 实测（单变体板条，60 步）：`Δf=2e8` 有弹性时 `dV/V0` 只有 **0.170**，
@@ -142,11 +142,17 @@ def stats(g):
 RAND = 60.1
 
 
-def run(L, dx, nseed, f_target, adv='central'):
+def run(L, dx, nseed, f_target, adv='central', reinit_band=6.0):
     N = int(round(L / dx))
+    # ★★★ 2026-09-28（Round 137）：`reinit_band` 暴露成参数 —— **为了把 `T16b` 的两个变量分开**。
+    #   背景：`T16`（旧）= 引擎 `3fc093fe`（**A-1 之前**）+ `central`；
+    #         `T16b` = 引擎 `c08fb88f`（**A-1 已启用**）+ `proj2` ⇒ **同时改了两个变量**。
+    #   实测两者的 `[带健康]` 差异很大（节流 0.024 → 0.111 ⇒ A-1 起了大作用）
+    #   ⇒ **不能把"界面键膨胀从 +79.7% 降到 +9.3%"归给 proj2**，必须再跑一臂分离。
+    #   `reinit_band=None` ⇒ 回退 A-1 之前的全域名节流口径。
     g = W.LevelSetMulti(N, L, C=C, eps0=EPS0, gamma=0.15, Mob=MOB,
                         df=[0.0] + [DF] * NV, workers=4, reinit_every=0,
-                        reinit_dt=6.0e-7)
+                        reinit_dt=6.0e-7, reinit_band_cells=reinit_band)
     rng = np.random.default_rng(7)
     ns = 0
     for _ in range(nseed * 8):
@@ -247,6 +253,11 @@ def main():
                          '⚠ 本行的默认值此前一直是 `central`，而引擎的默认已被 D17 改成 `proj2` '
                          '⇒ **本驱动会静默覆盖掉引擎的默认**（A3「改一半」陷阱的第 3 例，'
                          '2026-09-28 Round 137 发现并修正）。要复现 D17 之前的归档读数才显式传 central。')
+    ap.add_argument('--reinit-band', type=float, default=6.0,
+                    help='A-1 的重初始化带宽（单位=胞，`|φ0| ≤ band·dx`）。'
+                         '**默认 6.0 = 引擎默认（A-1 已启用）**；传 `0` 表示 `None`'
+                         '（回退 A-1 之前的"全域名节流"口径），用于把 `T16b` 的'
+                         '"proj2" 与 "A-1" 两个变量分开。')
     a = ap.parse_args()
     L, dx = a.L_um * 1e-6, a.dx_nm * 1e-9
     print('=' * 100)
@@ -262,7 +273,8 @@ def main():
     rows = []
     for mult in (1, 3):
         print('  --- N_v ×%d（%d 个核）---' % (mult, a.n0 * mult))
-        s = run(L, dx, a.n0 * mult, a.f_target, a.adv)
+        s = run(L, dx, a.n0 * mult, a.f_target, a.adv,
+                (None if a.reinit_band == 0 else a.reinit_band))
         rows.append((mult, s))
         print('   step=%-4d f=%.4f  界面胞=%-6d（×%.2f）  厚度 r_c^var=%.1f nm  '
               'Sv=%.3e  N_var=%d'

@@ -464,6 +464,87 @@ def _lam_full(C, k):
     return C - C1
 
 
+# ============================================================================
+# ★★★ 2026-09-29 Round 141：**收敛的** `argmin_n 0.5·e:Lam(C,n):e`
+#
+# 为什么必须加这一段
+# ----------------
+# `MEASUREMENT_SPEC` 的全部各向异性轴（`n*`、`w`、`ncmp`）原先都来自
+#     「在 **400（或 600）个随机法向**里取 `0.5·e:Lam(C,n):e` 最小」
+# 实测（`_chk_habit2.py` / `_chk_pairnorm.py`，日志 `_w2_habit2.log` / `_w2_pairnorm.log`）：
+#   * 该泛函的极小**极窄**：40,000 点 Fibonacci 仍比精修值高 3–9 倍；
+#     400 点则高 **21–654 倍**（`E(NPF)/E_min`）。
+#   * 变体-变体界面（`ncmp`）：`E/E_best20k` 中位 **25**、最大 **6943**；
+#     与最优点的夹角中位 **88°**，**36/66 对 > 20°**。
+#   * 两个 rank-1 解的弹性自能只差 **8.6%** ⇒ 能量判据对"选支"几乎无分辨力
+#     ⇒ 抽样一抖就翻支（实测 `NPF` 与引擎 `wtab` 在一半变体上差 ~90°）。
+# ⇒ **这不是精度问题，是可复现性问题**：同一个物理输入在不同进程给出不同的轴。
+#
+# 本函数只做一件事：**把"抽样 argmin"换成收敛的 argmin**（Fibonacci + 局部模式搜索）。
+# ⚠ 记账：**选支规则不变**（仍是 `max |n·nref|`，见 `LevelSetMulti._rank1_axes`）；
+#    换的只是 `nref` 的求法 ⇒ 分支可能相对旧行为改变，但**从此可复现**。
+# ============================================================================
+def _lam_full_batch(C, NS):
+    """向量化的 `_lam_full`：`NS (S,3)` ⇒ `(S,3,3,3,3)`。
+       与逐点 `_lam_full` 的关系由 `_chk_lam_batch.py` 做正对照（要求逐位/1e-15）。"""
+    n = np.asarray(NS, float)
+    n = n / np.linalg.norm(n, axis=1)[:, None]
+    A = np.einsum('ijkl,si,sk->sjl', C, n, n)           # (S,3,3)
+    Ai = np.linalg.inv(A)
+    B = np.einsum('ijkl,si->sjkl', C, n)                # B[s,j,k,l]
+    D = np.einsum('sjkl,sjm->sklm', B, Ai)              # D[s,k,l,m]
+    C1 = np.einsum('sklm,sp,pmqr->sklqr', D, n, C)      # C1[s,k,l,q,r]
+    return C[None, ...] - C1
+
+
+def _fib_sphere(S):
+    """Fibonacci 球面（S 个近均匀点）。"""
+    i = np.arange(S, dtype=float)
+    ph = np.pi * (3.0 - np.sqrt(5.0)) * i
+    z = 1.0 - 2.0 * (i + 0.5) / S
+    r = np.sqrt(np.maximum(0.0, 1.0 - z * z))
+    NS = np.stack([r * np.cos(ph), r * np.sin(ph), z], axis=1)
+    return NS / np.linalg.norm(NS, axis=1)[:, None]
+
+
+def E_normal(C, e, NS):
+    """`0.5·e:Lam(C,n):e`，`NS (S,3)` ⇒ `(S,)`。"""
+    L = _lam_full_batch(C, NS)
+    return 0.5 * np.einsum('ij,sijkl,kl->s', np.asarray(e, float), L,
+                           np.asarray(e, float))
+
+
+def argmin_normal(C, e, nsamp=20000, iters=140, nsamp_loc=256, r0=0.35,
+                  decay=0.955, seed=0, rtol=1e-7):
+    """★ 收敛的 `argmin_n 0.5·e:Lam(C,n):e`。
+
+    两段：① 20,000 点 Fibonacci 全局扫描；② 半径按 `decay` 收缩的局部模式搜索，
+    每轮 256 个随机方向。收敛判据：单轮相对改善 `< rtol`（或耗尽 `iters`）。
+
+    返回 `(n_star, E_star, E_glob_scan / E_star)` —— 第三个量是**收敛指标**，
+    应 ≈1（`>1.05` 即说明全局扫描没找到盆地，须加大 `nsamp`）。
+    """
+    NS = _fib_sphere(int(nsamp))
+    v = E_normal(C, e, NS)
+    j = int(np.argmin(v))
+    v_glob = float(v[j])
+    best, vb = NS[j].copy(), v_glob
+    rng = np.random.default_rng(seed)
+    r = r0
+    for _ in range(int(iters)):
+        d = rng.normal(size=(int(nsamp_loc), 3))
+        d /= np.linalg.norm(d, axis=1)[:, None]
+        cand = best[None, :] + r * d
+        cand /= np.linalg.norm(cand, axis=1)[:, None]
+        vv = E_normal(C, e, cand)
+        k = int(np.argmin(vv))
+        if vv[k] < vb * (1.0 - rtol):
+            best, vb = cand[k].copy(), float(vv[k])
+        r *= decay
+    return best, vb, v_glob / max(vb, 1e-300)
+
+
+
 def test_F1():
     """sigma 管线正对照: 均匀 eps0 => sigma = -C:eps0 （逐位）"""
     print('---- F1: sigma 管线对照（均匀 eps0 => sigma = -C:e0，位级）----')

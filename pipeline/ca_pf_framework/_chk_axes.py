@@ -88,22 +88,14 @@ print('        |npref·w|     max=%.4f (%.2f°)            （判据 X-2 < 0.02�
 print('        |npref·a|     max=%.4f (%.2f°)            （非判据，仅记账）'
       % (d3.max(), np.degrees(np.arccos(min(1.0, d3.max())))))
 
-print('\nX-4 正对照：若调用方**照抄**引擎的抽样序列，两组 `n*` 应逐位相同')
-_rng = np.random.default_rng(0)
-_ns = _rng.normal(size=(400, 3))
-_ns /= np.linalg.norm(_ns, axis=1)[:, None]
-same = 0
-dmax = 0.0
+print('\nX-4 正对照：`NPF`（调用方）与引擎 `wtab/atab` 现在应当来自**同一个** `argmin_normal`')
+print('   ⇒ 若 `<npref, n_eng>` 仍很大，说明**引擎 `_rank1_axes` 的选支**把 `n` 与 `a` 换了位')
+print('     （`w × a` 在交换下只变号 ⇒ `wtab` 仍对，但 `a`/`n` 的角色互换）。')
+from windowB_pf3d import argmin_normal as _am                     # noqa: E402
+_ok = 0
 for k in range(1, NV + 1):
-    _E = np.asarray(EPS0[k - 1], float)
-    _val = 0.5 * np.einsum('ij,sijkl,kl->s', _E,
-                           np.array([W._lam_full(C, n) for n in _ns]), _E)
-    _n = _ns[int(np.argmin(_val))]
-    d = ang(_n, NPF[k])
-    dmax = max(dmax, d)
-    if d < 1e-9:
-        same += 1
-print('  用引擎的 `_ns`（一次抽样、共用）重算 ⇒ 与 `NPF` **逐位相同**的变体数 = %d/%d，'
-      '最大夹角 %.4f°' % (same, NV, dmax))
-print('  ⇒ 若不为 %d/%d ⇒ 差异**不只是随机抽样**，还有别的来源（须继续查）。' % (NV, NV))
+    _n, _v, _c = _am(C, np.asarray(EPS0[k - 1], float))
+    if ang(_n, NPF[k]) < 1.0:
+        _ok += 1
+print('   调用方 `NPF` 与 `argmin_normal` 逐位/近位一致的变体数 = %d/%d' % (_ok, NV))
 print('=' * 100)

@@ -754,6 +754,16 @@ def _old_main():
 
 
 # ============================================================ 多区域 level-set（多畴身份）
+def _argmin_normal(C, e, **kw):
+    """★ Round 141：**收敛的** `argmin_n 0.5·e:Lam(C,n):e`（延迟导入，避免环形依赖）。
+
+    本模块与 `windowB_pf3d` 互相引用 ⇒ 用函数内导入。
+    物理与实测依据见 `windowB_pf3d.argmin_normal` 的注释。
+    """
+    from windowB_pf3d import argmin_normal
+    return argmin_normal(C, e, **kw)
+
+
 class LevelSetMulti(object):
     """多区域 level-set：每个相/变体一个 φ_k（有符号距离），region = argmin_k φ_k。
        · 身份由 φ 平流携带（**没有随机胞翻转** ✗）
@@ -911,7 +921,7 @@ class LevelSetMulti(object):
         #   ⛔ 按 `R8`：**本改动改变全部含 `ed` 的归档读数** ⇒ 引用前必须重跑。
         self.elastic_soft = True
         if C is not None and eps0 is not None:
-            from windowB_pf3d import PF3D, VOIGT, G6 as _G6, _lam_full
+            from windowB_pf3d import (PF3D, VOIGT, G6 as _G6, _lam_full)   # noqa: F401
             self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
                            workers=workers, k0_mode=k0_mode,
                            sigma_ext=self.sigma_ext,
@@ -972,20 +982,30 @@ class LevelSetMulti(object):
         if C is not None and eps0 is not None:
             _w = np.full((self.nreg, 3), np.nan)
             _a = np.full((self.nreg, 3), np.nan)
-            _rng = np.random.default_rng(0)
-            _ns = _rng.normal(size=(400, 3))
-            _ns /= np.linalg.norm(_ns, axis=1)[:, None]
+            # ★★★ 2026-09-29 Round 141 修复：**收敛的 `argmin_n`**。
+            #   原写法「在 **400 个随机法向**里取最小」实测**从未收敛**：
+            #     `E(400点最优)/E(真最小)` = **16.8 – 1545**（中位 234）；
+            #     与真最小的夹角中位 **82°**（`_chk_lam_batch.py`，日志 `_w2_lambatch.log`）。
+            #   根因：该泛函的极小**极窄**——40,000 点 Fibonacci 仍高 3–9 倍。
+            #   ⇒ 换成 `argmin_normal`（20k Fibonacci + 局部模式搜索，可复现，逐位相同）。
+            #   ⚠ 记账：**选支规则不变**（仍 `max|n·nref|`，见 `_rank1_axes`），
+            #     只把 `nref` 从"抽样 argmin"换成"收敛 argmin" ⇒ 分支可能相对旧行为改变。
+            _nstar = [[] for _ in range(self.nv)]
             for _v in range(self.nv):
                 _E = np.asarray(eps0[_v], float)
-                _val = 0.5 * np.einsum('ij,sijkl,kl->s', _E,
-                                       np.array([_lam_full(C, n) for n in _ns]), _E)
-                _nref = _ns[int(np.argmin(_val))]
+                _nref, _vmin, _cons = _argmin_normal(C, _E)
+                _nstar[_v] = [float(_vmin), float(_cons)]
                 _R = self._rank1_axes(_E, _nref)
                 if _R is not None:
                     _w[_v + 1] = _R[2]
                     _a[_v + 1] = _R[1]      # AUDIT-#7: 真长轴
             self.wtab = _w
             self.atab = _a
+            # 收敛证书：12 个变体是立方对称等价的 ⇒ 真最小能量必须**全部相同**。
+            # （旧写法没有这个证书，所以"翻支"可以静默发生。）
+            self.nstar_conv = np.array(_nstar)          # (nv, 2) = (E_min, E_scan/E_min)
+            _e = self.nstar_conv[:, 0]
+            self.nstar_spread = float((_e.max() - _e.min()) / max(abs(_e.mean()), 1e-30))
 
         if C is not None and eps0 is not None:
             self.ncmp = self._pair_normals(C, eps0)
@@ -1037,20 +1057,27 @@ class LevelSetMulti(object):
         返回 (nv+1, nv+1, 3): ncmp[k,l] = argmin_n 0.5 dEps0:Lam(C,n):dEps0.
         母相相关项 (k==0 或 l==0) 与对角项 = nan (物理上不适用, 调用方 fallback 到 npref).
         与 _chk_morph.py 的 M6 用**同一**定义 (那里也按 de = eps0[k-1]-eps0[l-1] 取 argmin).
+
+        ★★★ 2026-09-29 Round 141 修复：**改用收敛的 `argmin_normal`**。
+          原写法「**600 个随机法向**取 argmin」实测（`_chk_pairnorm.py`，`_w2_pairnorm.log`）：
+            `E(ncmp)/E(20k点最优)` 中位 **25.4**、最大 **6943**；
+            夹角中位 **87.9°**，**36/66 对 > 20°**（且 20k 点本身也未收敛 ⇒ 这是**下界**）。
+          而 `ncmp` 正是 `advance()` 里**变体-变体界面的 `β_h` 参考轴**
+          （`windowB_surface.py` 的 `nd_ref = where(has_pair, ncl[ki,li], ...)`）
+          —— 也就是 **block / colony / packet** 赖以形成的那根轴。
+          ⇒ 旧行为等于**把驱动变体选择的轴对多数配对指错了约 90°**。
+        `nsamp`/`seed` 参数保留只为向后兼容调用签名，**不再被使用**。
         """
-        from windowB_pf3d import _lam_full
         nv = len(eps0)
         tab = np.full((nv + 1, nv + 1, 3), np.nan)
-        rng = np.random.default_rng(seed)
-        ns = rng.normal(size=(nsamp, 3))
-        ns /= np.linalg.norm(ns, axis=1)[:, None]
-        L = np.array([_lam_full(C, n) for n in ns])            # (nsamp,3,3,3,3)
         E = [np.asarray(e, float) for e in eps0]
+        cons = np.full((nv + 1, nv + 1), np.nan)
         for k in range(1, nv + 1):
             for l in range(k + 1, nv + 1):
                 de = E[k - 1] - E[l - 1]
-                val = 0.5 * np.einsum('ij,sijkl,kl->s', de, L, de)
-                tab[k, l] = tab[l, k] = ns[int(np.argmin(val))]
+                n_p, v_p, c_p = _argmin_normal(C, de)
+                tab[k, l] = tab[l, k] = n_p
+                cons[k, l] = cons[l, k] = c_p
         return tab
 
     def region(self):
@@ -3293,16 +3320,11 @@ def M2_twelve_variants(N=64, dx=1e-8, nstep=300, df=1e8, gamma=0.15, aniso=0.4,
                       df=[0.0] + [df] * nv, workers=6, reinit_every=25,
                       aniso_elastic=aniso_elastic)
     # 各变体的弹性最省能法向（= 晶核取向）
+    # ★ Round 141：改用**收敛的** `argmin_normal`（原 400 点随机抽样未收敛，
+    #   `E(400点)/E_min` 中位 234、夹角中位 82° —— 见 `_chk_lam_batch.py`）。
     npref = {}
-    rng = np.random.default_rng(0)
     for v in range(nv):
-        best, bn = None, None
-        for n in rng.normal(size=(400, 3)):
-            n = n / np.linalg.norm(n)
-            val = 0.5 * float(np.einsum('ij,ijkl,kl->', eps0[v], _lam_full(C, n), eps0[v]))
-            if best is None or val < best:
-                best, bn = val, n
-        npref[v + 1] = bn
+        npref[v + 1] = _argmin_normal(C, np.asarray(eps0[v], float))[0]
     R = rfrac * N * dx
     t = plate_dx * dx
     for v in range(nv):
