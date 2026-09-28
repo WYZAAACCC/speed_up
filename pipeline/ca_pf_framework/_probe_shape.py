@@ -265,6 +265,18 @@ ap.add_argument('--selftest', action='store_true',
                      '与解析值比对，不跑引擎（AGENTS §3.19：探针必须先做正对照）')
 ap.add_argument('--norm-smooth', type=int, default=-1,
                 help='≥0 ⇒ 覆盖所有臂的 norm_smooth；-1 ⇒ 用臂自带值')
+ap.add_argument('--facet-lam', type=float, default=0.0,
+                help='★ 尖点界面能强度 Λ（`windowB_surface.py:240-264` 的 '
+                     '`herring_stiffness_cusp`，经 `advance(facet_lam=…)` 施加）。'
+                     '**引擎里早已实现、但从未被任何算例调用过。** '
+                     '作用：把 γ_eff 变成在 `n*`（惯习面法向）处**带尖点**的函数。'
+                     '解析预期（γ0=0.15、aniso=0.4、ε_c=0.05）：'
+                     '默认(aniso) 宽面 0.27 / 尖端 0.09（对比 **3×**）；'
+                     'Λ=0.4 宽面 **1.34** / 尖端 **0.15**（对比 **8.9×**）'
+                     '⇒ **宽面被大幅硬化（γ_eff ×5），尖端只 ×1.67** '
+                     '⇒ 预期"板条更平"。⚠ 注意 `facet_lam>0` 会**取代** aniso 分支（代码是 `elif`）。')
+ap.add_argument('--facet-eps', type=float, default=0.05,
+                help='尖点正则化 ε_c（越大越钝；0.05 是引擎默认）')
 a_ap = ap.parse_args()
 dx = a_ap.dx_nm * 1e-9
 L = a_ap.N * dx
@@ -427,7 +439,8 @@ for arm in a_ap.arms.split(','):
     for it in range(1, a_ap.steps + 1):
         g.advance(dt, aniso=0.4, npref=NPF, band_cells=20,
                   mob_beta=bh, mob_beta_w=bw, adv_grad=a_ap.adv,
-                  norm_smooth=ns)
+                  norm_smooth=ns, facet_lam=a_ap.facet_lam,
+                  facet_eps=a_ap.facet_eps)
         if it % a_ap.every == 0 or it == a_ap.steps:
             _ed = None
             try:
