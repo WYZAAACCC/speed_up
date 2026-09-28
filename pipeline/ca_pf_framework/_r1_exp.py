@@ -497,7 +497,10 @@ def _run(a, outdir, L, dx):
     vlist = [int(v) for v in a.variants.split(',') if v.strip()] or [K0]
     if a.shuffle_variants >= 0 and len(vlist) > 1:
         _rngv = np.random.default_rng(a.shuffle_variants)
-        _seq = [_rngv.choice(vlist) for _ in range(max(a.nseed, 1))]
+        # ⚠ 记账：`_rngv.choice` 给的是 `np.int64` ⇒ 直接塞进 `meta.json` 会
+        #    `TypeError: Object of type int64 is not JSON serializable`（本轮实测抓到）。
+        #    必须显式转 Python `int`。
+        _seq = [int(_rngv.choice(vlist)) for _ in range(max(a.nseed, 1))]
         P('★ `--shuffle-variants %d`：变体序列由**随机**给出 = %s（原列表 %s）'
           % (a.shuffle_variants, _seq, vlist))
         vlist = _seq
