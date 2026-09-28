@@ -383,6 +383,11 @@ def main():
     ap.add_argument('--kv', type=int, default=1)
     ap.add_argument('--nseed', type=int, default=1)
     ap.add_argument('--variants', default='')
+    ap.add_argument('--shuffle-variants', type=int, default=-1,
+                    help='★ 实验 7 的**正确做法**：给定随机种子时，把 `--variants` 列表'
+                         '**打乱后**分配给各核。'
+                         '⚠ 记账：实验 7 若**人为指定**交替排布，就只能证明"我摆的那套比随机好"，'
+                         '**证明不了自组织**；必须从**随机初值**出发，看它自己演化成什么。')
     ap.add_argument('--gap-nm', type=float, default=1200.0)
     ap.add_argument('--kseed', type=int, default=7)
     ap.add_argument('--layout', default='grid',
@@ -490,6 +495,12 @@ def _run(a, outdir, L, dx):
              100 * (b_pd if conv == 'maxmin' else b_mm), fac))
 
     vlist = [int(v) for v in a.variants.split(',') if v.strip()] or [K0]
+    if a.shuffle_variants >= 0 and len(vlist) > 1:
+        _rngv = np.random.default_rng(a.shuffle_variants)
+        _seq = [_rngv.choice(vlist) for _ in range(max(a.nseed, 1))]
+        P('★ `--shuffle-variants %d`：变体序列由**随机**给出 = %s（原列表 %s）'
+          % (a.shuffle_variants, _seq, vlist))
+        vlist = _seq
     if a.nseed == 1:
         centers = [np.array([L / 2] * 3)]
     elif a.layout.startswith('line'):

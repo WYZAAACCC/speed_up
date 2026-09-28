@@ -22,8 +22,11 @@ case "$1" in
   e4) run e4_lath6   lath 6 1 1500 ;;          # 6 根平行板条核（同变体）⇒ 应成一个 block
   e5) run e5_equi6   equi 6 1 1500 ;;          # 6 个等轴核（同变体）
   e6) run e6_mid6    mid  6 1 1500 ;;          # 6 个中间形核（同变体）
-  e7) run e7_selfac  mid  6 "1,2" 1500 ;;      # 同一 packet 内**两个变体**交替 ⇒ 自协调
-  *)  echo "用法: bash _run_r1phase3.sh {e4|e5|e6|e7}" ;;
+  # ★★ 实验 7：**必须从随机初值出发** —— 人为摆成交替只能证明"我摆的那套比随机好"，
+  #    证明不了自组织。`--shuffle-variants` 把 packet-1 的 {V1,V2} 随机分配给 6 个核。
+  e7) run e7_selfac  mid  6 "1,2" 1500 --shuffle-variants 20260929 ;;
+  e7b) run e7b_selfac12 mid 6 "1,2,3,4,5,6,7,8,9,10,11,12" 1500 --shuffle-variants 7 ;;
+  *)  echo "用法: bash _run_r1phase3.sh {e4|e5|e6|e7|e7b}" ;;
 esac
 sleep 5
 echo "=== 已启动 ==="

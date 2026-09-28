@@ -116,7 +116,6 @@ for d in a.dirs:
 
     # ================= ★ 多核算例的"块"判定（实验 4/5/6）=================
     if a.block and np.any(np.isfinite(S.get('nc', np.array([np.nan])))):
-        nc = S['nc']
         print('\n   --- ★ 块判定（逐分量量具，判据 B-1/B-2/B-3）---')
         ncs = nc[np.isfinite(nc)]
         # ★★ 记账（第 4 轮，**靠快照解剖抓到的判据 bug，连错两次**）：
