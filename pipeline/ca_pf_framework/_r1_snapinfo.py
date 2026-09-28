@@ -42,6 +42,19 @@ if a.series:
     snaps = sorted(glob.glob(os.path.join(d, 'snap_*.npz')),
                    key=lambda p: int(os.path.basename(p)[5:-4]))
     print('遍历 %d 个快照：%s' % (len(snaps), d))
+    # ★ 需要设计三轴才能量"沿 a/w/n* 的跨度" ⇒ 建一个 N 很小的引擎（几十秒）只为取表
+    import windowB_surface as W2                                # noqa: E402
+    from T16_verify_rve import (C as _C, EPS0 as _E, DF as _DF, MOB as _MOB,
+                                NV as _NV, NPF as _NPF)
+    _g = W2.LevelSetMulti(16, 16 * 2.5e-8, C=_C, eps0=_E, gamma=0.15, Mob=_MOB,
+                          df=[0.0] + [_DF] * _NV, workers=1, reinit_every=0)
+    _nh = np.asarray(_NPF[a.kv], float)
+    _nh = _nh / np.linalg.norm(_nh)
+    _w = np.asarray(_g.wtab[a.kv], float)
+    _w = _w / np.linalg.norm(_w)
+    _a = np.asarray(_g.atab[a.kv], float)
+    _a = _a - (_a @ _nh) * _nh
+    _a = _a / np.linalg.norm(_a)
     rows = []
     for p in snaps:
         z = np.load(p)
@@ -56,16 +69,29 @@ if a.series:
         thr = 0.01 * tot
         sig = int((sz >= thr).sum())
         big = int(sz.max())
-        rows.append((step, ncomp, sig, big / tot, 1.0 - sz[sz >= thr].sum() / tot))
+        # ★ Q-c：**最大分量**的 L/W/T（逐板条的涌现量）
+        bi = int(np.argmax(sz)) + 1
+        idx = np.argwhere(lab == bi).astype(np.float64)
+        pa, pw, pn = idx @ _a, idx @ _w, idx @ _nh
+        # ⚠ 口径：`+dx`（对轴对齐无偏；斜交方向由 `_r1_calib.py` 的定标表处理）
+        Li = (pa.max() - pa.min() + 1) * dx
+        Wi = (pw.max() - pw.min() + 1) * dx
+        Ti = (pn.max() - pn.min() + 1) * dx
+        rows.append((step, ncomp, sig, big / tot,
+                     1.0 - sz[sz >= thr].sum() / tot, Li, Wi, Ti, Li / Wi, Li / Ti))
     out = os.path.join(d, 'components.csv')
     with open(out, 'w') as f:
-        f.write('step,ncomp,nsig,big_frac,debris\n')
+        f.write('step,ncomp,nsig,big_frac,debris,L_big,W_big,T_big,LW_big,LT_big\n')
         for r in rows:
-            f.write('%d,%d,%d,%.6g,%.6g\n' % r)
+            f.write('%d,%d,%d,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g\n' % r)
     print('已写 %s' % out)
-    print('  %6s %8s %8s %10s %10s' % ('step', 'ncomp', 'nsig', 'big_frac', 'debris'))
+    print('  %6s %7s %6s %9s %9s | %8s %8s %8s %7s %7s'
+          % ('step', 'ncomp', 'nsig', 'big_frac', 'debris',
+             'L_big', 'W_big', 'T_big', 'LW', 'LT'))
     for r in rows:
-        print('  %6d %8d %8d %10.4f %10.4f' % r)
+        print('  %6d %7d %6d %9.4f %9.4f | %8.0f %8.0f %8.0f %7.2f %7.2f'
+              % (r[0], r[1], r[2], r[3], r[4],
+                 r[5] * 1e9, r[6] * 1e9, r[7] * 1e9, r[8], r[9]))
     sys.exit(0)
 
 import windowB_surface as W                                     # noqa: E402
