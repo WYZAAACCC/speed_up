@@ -67,7 +67,28 @@ def build(tilt_deg=0.0, second_offset_nm=0.0):
         g.seed_plate(K, c0 + n_use * (second_offset_nm * 1e-9), n_use, R, T)
     g.init_parent()
     # `geom_ar` 用 `atab[k]` 当长轴、`NPF[k]` 当厚度轴 ⇒ 这里照真接口调用
+    # ⚠⚠ Round 139：`geom_ar` 的返回元组**已扩为 7 元**
+    #    旧 (k, L_, t_, L_/t_, cells)            =>  t_ 在 v[2]
+    #    新 (k, L_, W_, t_, L_/t_, L_/W_, cells)  =>  t_ 在 **v[3]**、W_ 在 v[2]
+    #   ⇒ 本文件所有取厚度的 `v[2]` 必须改成 `v[3]`；不改会**静默**拿"宽"当"厚"比。
+    #   本文件是 `geom_ar` 的正对照 ⇒ 索引必须与实现同步（AGENTS §3.24「改一半」）。
     return g, geom_ar(g.region(), g, NPF)
+
+
+# ★ 统一取槽位的小工具（以后再改元组长度时只改这里，避免又散落 v[2]/v[3]）
+def T_of(rec):
+    """沿 `npref` 的厚度（新元组 v[3]）。"""
+    return rec[3]
+
+
+def W_of(rec):
+    """沿 `npref × a` 的宽度（新元组 v[2]）。"""
+    return rec[2]
+
+
+def LW_of(rec):
+    """几何长:宽（新元组 v[5]）—— **靶② 只认这个**。"""
+    return rec[5]
 
 
 print('=' * 100)
@@ -77,7 +98,7 @@ print('=' * 100)
 
 # ---------------- G-1 θ≡0
 g1, a1 = build(0.0)
-t1 = [v[2] for v in a1]
+t1 = [T_of(v) for v in a1]
 ok1 = bool(t1) and all(abs(x / T - 1.0) <= 0.06 for x in t1)
 print('\n【G-1】θ≡0：分量数 %d，`t_`=%s nm（真值 %.0f，判据 ±6%%）⇒ %s'
       % (len(a1), ['%.1f' % (x * 1e9) for x in t1], T_NM, 'PASS' if ok1 else 'FAIL'))
@@ -88,7 +109,7 @@ if not ok1:
 DEG = 5.0
 pred = T * np.cos(np.radians(DEG)) + 2 * R * np.sin(np.radians(DEG))
 g2, a2 = build(DEG)
-t2 = [v[2] for v in a2]
+t2 = [T_of(v) for v in a2]
 ok2 = bool(t2) and abs(np.mean(t2) / pred - 1.0) <= 0.20
 print('【G-2】θ=%.0f°：`t_`=%.1f nm vs 预测 `t·cosθ+2R·sinθ`=%.1f nm（比 %.3f，判据 ±20%%）⇒ %s'
       % (DEG, np.mean(t2) * 1e9, pred * 1e9, np.mean(t2) / pred, 'PASS' if ok2 else 'FAIL'))
@@ -100,10 +121,10 @@ if not ok2:
 
 # ---------------- G-3 受控合并：两片沿 n* 错开
 g3, a3 = build(0.0, second_offset_nm=800.0)
-ok3 = (len(a3) >= 2) and all(abs(v[2] / T - 1.0) <= 0.10 for v in a3)
+ok3 = (len(a3) >= 2) and all(abs(T_of(v) / T - 1.0) <= 0.10 for v in a3)
 print('【G-3】受控合并（同变体两片沿 `n*` 错开 800 nm）：分量数 **%d**（判据 ≥2）；'
       '各自 `t_`=%s nm（判据 ±10%%）⇒ %s'
-      % (len(a3), ['%.1f' % (v[2] * 1e9) for v in a3], 'PASS' if ok3 else 'FAIL'))
+      % (len(a3), ['%.1f' % (T_of(v) * 1e9) for v in a3], 'PASS' if ok3 else 'FAIL'))
 print('      ★ 若只报 1 个分量且 `t_`≈1000 nm，就复现了审计说的"合并把厚度抬高"。')
 if not ok3:
     fails.append('G-3')
@@ -150,8 +171,11 @@ _lab2, _n2 = _nd.label(regS > 0)
 a4 = geom_ar(regS, g1, NPF)
 print('      `geom_ar` 返回 **%d** 条记录（本件应只有 1 个连通分量）：' % len(a4))
 for _r in a4:
-    print('        k=%d  L_=%.1f nm  t_=%.1f nm  L/t=%.2f  胞数=%d'
-          % (_r[0], _r[1] * 1e9, _r[2] * 1e9, _r[3], _r[4]))
+    # ⚠ Round 139：元组已扩为 7 元 ⇒ 这里的槽位必须同步。
+    #   旧写法 `_r[2]`=t_、`_r[3]`=L/t、`_r[4]`=cells 在新元组里分别变成
+    #   **宽**、**L/t**、**L/W** ⇒ 会打出 "t_=宽 / L/t=0.00 / 胞数=错"。
+    print('        k=%d  L_=%.1f nm  W_=%.1f nm  t_=%.1f nm  L/t=%.2f  L/W=%.2f  胞数=%d'
+          % (_r[0], _r[1] * 1e9, W_of(_r) * 1e9, T_of(_r) * 1e9, _r[4], LW_of(_r), _r[6]))
 L_mm = max((_r[1] for _r in a4), default=float('nan'))
 # ★ 自证：**我自己**在同一个胞集上量一遍跨度（与 `geom_ar` 用同一 `a_ax` 与同一取整口径）
 _ix = np.argwhere(regS > 0).astype(float)
@@ -176,6 +200,27 @@ print('      ⇒ 比值 **%.2f**（判据 >2.0）⇒ %s'
          else 'FAIL（没有爆表 ⇒ 上一轮的诊断需要推翻）'))
 if not ok4:
     fails.append('G-4')
+
+# ---------------- G-5 ★★ Round 139 新增：**新字段 `W_` 与 `L_/W_` 的正对照** ------------
+#   为什么必须加（`AGENTS.md §3.19`）：本轮给 `geom_ar()` **加了 `W_` 与 `L_/W_` 两个新输出**
+#   （靶② 的正确轴是**长:宽 ≈ 9:1**，见 `WINDOWB_ROADMAP_TO_CORRECT.md §9.17b`）。
+#   **新字段从未与已知答案比过** ⇒ 不验证就不该被引用。
+#   本件（G-1 的构型）是 `seed_plate(K, c0, n_use, R, T)` = **半径 R 的圆盘** ⇒
+#   面内两个方向都应是 **2R**，且 **`L_/W_ ≈ 1.00**；厚度应是 `T`（G-1 已验）。
+_R = R_NM * 1e-9
+_L1 = a1[0][1]
+_W1 = W_of(a1[0])
+_LW1 = LW_of(a1[0])
+ok5 = (abs(_L1 / (2 * _R) - 1.0) <= 0.08 and abs(_W1 / (2 * _R) - 1.0) <= 0.08
+       and abs(_LW1 - 1.0) <= 0.12)
+print('【G-5】★ 新字段正对照（圆盘种子 R=%.0f nm ⇒ 面内两向都应为 2R=%.0f nm、`L/W`≈1.00）：'
+      % (R_NM, 2 * R_NM))
+print('      `L_`=%.1f nm（偏差 %+.1f%%）  `W_`=%.1f nm（偏差 %+.1f%%）  **`L_/W_`=%.2f**'
+      '（判据：两向 ±8%%、比值 ±0.12）⇒ %s'
+      % (_L1 * 1e9, (_L1 / (2 * _R) - 1) * 100, _W1 * 1e9, (_W1 / (2 * _R) - 1) * 100,
+         _LW1, 'PASS' if ok5 else 'FAIL'))
+if not ok5:
+    fails.append('G-5')
 
 print('\n' + '=' * 100)
 print('【汇总】%s' % ('全部 PASS' if not fails else 'FAIL：%s' % fails))

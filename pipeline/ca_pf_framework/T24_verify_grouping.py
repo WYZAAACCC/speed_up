@@ -374,12 +374,30 @@ def rve(L, dx, n0, f_target, adv, steps_max=900):
 
 
 def geom_ar(reg, g, NPF, min_cells=8):
-    """★ 2026-09-28 新增：**几何长:厚**（沿真长轴 `atab[k]` ÷ 沿惯习面法向 `npref[k]`）。
+    """★ 2026-09-28 新增，**Round 139 扩为三向**：每片返回 `(k, L, W, T, L/T, L/W, cells)`。
+
+    三个方向（都用引擎自己的几何轴，与形核/推进用的同一套）：
+      * `T` = 沿**惯习面法向** `npref[k]`（= `NPF[k]`）⇒ **厚**
+      * `L` = 沿**真长轴** `atab[k]`（先对 `npref` 正交化）⇒ **长**
+      * `W` = 沿 `npref × a`（面内**第二**轴）⇒ **宽**
+
+    ⛔⛔ **为什么要加 `W`（Round 139 口径纠正，见 `WINDOWB_ROADMAP_TO_CORRECT.md §9.17b`）**：
+      同工艺同材料（LPBF Ti-64 as-built α′）的**唯一**几何靶是
+      **长 : 宽 ≈ 9 : 1**（Wang 2026, 10.20517/microstructures.2025.144，逐字原文
+      "The average **length and width** of these platelets are 8.1 ± 2.0 µm and
+      0.9 ± 0.4 µm"）。
+      **它是"长:宽"，不是"长:厚"**（`docs/refcheck/REFERENCE_AUDIT.md:86/95` 一直记对，
+      是下游用错了）。而本函数此前只给 `L/T` ⇒ **拿 `L/T` 去比 9:1 是无效比较**。
+      ⇒ 本函数现在**同时给 `L/T` 与 `L/W`**；**靶② 只认 `L/W`**。
+      ⚠ 另外两份同工艺文献给的都是"宽"、**没有一份给"厚"**：
+        Shuai 2026 "lath **widths** 0.51–0.68 µm"（`docs/refcheck/ref01_shuai2026.txt:299`）
+      ⇒ **"板条厚"这个量同工艺文献里不存在** ⇒ `L/T` 只能作"模型自身值"报，**无靶**。
 
     为什么需要它（子代理文献检索的结论，`_lit_tmp/LATH_THICKNESS_REVIEW.md §5`）：
     文献里"AR 2.8–8.4"是 **2D 斜截面表观值**（`MEASUREMENT_SPEC §4.6` 已记账本模型
     同一切面口径只有几何值的 ~0.54×），而**几何**长径比在文献里是
-    **9:1（Wang 2026，LPBF α′ 实测 8.1×0.9 µm）/ 16:1（Gullane 2022）/ 30:1（Rezazadeh 2024）**。
+    **9:1（Wang 2026，LPBF α′ 实测 8.1×8.1/0.9 µm）** / ⛔16:1（Gullane 2022，**查不到**）/
+    ⛔30:1（Rezazadeh 2024 = **钢**，跨材料已剔除）。
     ⇒ **拿 2D 表观值去比几何带 2.8–8.4 是口径错配**；本函数给出可与之对表的口径。
     `atab`/`npref` 由 `LevelSetMulti` 在给了 `C/eps0` 时自动建（`windowB_surface.py:908-930`）。"""
     out = []
@@ -403,6 +421,12 @@ def geom_ar(reg, g, NPF, min_cells=8):
         if np.linalg.norm(av) < 1e-9:
             continue
         av = av / np.linalg.norm(av)
+        # ★ 面内**第二**轴 = npref × a（= 板条**宽**方向）；右手系，与引擎 `wtab` 同构造。
+        wv = np.cross(nv_, av)
+        _nw = np.linalg.norm(wv)
+        if _nw < 1e-9:
+            continue
+        wv = wv / _nw
         # ★★ Round 71 修（Round 69 暴露的量具污染）：**遍历所有连通分量**，不再只取最大那个。
         #   为什么：同变体的多片若沿 `n*` 错开，被合并成一个分量 ⇒ `n*` 展宽被抬高
         #   （实测 `R_nuc=120` 档打出"几何厚度 717 nm"，而它只能当**上界**）。
@@ -421,7 +445,11 @@ def geom_ar(reg, g, NPF, min_cells=8):
             if t_ <= 1e-12:
                 continue
             L_ = float((idx @ av).max() - (idx @ av).min()) * g.dx
-            out.append((int(k), L_, t_, L_ / t_, int(sz[_ci])))
+            W_ = float((idx @ wv).max() - (idx @ wv).min()) * g.dx
+            if W_ <= 1e-12:
+                continue
+            # 返回顺序（Round 139 起）：k, L, W, T, L/T, L/W, cells
+            out.append((int(k), L_, W_, t_, L_ / t_, L_ / W_, int(sz[_ci])))
     return out
 
 
@@ -505,23 +533,36 @@ def main():
           % (st['n_var'], s['m6p_p25']))
     print('  ★ 记账（C2）：as-built LPBF α′ 的 block/packet 尺寸**文献 NOT FOUND**'
           '（子代理检索 ~20 篇全文）⇒ 只报模型自己的分布 + 上述机制自检，**不做"与文献一致"的声称**。')
-    # ---------------- ★ 几何长:厚（与文献的**几何**长径比对表，见 `geom_ar()` 的说明）
+    # ---------------- ★ 几何三向（`L/T` 与 `L/W`）—— 见 `geom_ar()` 的说明
     ga = geom_ar(reg, g, NPF)
     if ga:
-        # ★ 记账（第 25 处修正，**对第 24 处的再修正**）：元组是 `(k, L_, t_, L_/t_)`
-        #   ⇒ 比值在 **`v[3]`**。上一版写 `v[2]`（= 厚度，量级 1e-7 m）再按 `%.2f` 打印
-        #   ⇒ 打出 "0.00"，我据此判"量具坏了并禁用"。**那个判断是错的**：
-        #   `_chk_geomAR.py` 的正对照实测算法正确（沿 `n*`=200.0 nm 精确、沿 `a`=592.2 vs
-        #   2R=600 nm、比 2.961 vs 解析 3.00）。
-        #   ⇒ 教训：**读数异常时先查调用侧的索引/单位，再怀疑量具**。
-        ar = np.array([v[3] for v in ga], float)
-        th = np.array([v[2] for v in ga], float)
+        # ★★ Round 139：元组已扩为 `(k, L_, W_, t_, L_/t_, L_/W_, cells)`
+        #   ⇒ `L/T` 在 **`v[4]`**、`L/W` 在 **`v[5]`**、厚在 **`v[3]`**、宽在 `v[2]`。
+        #   ⚠ 旧版是 `(k, L_, t_, L_/t_, cells)`（`L/T` 在 `v[3]`、厚在 `v[2]`）——
+        #     **索引变过，改调用侧时必须一起改**（本文件曾因索引错打出 "0.00" 并误判量具坏）。
+        arT = np.array([v[4] for v in ga], float)
+        arW = np.array([v[5] for v in ga], float)
+        th = np.array([v[3] for v in ga], float)
+        wd = np.array([v[2] for v in ga], float)
         ncomp = len(ga)
-        print('  ★ **几何长:厚**（每片**单独**统计，共 %d 片）：中位 **%.2f**、p90 %.2f、max %.2f'
-              % (ncomp, np.median(ar), np.percentile(ar, 90), ar.max()))
+        print('  ★★ **靶② 的正确读数 —— 几何长:宽**（每片单独统计，共 %d 片）：'
+              '中位 **%.2f**、p90 %.2f、max %.2f   ⬅ **与 9:1 比这一行**'
+              % (ncomp, np.median(arW), np.percentile(arW, 90), arW.max()))
+        print('     ✅ **同工艺同材料靶**：**长:宽 ≈ 9:1**'
+              '（Wang 2026, 10.20517/microstructures.2025.144，原文 "average **length and width**'
+              ' ... 8.1 ± 2.0 µm and 0.9 ± 0.4 µm"）'
+              ' ⇒ 命中？%s' % ('**是**' if np.median(arW) >= 9.0 * 0.9 else '**否**'))
+        print('  ☆ **几何长:厚**（每片单独统计，共 %d 片）：中位 %.2f、p90 %.2f、max %.2f'
+              % (ncomp, np.median(arT), np.percentile(arT, 90), arT.max()))
+        print('     ⛔ **本行没有同工艺同材料靶**：两份同工艺文献给的都是**宽** —— '
+              'Wang 2026 length 8.1 / **width** 0.9 µm；'
+              'Shuai 2026 "lath **widths** 0.51–0.68 µm"（`docs/refcheck/ref01_shuai2026.txt:299` 逐字）'
+              ' ⇒ **"板条厚"这个量同工艺文献里不存在**，只能作"模型自身值"报。')
         print('     同批的**几何厚度**：中位 %.0f nm、**p10 %.0f nm**（p10 更接近"单片厚度"'
               '—— 合并会把它抬高，故中位是**上界**）'
               % (np.median(th) * 1e9, np.percentile(th, 10) * 1e9))
+        print('     同批的**几何宽度**：中位 %.0f nm、p10 %.0f nm'
+              % (np.median(wd) * 1e9, np.percentile(wd, 10) * 1e9))
         # ★★★ 2026-09-28 更正（`MEASUREMENT_SPEC R10`）：旧文本把**钢**的数（30:1、block:lath≈26）
         #   与 Ti-64 的数并列使用 ⇒ 已剔除。**只保留同材料同工艺的靶**。
         # ⛔⛔ **Round 139 再纠一条**：旧文本把 Wang 2026 的 ≈9:1 写成"几何**长:厚**" —— **错**。
