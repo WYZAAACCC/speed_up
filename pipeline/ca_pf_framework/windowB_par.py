@@ -316,52 +316,20 @@ class ParCtx(object):
         return self.map0(work, n0, tag='upwind_grad')
 
     def sussman_reinit(self, phi, dx, iters=40, dtau=None, grad='upwind2',
-                       guard=True, band_cells=None):
-        """`windowB_surface.sussman_reinit` 的并行版（**与单线程逐位相同**）。
+                       guard=True, band_cells=None, bbox=None):
+        """`windowB_surface.sussman_reinit` 的**并行入口**。
 
-           做法：只有"逐胞算子"并行化（`upwind_grad2` / `np.gradient` / `clip`），
-           `max` 归约与标量循环**保持原样** —— 因为 `_dte` 依赖上一步的全局
-           `max(gm)`，那是**串行依赖**，并行化会改变数值（不是"同一次归约换次序"，
-           而是换了一个迭代轨迹）⇒ **绝不能改**。"""
+        ★★★ R1（2026-09-29）**记账（一次自我纠正）**：本方法最初在这里**复制**了一份
+          Sussman 迭代循环，只在并行时启用、并且只有并行路径支持子盒。
+          那会让**线程数变成物理参数**（`nthreads=1` 与 `nthreads=8` 走不同代码）
+          ⇒ 违反本模块的 H-1 硬门槛（逐位相同）。
+          ⇒ 现在它**只是委托**：唯一实现在 `windowB_surface._sussman_core`，
+            并行与否只决定"逐胞算子用哪个实现"，**迭代轨迹完全同一段代码**。
+          （这正是 `AGENTS §3.24`「改一半比不改更危险」的同一类陷阱。）"""
         import windowB_surface as _W
-        nth = self._segments(phi.shape[0])
-        if nth <= 1:
-            return _W.sussman_reinit(phi, dx, iters=iters, dtau=dtau, grad=grad,
-                                     guard=guard, band_cells=band_cells)
-        phi0 = phi.copy()
-        _g = self.gradient(phi0, dx, edge_order=2)
-        _gn = np.sqrt(sum(_gi ** 2 for _gi in _g))
-        _sel = None
-        if band_cells is not None:
-            _sel = np.abs(phi0) <= float(band_cells) * dx
-            if not _sel.any():
-                _sel = None
-        _gm = float(np.median(_gn if _sel is None else _gn[_sel]))
-        if _gm > 1e-12 and abs(_gm - 1.0) > 0.2:
-            phi = phi / _gm
-            phi0 = phi0 / _gm
-        S = phi0 / np.sqrt(phi0 ** 2 + dx ** 2)
-        if dtau is None:
-            dtau = 0.5 * dx / 3.0
-        _phi_raw = phi0.copy()
-        _lim0 = float(np.max(np.abs(phi0))) + dx
-        for _ in range(int(iters)):
-            if grad == 'upwind':
-                gm = self.upwind_grad(phi, S, dx)
-            elif grad == 'upwind2':
-                gm = self.upwind_grad2(phi, S, dx)
-            elif grad == 'central':
-                g = self.gradient(phi, dx, edge_order=2)
-                gm = np.sqrt(sum(gi ** 2 for gi in g))
-            else:
-                gm = _W.grad_sym(phi, dx)
-            _gmax = float(np.max(gm if _sel is None else gm[_sel]))
-            _dte = min(dtau, 0.5 * dx / 3.0 / max(_gmax, 1.0))
-            _upd = _dte * S * (gm - 1.0)
-            phi = phi - np.clip(_upd, -0.5 * dx, 0.5 * dx)
-            if guard and float(np.max(np.abs(phi))) > 10.0 * _lim0:
-                return _phi_raw
-        return phi
+        return _W.sussman_reinit(phi, dx, iters=iters, dtau=dtau, grad=grad,
+                                 guard=guard, band_cells=band_cells, bbox=bbox,
+                                 par=self)
 
     def einsum_ii(self, a, b):
         """`np.einsum('...i,...i->...', a, b)` 的空间并行版（逐胞归约次序不变 ⇒ 逐位相同）。"""

@@ -105,7 +105,7 @@ COLS = ['step', 't_s', 'dt', 'ncell', 'V', 'L', 'W', 'T', 'Lb', 'Wb', 'Tb',
         'fill', 'fill_n', 'ang_a_deg', 'sv0', 'sv1', 'sv2',
         'ncomp', 'frac_big', 'L_big', 'nif', 'gmed', 'f_a', 'f_w', 'f_n',
         'box_touch', 'band_bad', 'ok', 'dG_max', 'nreinit', 'nskip', 'regflip',
-        'adv_wall']
+        'adv_wall', 'reinit_wall', 'reinit_pairs']
 
 
 def measure(g, K, a_ax, w_ax, n_hab, box_frac):
@@ -445,7 +445,9 @@ def _run(a, outdir, L, dx):
                    nreinit=int(getattr(g, '_reinit_done', 0)),
                    nskip=int(getattr(g, '_reinit_skipped', 0)),
                    regflip=int(getattr(g, '_reinit_reg_flips', 0)),
-                   adv_wall=adv_wall)
+                   adv_wall=adv_wall,
+                   reinit_wall=float(getattr(g, '_reinit_wall_last', float('nan'))),
+                   reinit_pairs=int(getattr(g, '_reinit_pairs_last', 0)))
         row.update({k: mm.get(k, float('nan')) for k in COLS})
         fh.write(','.join(_fmt(row.get(c, float('nan'))) for c in COLS) + '\n')
         for K in sorted(set(vlist)):

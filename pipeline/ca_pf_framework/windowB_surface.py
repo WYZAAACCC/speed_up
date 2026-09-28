@@ -155,8 +155,37 @@ def _bbox_pad(mask, pad=1, wrap=True):
     return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
 
 
+def _band_bbox(field, band, dx, margin, wrap=True):
+    """带（`|field| ≤ band·dx`）的**包围盒**（外扩 `margin` 胞），返回切片元组或 None。
+
+    ★★★ R1 任务①（2026-09-29）：Sussman 重初始化的**结构性**加速。
+      为什么可以只在子盒里迭代（论证，须与实测一起引用）：
+        * Sussman 的更新 `φ ← φ − dτ·S·(|∇φ|−1)` 用**迎风**差分；对 `S>0` 的胞
+          信息来自 `D⁻`（朝**零等值面**那一侧）⇒ **依赖锥指向界面内部**，
+          即"带内胞的值只依赖它到界面之间（更靠内）的胞"。
+        * 而**回写掩模**本来就是 `|d2| ≤ band·dx` ⇒ 带外的值**根本不用算对**。
+      综合两条：只要子盒包含"带 + margin 胞"，带内的结果与全域迭代**逐位相同**，
+      代价却按子盒体积缩小。
+      ⚠ **保守取 margin=4**：`np.roll` 的周期回卷只污染离边缘 ≤2 胞的 stencil；
+        薄板的中轴处迎风方向可能退化，多留 2 胞余量。
+      ⚠ `wrap=True`（周期盒）时，**贴着网格面的轴必须取满整程** —— 与 `_bbox_pad` 同理。
+    """
+    m = np.abs(field) <= band * dx
+    if not m.any():
+        return None
+    idx = np.argwhere(m)
+    n = np.asarray(field.shape)
+    lo = np.maximum(idx.min(0) - int(margin), 0)
+    hi = np.minimum(idx.max(0) + int(margin) + 1, n)
+    if wrap:
+        _touch = (idx.min(0) == 0) | (idx.max(0) == n - 1)
+        lo = np.where(_touch, 0, lo)
+        hi = np.where(_touch, n, hi)
+    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+
+
 def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True,
-                   band_cells=None):
+                   band_cells=None, bbox=None, par=None):
     """④ 保亚胞位置的 PDE 式重初始化：解 φ_τ + S(φ0)(|∇φ|−1) = 0（一阶迎风）。
        零等值面在连续意义下不动 ✓（旧写法 `distance_transform_edt(mask)` 会把界面
        吸附到胞边界，O(0.5dx) 系统偏差 ✗）。
@@ -166,40 +195,72 @@ def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True,
            症状 ① 界面被"钉"在按 dt 变化的伪不动点上（W1 定容弛豫实测：
                 dt 小 5 倍，收敛长径比从 1.35 掉到 1.15 ✗）；
            症状 ② 跑几百步后带内 |∇φ| 从 1.0 突然涨到 5.5 ⇒ 界面炸掉 ✗。
-         现在默认 `dτ = 0.5·dx/3`（安全裕度 2 倍），收敛靠增加迭代数（iter=40）。"""
+         现在默认 `dτ = 0.5·dx/3`（安全裕度 2 倍），收敛靠增加迭代数（iter=40）。
+
+       ★★★ R1 任务②（2026-09-29）：新增 `par`（并行核）与 `bbox`（子盒）。
+         **两者都不改变数值** —— 统计量（`_gm`、`max(gm[_sel])`）用的掩模 `_sel`
+         完全落在带内、因而完全落在子盒内，所以统计量逐位不变；
+         `par` 只是把逐胞算子切片执行（见 `windowB_par`）。
+         ⚠ **绝不能**只在并行路径上加 `bbox` —— 那会让"线程数"变成物理参数。
+           因此 `bbox` 与 `par` 都放在**这一个**函数里，两条路径共用同一段代码。
+    """
+    _par_on = (par is not None and par.n > 1)
+    _gwb = (lambda a, s: par.upwind_grad2(a, s, dx)) if _par_on else \
+           (lambda a, s: upwind_grad2(a, s, dx))
+    _gw1 = (lambda a, s: par.upwind_grad(a, s, dx)) if _par_on else \
+           (lambda a, s: upwind_grad(a, s, dx))
+    _grd = (lambda a: par.gradient(a, dx, edge_order=2)) if _par_on else \
+           (lambda a: np.gradient(a, dx, edge_order=2))
+    if bbox is None:
+        return _sussman_core(phi, dx, iters, dtau, grad, guard, band_cells,
+                             _gwb, _gw1, _grd)
+    # ---- 子盒路径：**同一段代码**，只是喂进去的是子盒视图 ----
+    # ★★ 记账（R1 自查抓到的**别名 bug**）：子盒路径**绝不能**原地改调用者传进来的数组。
+    #   第一版写的是 `phi[bbox] = out; return phi` —— 而调用者 `reinitialize()` 写的是
+    #     `dn = self.sussman_reinit(d2, bbox=…)` 然后 `corr2 = dn − d2`，
+    #   于是 `dn is d2` ⇒ **`corr2 ≡ 0`**（修正量被自己减掉了）。
+    #   全路径返回的是新数组（`_sussman_core` 内部 `phi = phi/_gm` 会新建），
+    #   子盒路径也必须**返回新数组**才满足同一个契约。
+    sub = np.ascontiguousarray(phi[bbox])
+    out = _sussman_core(sub, dx, iters, dtau, grad, guard, band_cells,
+                        _gwb, _gw1, _grd)
+    res = np.array(phi, copy=True)
+    res[bbox] = out
+    return res
+
+
+def _sussman_core(phi, dx, iters, dtau, grad, guard, band_cells, _gwb, _gw1, _grd):
+    """Sussman 迭代的**唯一**实现（`sussman_reinit` 的全域/子盒两条路径共用）。
+
+    ★ 为什么抽出来：`AGENTS §3.24`（改一半比不改更危险）—— 两条路径若各写一份，
+      迟早分叉。这里保证"全域"与"子盒"、以及"单线程"与"多线程"跑的是**同一段代码**。
+
+    原记账（`EXPERT-#3b / W1-2 / EXPERT-#3c`，逐条保留）：
+      * **先整体归一化成近似 SDF**：PDE 式重初始化的稳定性前提是 |∇φ|~1。实测输入
+        |∇φ0| = 2（差分场在紧挨界面时）会让 (gm−1)~1，二阶 ENO 过冲 ⇒ **直接发散**
+        （zero-level 从 0.012 µm 跑到 −0.82 µm@100 → −71 µm@3000，带内 |∇φ| 变 nan；
+        且**迭代越多越糟**，说明是发散不是收敛慢）。归一化只除以**全局常数**，
+        不改零等值面、只改斜率，是安全的前置步骤。
+      * **统计量的域必须可选**（W1-2）：本算子用 `max(gm)` 定伪时间步。同一场实测
+        中心差分全域 max = 1.00，而本算子实际驱动的 `upwind_grad2` 全域 max = **68.5**
+        ⇒ `_dte/dtau` 只剩 0.0146。原因是水平集**必然存在中轴/脊线**，脊线上梯度间断
+        ⇒ `upwind_grad2` 给伪尖峰 ⇒ **一个远离界面的脊线胞把整个 reinit 冻结**。
+        实测（同一初态、只改这一处）：带内中位恢复率 **−2.7% → +97.1%**；
+        `region()` 翻转 **0**、界面键 **1.0000×**（零几何损伤）；
+        `band_cells ∈ {3,6,12}` ⇒ 96.9% / 97.1% / 46.3% ⇒ **不是需要精调的魔法参数**。
+      * **自适应 dτ + 单步 clip + 发散守卫**（EXPERT-#3c）：
+        ① `dτ_eff = min(dτ, 0.5dx/3/max(gm))`（CFL 对 gm 也成立）；
+        ② 单步更新 clip 到 ±0.5dx；③ `max|φ| > 10×` 初值量级 ⇒ **拒绝本次 reinit**
+        （返回原场，**不静默生效**）。
+      * 空带 ⇒ **显式退回全域**；**绝不**静默变成"全选"或"全不选"。"""
     phi0 = phi.copy()
-    # EXPERT-#3b 修（2026-09-26）：**先把输入整体归一化成近似 SDF**。
-    #   为什么必须：PDE 式重初始化的稳定性前提是 |grad phi| ~ 1。实测输入
-    #   |grad phi0| = 2（例如差分场 d = phi_k - phi_l 在紧挨界面时）会让 (gm-1) ~ 1，
-    #   每步位移 ~ dtau，而二阶 ENO 的 gm 会过冲 => **直接发散**：
-    #     实测 zero-level 从 0.012um 跑到 -0.82um(iters=100) -> -71um(iters=3000)，
-    #     带内 |grad phi| 变 nan；且**迭代越多越糟**（说明是发散不是收敛慢）。
-    #   归一化只除以一个**全局常数**（不改零等值面、只改斜率），是安全的前置步骤。
-    _probe = phi0
-    for _ax in range(3):
-        _probe = _probe  # no-op，保持维度一致
-    _g = np.gradient(phi0, dx, edge_order=2)
+    _g = _grd(phi0)
     _gn = np.sqrt(sum(_gi ** 2 for _gi in _g))
-    # ★★★ W1-2（2026-09-28，Gate A-1 选项①）：**统计量的域可选**。
-    #   `band_cells=None`（默认）⇒ 全域 ⇒ **现有全部调用者逐位不变**（向后兼容硬保证）。
-    #   为什么要能选"带内"（依据 `_probe_grad_fixpoint.py` + `_probe_fix_bandstats.py`，全实测）：
-    #     * 本算子用 `max(gm)` 定伪时间步。**同一场**实测：中心差分全域 max = **1.00**，
-    #       而**本算子实际驱动的** `upwind_grad2` 全域 max = **68.5** ⇒ `_dte/dtau` 只剩 **0.0146**；
-    #     * 原因是水平集场**必然存在中轴/脊线**（板条的圆边、区域的角），脊线上梯度**间断**
-    #       ⇒ `upwind_grad2` 在脊线处给出远大于 1 的伪值
-    #       ⇒ **一个远离界面的脊线胞，就把整个 reinit 冻结**；
-    #     * 实测（同一初态、同一算子、**只**改这一处统计量的域、iters=100）：
-    #       带内中位恢复率 **−2.7% → +97.1%**；`region()` 翻转 **0**、界面键 **1.0000×**（零几何损伤）；
-    #       反向对照（恒等算子）Δ ≡ **0.00e+00**（证明量具能分辨"没改动"）；
-    #       `band_cells ∈ {3,6,12}` ⇒ **96.9% / 97.1% / 46.3%** ⇒ **不是需要精调的魔法参数**，
-    #       且 **6 正是 `reinitialize()` 本来就在用的那个值**。
-    #   ⚠ **启用会改数** ⇒ 按 `R8` 必须全量重跑引用它的判据（Wave 2）。
-    #     启用方式：`LevelSetMulti(..., reinit_band_cells=6)` 或事后 `g.reinit_band_cells = 6`。
     _sel = None
     if band_cells is not None:
         _sel = np.abs(phi0) <= float(band_cells) * dx
         if not _sel.any():
-            # ★ 空带 ⇒ **显式退回全域**；**绝不**静默变成"全选"或"全不选"（本项目最忌讳的静默行为）。
+            # ★ 空带 ⇒ **显式退回全域**；**绝不**静默变成"全选"或"全不选"。
             _sel = None
     _gm = float(np.median(_gn if _sel is None else _gn[_sel]))
     if _gm > 1e-12 and abs(_gm - 1.0) > 0.2:
@@ -208,23 +269,15 @@ def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True,
     S = phi0 / np.sqrt(phi0 ** 2 + dx ** 2)
     if dtau is None:
         dtau = 0.5 * dx / 3.0   # 一阶迎风、多维 CFL：dτ ≤ dx/3（|S|≤1）
-    # EXPERT-#3c 修（2026-09-26）：**自适应 dtau + 单步 clip + 发散守卫**。
-    #   为什么原写法会发散：更新量是 dtau*S*(gm-1)。当输入 |grad phi| 明显 >1 时
-    #   (gm-1)~O(1)，而 gm 自身在迭代中还会被二阶 ENO 过冲放大 =>
-    #   实测 iters 越大越糟（-0.82um@100 -> -71um@3000，带内 |grad| 变 nan）。
-    #   三处加固：
-    #     ① 自适应步长：dtau_eff = min(dtau, 0.5*dx/3/max(gm))  （CFL 对 gm 也成立）
-    #     ② 单步更新 clip 到 ±0.5*dx
-    #     ③ 守卫：若 max|phi| 超过初值量级 10 倍 => **拒绝本次 reinit**（返回原场，不静默生效）
     _phi_raw = phi0.copy()
     _lim0 = float(np.max(np.abs(phi0))) + dx
-    for _ in range(iters):
+    for _ in range(int(iters)):
         if grad == 'upwind':
-            gm = upwind_grad(phi, S, dx)
+            gm = _gw1(phi, S)
         elif grad == 'upwind2':
-            gm = upwind_grad2(phi, S, dx)
+            gm = _gwb(phi, S)
         elif grad == 'central':
-            g = np.gradient(phi, dx, edge_order=2)
+            g = _grd(phi)
             gm = np.sqrt(sum(gi ** 2 for gi in g))
         else:
             gm = grad_sym(phi, dx)
@@ -2128,22 +2181,20 @@ class LevelSetMulti(object):
         """★ 委托给**模块级** `upwind_grad`（单畴/多畴共用一份 ⇒ 不会分叉）"""
         return upwind_grad(phi, sgn, self.dx)
 
-    def sussman_reinit(self, phi, iters=None):
+    def sussman_reinit(self, phi, iters=None, bbox=None):
         """委托给模块级 `sussman_reinit`。
            EXPERT-#3: 默认改用 self.reinit_iters 并透传 dtau/grad
            （原来这里硬编码 iters=30，且丢掉了 dtau/grad）。
            ★ W1-2: 再透传 `band_cells=self.reinit_band_cells`（默认 None ⇒ 全域 ⇒ 逐位兼容）。
-           ★★ R1（2026-09-29）：有 `self.par` 时改走**并行版**（`windowB_par.ParCtx.
-             sussman_reinit`）—— 逐胞算子并行、但 `max(gm)` 的**串行依赖保持原样**
-             ⇒ 与单线程**逐位相同**（`windowB_par._selftest` 判据把关）。"""
-        _kw = dict(iters=(self.reinit_iters if iters is None else iters),
-                   dtau=getattr(self, 'reinit_dtau', None),
-                   grad=getattr(self, 'reinit_grad', 'upwind2'),
-                   band_cells=getattr(self, 'reinit_band_cells', None))
-        _p = getattr(self, 'par', None)
-        if _p is not None and _p.n > 1:
-            return _p.sussman_reinit(phi, self.dx, **_kw)
-        return sussman_reinit(phi, self.dx, **_kw)
+           ★★ R1（2026-09-29）：透传 `par`（并行核）与 `bbox`（子盒）。
+             **两者都不改变数值**（论证见模块级 `_band_bbox` / `sussman_reinit`），
+             而且**两条路径共用同一段迭代代码** ⇒ 线程数不是物理参数。"""
+        return sussman_reinit(phi, self.dx,
+                              iters=(self.reinit_iters if iters is None else iters),
+                              dtau=getattr(self, 'reinit_dtau', None),
+                              grad=getattr(self, 'reinit_grad', 'upwind2'),
+                              band_cells=getattr(self, 'reinit_band_cells', None),
+                              bbox=bbox, par=getattr(self, 'par', None))
 
     def _advance_phi(self, k, vn, dt):
         """④ 用迎风 |∇φ| 推进：φ_t + v_n|∇φ| = 0"""
@@ -3175,6 +3226,11 @@ class LevelSetMulti(object):
                 newp = self.sussman_reinit(self.phi[k])
                 self.phi[k] = np.where(near, newp, self.phi[k])
             return
+        # ★ R1（2026-09-29）：**只为记账**的墙钟计时（不改变任何数值/分支）。
+        import time as _tm
+        _tw0 = _tm.perf_counter()
+        self._reinit_wall_last = 0.0
+        self._reinit_pairs_last = 0
         reg = self.region()
         self._reinit_band_before = self._band_bonds(reg)
         # 活跃配对：区域数少时可全对；否则用 region 的邻居关系先筛
@@ -3209,6 +3265,36 @@ class LevelSetMulti(object):
             near = np.abs(d2) <= band_cells * self.dx
             if not near.any():
                 continue
+            # ★★★ R1 任务①（2026-09-29）：**只在该配对界面的包围盒里做 Sussman**。
+            #   为什么可以（论证见模块级 `_band_bbox`）：Sussman 的迎风依赖锥
+            #     **指向零等值面内部**，而回写掩模本来就是 `|d2| ≤ band·dx`
+            #     ⇒ 带外的迭代结果**根本不被使用**，算了也是白算。
+            #   ⚠ 这条是**纯结构性**加速：全域与子盒的结果对带内胞**逐位相同**
+            #     （由 `_r1_reinit_bbox.py` 的逐位判据把关）。
+            #   ⚠ `reinit_bbox` 是**敏感度旋钮**：False ⇒ 退回旧的全域行为（对照用）。
+            #   ★★★ **实测否决（R1，2026-09-29）**：`_r1_reinit_bbox.py` 的端到端逐位守卫
+            #     **B-1 FAIL** —— 真实状态（N=48、4 核、6 步）上子盒与全域 `phi` 的
+            #     最大绝对差 **3.446e-07 m**（而 B-2 正对照 margin=1 给出**同一个数**
+            #     3.446e-07 ⇒ 子盒路径等价于"margin=1"，**不是**等价于全域）。
+            #   我原来的论证**错在哪**：我只算了"特征线 1 胞/迭代"，
+            #     但 `upwind_grad2` 的**数值依赖锥是每迭代 ±2 胞**
+            #     （`Dm2[i]` 用到 `phi[i−2..i+1]`；`Dp2` 用到 `phi[i+2]`）
+            #     ⇒ `iters=100` 时依赖半径 ≈ **200 胞**，任何实用余量都不够。
+            #   ⇒ **`reinit_bbox` 默认改为 `False`（关闭）**；代码保留，供"已知近似模式"使用。
+            #     （与 `AGENTS §3.16`「传承结论也要能算数才算数」同类：**实测否决推理**。）
+            _bbox = None
+            if getattr(self, 'reinit_bbox', False):
+                _mg = getattr(self, 'reinit_bbox_margin', None)
+                if _mg is None:
+                    import math as _m
+                    _mg = 2 + 2 * int(self.reinit_iters) + 1
+                _bbox = _band_bbox(d2, band_cells, self.dx, _mg)
+                if _bbox is not None:
+                    self._reinit_bbox_used = getattr(self, '_reinit_bbox_used', 0) + 1
+                    _vol = 1
+                    for _s in _bbox:
+                        _vol *= (_s.stop - _s.start)
+                    self._reinit_bbox_frac = _vol / float(self.phi[0].size)
             # EXPERT-#3c 记账：本路径的正确性依赖"窄带 + 输入近似 SDF"。
             #   Sussman 的不动点是 |grad| = 1 的场；若带内 |grad d2| 明显偏离 1，
             #   迭代会把斜率推向 1 并**同时移动零等值面**（不是 bug，是必然）。
@@ -3235,12 +3321,17 @@ class LevelSetMulti(object):
                 self._reinit_skipped = getattr(self, '_reinit_skipped', 0) + 1
                 continue
             self._reinit_done = getattr(self, '_reinit_done', 0) + 1
+            self._reinit_pairs_last = self._reinit_pairs_last + 1
+            import time as _tm2
+            _tp0 = _tm2.perf_counter()
             if abs(_med - 1.0) > 0.5:
                 import warnings as _w
                 _w.warn('pair reinit: band |grad(d/2)| median=%.3f 明显偏离 1; '
                        'Sussman will move the zero-level set (input not SDF).'
                        % _med, RuntimeWarning, stacklevel=2)
-            dn = self.sussman_reinit(d2)
+            dn = self.sussman_reinit(d2, bbox=_bbox)
+            self._reinit_wall_last = getattr(self, '_reinit_wall_last', 0.0) + (
+                _tm2.perf_counter() - _tp0)
             corr2 = np.where(near, dn - d2, 0.0)      # 对 **d2** 的修正量
             # 该胞的界面身份必须是 (k,l)（无序）
             is_kl = ((_karr == k) & (_larr == l)) | ((_karr == l) & (_larr == k))
@@ -3275,6 +3366,8 @@ class LevelSetMulti(object):
                     'pair reinit 后界面带胞数膨胀 %.3f× (%d -> %d)：'
                     '重初始化把界面带撑大了，几何测度已不可信（P0-3 的指纹）。'
                     % (_ratio, self._reinit_band_before, _n1))
+        self._reinit_wall_total = getattr(self, '_reinit_wall_total', 0.0) + (
+            _tm.perf_counter() - _tw0)
 
     @staticmethod
     def _band_bonds(reg):
