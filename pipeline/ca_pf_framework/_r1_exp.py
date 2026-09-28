@@ -104,6 +104,8 @@ COLS = ['step', 't_s', 'dt', 'ncell', 'V', 'L', 'W', 'T', 'Lb', 'Wb', 'Tb',
         'LA', 'WA', 'TA', 'LWA', 'LTA', 'WTA', 'fill_A', 'A_tot', 'A_a', 'A_w', 'A_n',
         'fill', 'fill_n', 'ang_a_deg', 'sv0', 'sv1', 'sv2',
         'ncomp', 'frac_big', 'L_big', 'nif', 'gmed', 'f_a', 'f_w', 'f_n',
+        # ★★ 第 3 轮：**逐分量的"块"量具**（多核算例专用）
+        'nc', 'Lc', 'Wc', 'Tc', 'LWc', 'LTc', 'align_deg', 'big_frac', 'gap_w_nm',
         # ★★ R1 第 2 轮：**分面弹性能诊断**（P-1，机理判决用）
         'ded_a', 'ded_w', 'ded_n', 'ded_all', 'ed_par_mean',
         'box_touch', 'band_bad', 'ok', 'dG_max', 'nreinit', 'nskip', 'regflip',
@@ -129,7 +131,8 @@ def measure(g, K, a_ax, w_ax, n_hab, box_frac, ed_all=None):
               'sv1', 'sv2', 'LA', 'WA', 'TA', 'LWA', 'LTA', 'WTA', 'fill_A',
               'A_tot', 'A_a', 'A_w', 'A_n', 'ded_a', 'ded_w', 'ded_n', 'ded_all',
               'ed_par_mean', 'L_cal', 'W_cal', 'T_cal', 'LW_cal', 'LT_cal',
-              'WT_cal'):
+              'WT_cal', 'nc', 'Lc', 'Wc', 'Tc', 'LWc', 'LTc', 'align_deg',
+              'big_frac', 'gap_w_nm'):
         out[c] = float('nan')
     out['ok'] = 0
     if ncell < 8:
@@ -217,6 +220,48 @@ def measure(g, K, a_ax, w_ax, n_hab, box_frac, ed_all=None):
         #   ⚠ 记账：反解**假定形状是长方体**（板条近似成立、纺锤不成立）
         #     ⇒ `fill_A = V/(L_A W_A T_A)` 就是"离长方体有多远"的**诊断量**，
         #     纺锤应给出 `fill_A ≪ 1`。
+        # ★★ R1 第 3 轮：**逐连通分量的"块"量具**。
+        #   为什么必须：实验 4–7 的核是**沿 w 排成一列**的多个独立晶核。
+        #   `measure()` 原来把 `region()==K` 的**全部胞**当一个对象 ⇒ 实测把 6 个核
+        #   读成 `W=8442 nm`、`夹角=90°`（因为整列的 PCA 长轴沿 w）——**完全失真**。
+        #   块的正确量法：**逐个分量**量 L/W/T，再统计
+        #     `nc` 分量数（⇒ 是否合并）、`align` 各分量长轴与 `a` 的夹角、
+        #     `gap_w` 相邻分量质心在 `w` 上的间距（文献 lath 间距 ≈ 宽度）。
+        if ncomp >= 1:
+            comps = []
+            for ci in range(1, ncomp + 1):
+                mc = (lab == ci)
+                nci = int(mc.sum())
+                if nci < 8:
+                    continue
+                ici = np.argwhere(mc).astype(np.float64)
+                pai, pwi, pni = ici @ a_ax, ici @ w_ax, ici @ n_hab
+                Li = (pai.max() - pai.min() + 1) * dx
+                Wi = (pwi.max() - pwi.min() + 1) * dx
+                Ti = (pni.max() - pni.min() + 1) * dx
+                cm = ici.mean(0)
+                try:
+                    _, _, vt = np.linalg.svd(ici - cm, full_matrices=False)
+                    u0 = vt[0] / (np.linalg.norm(vt[0]) + 1e-300)
+                    al = float(np.degrees(np.arccos(min(1.0, abs(float(u0 @ a_ax))))))
+                except Exception:
+                    al = float('nan')
+                comps.append((nci, Li, Wi, Ti, cm, al))
+            out['nc'] = float(len(comps))
+            if comps:
+                out['Lc'] = float(np.median([c[1] for c in comps]))
+                out['Wc'] = float(np.median([c[2] for c in comps]))
+                out['Tc'] = float(np.median([c[3] for c in comps]))
+                out['LWc'] = out['Lc'] / max(out['Wc'], 1e-30)
+                out['LTc'] = out['Lc'] / max(out['Tc'], 1e-30)
+                out['align_deg'] = float(np.nanmedian([c[5] for c in comps]))
+                out['big_frac'] = float(max(c[0] for c in comps)) / max(ncell, 1)
+                # 相邻分量质心在 `w` 上的间距（取最近邻中位数）
+                if len(comps) >= 2:
+                    cms = np.array([c[4] for c in comps])
+                    pw = cms @ w_ax
+                    pw = np.sort(pw)
+                    out['gap_w_nm'] = float(np.median(np.diff(pw))) * 1e9
         U = np.stack([a_ax, w_ax, n_hab], 0)
         cn3 = np.abs(nv @ U.T)                      # (nif,3)
         acell = gm[iface] * dx ** 2 / 3.0           # coarea 面积元（与 cell_area_geom 同口径）
@@ -326,6 +371,12 @@ def main():
     ap.add_argument('--variants', default='')
     ap.add_argument('--gap-nm', type=float, default=1200.0)
     ap.add_argument('--kseed', type=int, default=7)
+    ap.add_argument('--layout', default='grid',
+                    choices=('grid', 'line_w', 'line_a', 'line_n'),
+                    help='多核摆放：grid=抖动格点；line_w/line_a/line_n = 沿该设计轴排**一列**'
+                         '（`line_w` 才是"一条 block"的几何：平行板条沿宽度方向并排）')
+    ap.add_argument('--line-gap-nm', type=float, default=2500.0,
+                    help='line 布局的核间距（沿排布轴）')
     ap.add_argument('--beta-h', type=float, default=3.5)
     ap.add_argument('--beta-w', type=float, default=2.3)
     ap.add_argument('--norm-smooth', type=int, default=0)
@@ -427,6 +478,25 @@ def _run(a, outdir, L, dx):
     vlist = [int(v) for v in a.variants.split(',') if v.strip()] or [K0]
     if a.nseed == 1:
         centers = [np.array([L / 2] * 3)]
+    elif a.layout.startswith('line'):
+        # ★★ 第 3 轮：**沿一条设计轴排一列**。
+        #   为什么需要：实验 4–7 问的是"能不能组成**块**"，而块 = **平行板条并排**。
+        #   抖动格点摆法给出的是各向同性的核团，量不出"块"。
+        #   `line_w` = 沿**宽度方向 w** 并排 ⇒ 正是文献里 block 的几何
+        #     （同变体的板条沿 w 堆叠，宽面互相平行）。
+        _axmap = {'line_w': w_ax, 'line_a': a_ax, 'line_n': n_hab}
+        u = np.asarray(_axmap[a.layout], float)
+        u = u / np.linalg.norm(u)
+        c0 = np.array([L / 2] * 3)
+        half = 0.5 * (a.nseed - 1) * a.line_gap_nm * 1e-9
+        centers = [c0 + (i * a.line_gap_nm * 1e-9 - half) * u for i in range(a.nseed)]
+        # 周期盒：把越界的核折回来
+        centers = [c - L * np.floor(c / L) for c in centers]
+        _ext = (a.nseed - 1) * a.line_gap_nm * 1e-9
+        P('沿 %s 排 %d 个核，间距 %.0f nm，总跨度 %.2f µm（盒 %.2f µm）'
+          % (a.layout[5:], a.nseed, a.line_gap_nm, _ext * 1e6, L * 1e6))
+        if _ext + max(shape.get('L', 0), 2 * shape.get('R', 0)) * 1e-9 > 0.9 * L:
+            P('   ⚠ 排布跨度 + 核长 > 0.9 盒长 ⇒ 可能被周期镜像污染')
     else:
         rng = np.random.default_rng(a.kseed)
         side = int(np.ceil(a.nseed ** (1.0 / 3.0)))
@@ -572,6 +642,13 @@ def _run(a, outdir, L, dx):
                  mm['V'] / max(mm['L_cal'] * mm['W_cal'] * mm['T_cal'], 1e-30),
                  mm['ang_a_deg'], 100 * mm['f_a'], 100 * mm['f_w'], 100 * mm['f_n'],
                  mm['gmed'], (time.time() - t_start) / it, ' '.join(fl)))
+            if np.isfinite(mm.get('nc', float('nan'))) and mm['nc'] > 1:
+                P('          ★块：**分量数 nc=%.0f**  逐分量中位 L/W/T = %.0f/%.0f/%.0f nm  '
+                  '**LWc=%.2f**  长轴与 a 夹角中位 %.1f°  相邻质心沿 w 间距 %.0f nm  '
+                  '最大分量占比 %.2f'
+                  % (mm['nc'], mm['Lc'] * 1e9, mm['Wc'] * 1e9, mm['Tc'] * 1e9,
+                     mm['LWc'], mm['align_deg'], mm.get('gap_w_nm', float('nan')),
+                     mm['big_frac']))
             if a.ed_diag and np.isfinite(mm.get('ded_all', float('nan'))):
                 P('          P-1 分面 `Δed=ed[V%d]−ed[0]`（J/m³）：'
                   '**尖端 %.3e  侧面 %.3e  宽面 %.3e**  全体 %.3e  '
