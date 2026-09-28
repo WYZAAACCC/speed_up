@@ -190,8 +190,9 @@ def report(g, K, a_ax, w_ax, n_hab, dx, tag, prev, ed_all=None, bh=0.0, bw=0.0):
         # 各晶面族的条件均值（该族内 M/M0 的面积加权均值）
         def _cm(mask):
             return float((mf[mask]).mean()) if mask.sum() >= 10 else float('nan')
-        print('           M-5 界面 **M(n)/M0** 面积加权均值 = **%.3f**（设计在三个面上分别'
-              ' 1.000 / %.3f / %.3f）；占比 `M/M0>0.5` = %.1f%%'
+        print('           M-5 界面 **M(n)/M0** 面积加权均值 = **%.3f**（**模型自身**的 β 设计值在三个面上'
+              '分别 1.000 / %.3f / %.3f —— ⛔ **不是文献靶**，见 `MEASUREMENT_SPEC R17`：'
+              'β_w 无同工艺锚点、β_h 含无出处输入）；占比 `M/M0>0.5` = %.1f%%'
               % (mf.mean(), np.exp(-bw), np.exp(-bh), 100 * (mf > 0.5).mean()), flush=True)
         print('               族内条件均值：`|n·a|>0.8`→%.3f  `|n·w|>0.8`→%.3f  `|n·n*|>0.8`→%.3f'
               % (_cm(ca > 0.8), _cm(cw > 0.8), _cm(cn > 0.8)), flush=True)
@@ -253,6 +254,12 @@ ap.add_argument('--arms', default='aniso,iso',
                 help='逗号分隔：aniso(3.5/2.3,ns0) | aniso_s2(3.5/2.3,ns2) | iso(0/0) | '
                      'iso_s2(0/0,ns2) | bw5(3.5/5.0) | bh5(5.0/2.3)')
 ap.add_argument('--adv', default='proj2', choices=('central', 'upwind', 'proj', 'proj2'))
+ap.add_argument('--elastic-soft', action='store_true',
+                help='★ 把 `g.elastic_soft` 置 True ⇒ 弹性指示场用**平滑**剖面而不是硬阶梯。'
+                     '动机（`windowB_surface.py:2097-2102` 的 AUDIT-#9 记账）：硬指示场 '
+                     '`(reg==v+1)` 是阶梯 ⇒ FFT 谱法解出的 σ 在**界面处**有 O(1) 噪声 ⇒ '
+                     '`ed` 在界面附近被污染。而本探针的 **M-6 恰恰只在界面胞上取 `ed`** '
+                     '⇒ **必须做这个单因素对照**，否则读到的可能是阶梯噪声。')
 ap.add_argument('--selftest', action='store_true',
                 help='★ 只做**量具正对照**：用**解析已知形状**跑 M-0/M-1/M-2/M-3，'
                      '与解析值比对，不跑引擎（AGENTS §3.19：探针必须先做正对照）')
@@ -396,6 +403,8 @@ for arm in a_ap.arms.split(','):
         fe = True
     g = W.LevelSetMulti(a_ap.N, L, C=C, eps0=EPS0, gamma=0.15, Mob=MOB,
                         df=[0.0] + [DF] * NV, workers=4, reinit_every=0, reinit_dt=6.0e-7)
+    if a_ap.elastic_soft:
+        g.elastic_soft = True          # AUDIT-#9：平滑指示场（默认 False = 硬阶梯）
     K = a_ap.kv
     n_hab, w_ax, a_ax = axes_of(g, K)
     g.seed_plate(K, np.array([L / 2] * 3), n_hab, a_ap.r_nm * 1e-9, a_ap.t_nm * 1e-9,

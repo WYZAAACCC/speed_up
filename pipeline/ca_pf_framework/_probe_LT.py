@@ -155,6 +155,33 @@ print('   ⇒ 厚度偏差 %+.1f%%，长度偏差 %+.1f%% ⇒ %s'
 dt = 0.15 * dx / (MOB * DF)
 print('\n【P-5 解析对照】dt=%.3e s  标称 `M0Δf·dt` = %.3f nm/步 ⇒ 预期 长:宽:厚 = 1 : %.3f : %.3f'
       % (dt, MOB * DF * dt * 1e9, np.exp(-BETA_W), np.exp(-BETA_H)))
+# ⛔⛔ 2026-09-28（Round 139，用户指正）**这一行不是"Ti-64 靶"，必须这么读** ⛔⛔
+print("""
+  ⛔ 上面那个 `1 : %.3f : %.3f` 是**本模型自身 β 取值下的速率比设计值**，
+     ⛔ **不是** 文献靶，⛔ **不是** Ti-64 的靶。依据 `MEASUREMENT_SPEC R17`：
+       * `β_h = 3.5` 是「3.8（**有** Ti-64 归属：位错环形成能）」与
+         「3.0（**无**材料/工艺/出处：观测纵横比 10–30）」的**混合值**；
+       * `β_w = 2.3` **完全**建立在无归属的「长/宽 ~ 10」上 ⇒ **同工艺锚点不存在**；
+       * 该无归属输入里的「板条厚 0.1–0.3 µm」是**钢**的量级，
+         Ti-64 LPBF as-built α′ 实测是 **0.51–0.88 µm**（Shuai 2026）⇒ **差 3–9 倍**。
+     ✅ **靶② 的正确对照值 = 几何长:厚 ≈ 9 : 1**（Wang 2026, LPBF Ti-64 as-built α′），
+        且依 `R15`：**自由生长的速率比必须 ≥ 9**（真实板条长度受**碰撞**限制）。
+""" % (np.exp(-BETA_W), np.exp(-BETA_H)))
+# ⛔⛔ 2026-09-28（Round 137）**横幅：本探针的形貌读数有三条已知口径限制** ⛔⛔
+print("""
+  ⛔ 读本探针的 `L/W/T`、`fill`、`ΔL/ΔT` 之前，先看 `MEASUREMENT_SPEC` 的三条：
+     R15 —— 上面的 `1 : %.3f : %.3f` 是**方向推进速率之比**，**不是形状比**。
+            形状比含初值（本探针的种子 `R=500/t=700` 实测 `L:T ≈ 1.40`，近等轴）
+            与碰撞历史 ⇒ **不得**把形状比直接与"设计 33"或"文献 9:1"比较。
+            靶② 的第一观测量是**长窗口的 `ΔL:ΔW:ΔT`**。
+     R12-a —— `norm_smooth>0` 会制造**离群连通分量**，其 `max−min` 跨度（及由它导出的
+            `fill`/`ΔL/ΔT`/长径比）**一律不得引用**，除非同时给"最大连通分量口径"。
+            ⚠ 且 `beta_h = beta_w = 0` 时引擎**整段跳过** `norm_smooth`（`windowB_surface.py:2383`
+            的 `_need_ref`）⇒ **各向同性对照检验不了它**。
+     R16 —— 体积比必须用 `fill_n = V/((L+dx)(W+dx)(T+dx))`，且与**同分辨率的离散参考**比。
+   ★ 更完整的形貌量具（截面积剖面 / 中段截面 / 界面法向 / 实际 `M(n)` / 分面 `ed` / 连通分量）
+     见 `_probe_shape.py`（带 `--selftest` 解析正对照）。
+""" % (np.exp(-BETA_W), np.exp(-BETA_H)))
 
 ts, Ls, Ws, Ts = [0], [L0], [W0], [T0]
 t0 = time.time()
@@ -258,15 +285,51 @@ for it in range(1, a_ap.steps + 1):
             Tg = float(np.sqrt(12.0 * ev[2]))
         else:
             Lg = Wg = Tg = float('nan')
+        # ★★★ 2026-09-28（Round 137）**追加：最大连通分量口径 + `fill_n`**。
+        #   为什么（`MEASUREMENT_SPEC R12-a` / `R16`，本轮实测）：
+        #     ① `norm_smooth>0` 会制造**离群连通分量**（`_w2_box16d.log` 自报 n=2..5，
+        #        最大分量只占 71.5%–99.8%）⇒ `max−min`（全体胞）**被离群碎片绑架**；
+        #        本函数在 `:219` 已写判据"以最大分量为准"，但 `Ls[-1]/fill` 一直用的是全体口径。
+        #     ② `fill`（不含 dx）对**长方体**给 1.61 而不是 1.00（`_probe_shape.py --selftest`
+        #        标定）⇒ **体积比必须用 `fill_n = V/((L+dx)(W+dx)(T+dx))`**。
+        _Lb = _Wb = _Tb = float('nan')
+        _ncomp = 1
+        try:
+            from scipy import ndimage as _nd
+            _lab, _ncomp = _nd.label(m)
+            if _ncomp > 1:
+                _sz = np.bincount(_lab.ravel())[1:]
+                _big = int(np.argmax(_sz)) + 1
+                _maskb = (_lab == _big)
+                _ib = np.argwhere(_maskb).astype(float)
+                _Lb = (float((_ib @ a_ax).max() - (_ib @ a_ax).min())) * dx
+                _Wb = (float((_ib @ w_ax).max() - (_ib @ w_ax).min())) * dx
+                _Tb = (float((_ib @ n_hab).max() - (_ib @ n_hab).min())) * dx
+            else:
+                _Lb, _Wb, _Tb = Ls[-1], Ws[-1], Ts[-1]
+        except Exception:
+            pass
+        _fn = Vol / max((Ls[-1] + dx) * (Ws[-1] + dx) * (Ts[-1] + dx), 1e-30)
+        _fnb = (Vol * (1.0 if _ncomp == 1 else 1.0)
+                / max((_Lb + dx) * (_Wb + dx) * (_Tb + dx), 1e-30))
         print('        [三把尺子] 胞数=%d  V=%.3e m³  ；`max−min` L=%.1f  **`L_vol`=%.1f**  '
               '**`L_gyr`=%.1f** nm ；`W_gyr`=%.1f `T_gyr`=%.1f nm'
               % (ncell, Vol, Ls[-1] * 1e9, Lv * 1e9, Lg * 1e9, Wg * 1e9, Tg * 1e9), flush=True)
-        # ★★★ 2026-09-28 新增：**包围盒填充率**（紧凑度）—— 每步都报，让"形状是不是板条"可见
-        #   实测（`BOX16d`）：种子 0.884 ⇒ 一长大就塌到 0.30–0.42 并停留 ⇒ **不是紧凑板条**。
-        #   ⚠ 口径：三向跨度是**投影**，乘积是不规则形状包围盒的**上界** ⇒ 本值是**下界**。
-        _fill = Vol / max(Ls[-1] * Ws[-1] * Ts[-1], 1e-30)
-        print('        [紧凑度] `fill = V/(L·W·T)` = **%.3f**（紧凑板条约 0.8–0.9；%s）'
-              % (_fill, '**形状不紧凑** ⚠' if _fill < 0.6 else '尚可'), flush=True)
+        if _ncomp > 1:
+            print('        [分量★] **n=%d ⇒ 上行的 `max−min` 是"全体胞"口径，已被离群碎片绑架！**'
+                  ' 最大分量：L=%.1f W=%.1f T=%.1f nm（全体 L 比它大 %+.1f%%）'
+                  % (_ncomp, _Lb * 1e9, _Wb * 1e9, _Tb * 1e9,
+                     100 * (Ls[-1] / max(_Lb, 1e-30) - 1)), flush=True)
+        print('        [紧凑度] **`fill_n(+dx)` = %.3f**（最大分量口径 %.3f）；'
+              '旧口径 `fill` = %.3f'
+              % (_fn, _fnb, Vol / max(Ls[-1] * Ws[-1] * Ts[-1], 1e-30)), flush=True)
+        # ⛔ 2026-09-28（Round 137）**删除**旧的 `fill` 判据行。原因（两条，都有实测背书）：
+        #   ① 它写的参考值「紧凑板条约 0.8–0.9」**没有依据** —— `_probe_shape.py --selftest`
+        #      实测：按同一口径，一个**长方体**给 **1.613**、一个同分辨率**椭球**给 **1.076**
+        #      ⇒ 0.8–0.9 既不"紧凑"也不"离散"。（`MEASUREMENT_SPEC R16`）
+        #   ② 它断言「一长大就塌到 0.30–0.42 ⇒ **不是紧凑板条**」—— 那条读数来自
+        #      `norm_smooth=2` 的 `BOX16d`，而 `norm_smooth>0` **会制造离群碎片**
+        #      把分母 `L·W·T` 顶高（`R12-a`）⇒ **"不紧凑"这个结论本身是伪影，已撤回**。
         print('   step=%-4d  L=%.1f  W=%.1f  T=%.1f nm   步时=%.2f s'
               % (it, Ls[-1] * 1e9, Ws[-1] * 1e9, Ts[-1] * 1e9, (time.time() - t0) / it), flush=True)
         if it >= a_ap.steps // 3:
