@@ -104,12 +104,19 @@ COLS = ['step', 't_s', 'dt', 'ncell', 'V', 'L', 'W', 'T', 'Lb', 'Wb', 'Tb',
         'LA', 'WA', 'TA', 'LWA', 'LTA', 'WTA', 'fill_A', 'A_tot', 'A_a', 'A_w', 'A_n',
         'fill', 'fill_n', 'ang_a_deg', 'sv0', 'sv1', 'sv2',
         'ncomp', 'frac_big', 'L_big', 'nif', 'gmed', 'f_a', 'f_w', 'f_n',
+        # ★★ R1 第 2 轮：**分面弹性能诊断**（P-1，机理判决用）
+        'ded_a', 'ded_w', 'ded_n', 'ded_all', 'ed_par_mean',
         'box_touch', 'band_bad', 'ok', 'dG_max', 'nreinit', 'nskip', 'regflip',
         'adv_wall', 'reinit_wall', 'reinit_pairs']
 
 
-def measure(g, K, a_ax, w_ax, n_hab, box_frac):
-    """一次完整测量。**双口径**（`R3`：`max−min` 有偏 1 胞；`+dx` 对轴对齐无偏）。"""
+def measure(g, K, a_ax, w_ax, n_hab, box_frac, ed_all=None):
+    """一次完整测量。**双口径**（`R3`：`max−min` 有偏 1 胞；`+dx` 对轴对齐无偏）。
+
+    `ed_all` 给定时（`(nreg,N,N,N)` 的弹性驱动）额外算 **P-1 分面诊断**：
+      `Δed = ed[K] − ed[0]`（母相参照）在 尖端/侧面/宽面 三族界面胞上的均值
+      —— 这是"尖端被弹性顶住"这一机理的**直接**判据（第 1 轮由历史读数推出
+      `1.0e8/3.08e8 = 0.325` 与实测 `ΔL:ΔW = 1:0.328` 吻合到 1%）。"""
     from scipy import ndimage as nd
     dx = g.dx
     reg = g.region()
@@ -120,7 +127,9 @@ def measure(g, K, a_ax, w_ax, n_hab, box_frac):
               'fill', 'fill_n', 'ang_a_deg', 'ncomp', 'frac_big', 'L_big', 'nif',
               'gmed', 'f_a', 'f_w', 'f_n', 'box_touch', 'band_bad', 'ok', 'sv0',
               'sv1', 'sv2', 'LA', 'WA', 'TA', 'LWA', 'LTA', 'WTA', 'fill_A',
-              'A_tot', 'A_a', 'A_w', 'A_n'):
+              'A_tot', 'A_a', 'A_w', 'A_n', 'ded_a', 'ded_w', 'ded_n', 'ded_all',
+              'ed_par_mean', 'L_cal', 'W_cal', 'T_cal', 'LW_cal', 'LT_cal',
+              'WT_cal'):
         out[c] = float('nan')
     out['ok'] = 0
     if ncell < 8:
@@ -180,6 +189,23 @@ def measure(g, K, a_ax, w_ax, n_hab, box_frac):
         out['f_n'] = float((np.abs(nv @ n_hab) > 0.9).mean())
         gmed = float(np.median(gm[iface]))
         out['gmed'] = gmed
+        # ---- ★★ P-1：分面 `Δed = ed[K] − ed[0]`（机理判决用）----
+        if ed_all is not None:
+            try:
+                edk = np.asarray(ed_all[K])[iface]
+                edp = np.asarray(ed_all[0])[iface]
+                ded = edk - edp
+                ca = np.abs(nv @ a_ax)
+                cw = np.abs(nv @ w_ax)
+                cn = np.abs(nv @ n_hab)
+                sel = np.argmax(np.stack([ca, cw, cn], 0), axis=0)
+                for idx, tag in ((0, 'ded_a'), (1, 'ded_w'), (2, 'ded_n')):
+                    s = (sel == idx)
+                    out[tag] = float(ded[s].mean()) if s.sum() >= 10 else float('nan')
+                out['ded_all'] = float(ded.mean())
+                out['ed_par_mean'] = float(np.asarray(ed_all[0]).mean())
+            except Exception:
+                pass
         # ---- ★★ 第三口径：**面积反解**（coarea + 法向分族）----
         #   为什么需要它（`_w2_r1calib.log` 实测）：前两条口径都受"**极端胞**"支配 ——
         #     方向与网格**斜交**时 `max−min` 近乎无偏、`+dx` 高读最多 1 胞；
@@ -308,6 +334,14 @@ def main():
     ap.add_argument('--reinit-band', type=float, default=6.0)
     ap.add_argument('--box-frac', type=float, default=0.80)
     ap.add_argument('--max-hours', type=float, default=6.0)
+    ap.add_argument('--seed-scale', type=float, default=1.0,
+                    help='种子整体缩放（机制筛选用：同一长径比在不同 Δx 上都要 ≥2 胞厚）')
+    ap.add_argument('--no-elastic', action='store_true',
+                    help='★★ **判决实验**：关掉弹性驱动（把 elastic_driving_pair 打成 0）'
+                         '⇒ 若 ΔL:ΔW:ΔT 回到设计 1:0.10:0.03，则"长不出板条"的元凶是弹性项；'
+                         '否则是 M(n)/法向通道。同时省掉谱法弹性求解（快很多）。')
+    ap.add_argument('--ed-diag', action='store_true',
+                    help='每次采样额外算一份 elastic_driving 并报分面 Δed（P-1 诊断）')
     ap.add_argument('--allow-small-box', action='store_true')
     ap.add_argument('--selftest', action='store_true')
     ap.add_argument('--dry-run', action='store_true')
@@ -340,6 +374,12 @@ def _run(a, outdir, L, dx):
         print(*x, flush=True)
 
     shape = dict(SHAPES[a.case])
+    if a.seed_scale != 1.0:
+        # ⚠ 记账：**机制筛选**用（不同 Δx 上要保证最薄方向 ≥2 胞）。
+        #   缩放后**尺寸不同** ⇒ 与未缩放的臂**不能直接比绝对量**，只能比**速率比**。
+        for k in ('L', 'W', 'T', 'R'):
+            if k in shape:
+                shape[k] = shape[k] * a.seed_scale
     P('=' * 104)
     P('_r1_exp  case=%s  nseed=%d  N=%d  Δx=%.1f nm  L=%.2f µm  steps=%d'
       % (a.case, a.nseed, a.N, a.dx_nm, L * 1e6, a.steps))
@@ -356,6 +396,15 @@ def _run(a, outdir, L, dx):
 
     K0 = a.kv
     n_hab, w_ax, a_ax = axes_of(g, K0)
+    if a.no_elastic:
+        # ★★ 判决实验：把弹性驱动整条通道打成 0（`advance` 里的 `edk − edl` 项）。
+        #   `elastic_driving_pair` 是 `advance` 唯一的 ed 入口 ⇒ 换掉它就等于关掉弹性。
+        #   ⚠ 记账：这**改了物理**（刻意），只用于**机理归因**，不得当作生产配置。
+        import numpy as _np
+        _sh = (g.N, g.N, g.N)
+        g.elastic_driving_pair = (
+            lambda karr, larr: (_np.zeros(_sh), _np.zeros(_sh)))
+        P('★★ --no-elastic：**弹性驱动已被打成 0**（判决实验，非生产配置）')
     P('变体 V%d 三轴：n*=[%.4f %.4f %.4f]  w=[%.4f %.4f %.4f]  a=[%.4f %.4f %.4f]'
       % ((K0,) + tuple(n_hab) + tuple(w_ax) + tuple(a_ax)))
     P('  正交性：n*·w=%.2e  n*·a=%.2e  w·a=%.2e（引擎的三轴本就不严格正交）'
@@ -411,7 +460,9 @@ def _run(a, outdir, L, dx):
     for fn in ('windowB_surface.py', 'windowB_pf3d.py', 'windowB_par.py'):
         shas[fn] = subprocess.run(['sha256sum', os.path.join(_HERE, fn)],
                                   capture_output=True, text=True).stdout.split()[0]
-    meta = dict(case=a.case, shape=shape, nseed=len(centers), N=a.N, dx_nm=a.dx_nm,
+    meta = dict(case=a.case, shape=shape, seed_scale=a.seed_scale,
+                no_elastic=bool(a.no_elastic), ed_diag=bool(a.ed_diag),
+                nseed=len(centers), N=a.N, dx_nm=a.dx_nm,
                 L_um=L * 1e6, steps=a.steps, kv=K0, variants=vlist,
                 beta_h=a.beta_h, beta_w=a.beta_w, norm_smooth=a.norm_smooth,
                 adv=a.adv, nthreads=a.nthreads, reinit_band=a.reinit_band,
@@ -432,7 +483,13 @@ def _run(a, outdir, L, dx):
     fh2.write('step,variant,' + ','.join(COLS[3:]) + '\n')
 
     def emit(step, t_s, dt, adv_wall=float('nan')):
-        mm = measure(g, K0, a_ax, w_ax, n_hab, a.box_frac)
+        _ed = None
+        if a.ed_diag and not a.no_elastic:
+            try:
+                _ed = g.elastic_driving()
+            except Exception as _e:
+                P('   （分面 ed 诊断失败：%s）' % _e)
+        mm = measure(g, K0, a_ax, w_ax, n_hab, a.box_frac, ed_all=_ed)
         # ★ 逐轴定标后的读数（每条轴用它自己那条偏差更小的口径 × 修正因子）
         Lc = mm['L' if CAL['L'][0] == 'maxmin' else 'Lb'] * CAL['L'][1]
         Wc = mm['W' if CAL['W'][0] == 'maxmin' else 'Wb'] * CAL['W'][1]
@@ -459,7 +516,7 @@ def _run(a, outdir, L, dx):
             row.setdefault(k, float('nan'))
         fh.write(','.join(_fmt(row.get(c, float('nan'))) for c in COLS) + '\n')
         for K in sorted(set(vlist)):
-            m2 = measure(g, K, *axes_of(g, K), a.box_frac)
+            m2 = measure(g, K, *axes_of(g, K), a.box_frac, ed_all=_ed)
             r2 = dict(step=step, variant=K, **{k: m2.get(k, float('nan')) for k in COLS[3:]})
             fh2.write(','.join(_fmt(r2.get(c, float('nan'))) for c in
                                (['step', 'variant'] + COLS[3:])) + '\n')
@@ -506,14 +563,21 @@ def _run(a, outdir, L, dx):
             if r.get('band_bad'):
                 fl.append('⚠G-3带病')
             P('  [%4d] V=%.4f µm³ | **定标 L/W/T %6.0f/%5.0f/%4.0f nm** | `max−min` %6.0f/%5.0f/%4.0f '
-              '| `+dx` %6.0f/%5.0f/%4.0f | **LW=%5.2f LT=%6.2f WT=%5.2f** | fill_n=%.3f '
+              '| `+dx` %6.0f/%5.0f/%4.0f | **LW=%5.2f LT=%6.2f WT=%5.2f** | fill_cal=%.3f '
               '夹角=%.1f° 面a/w/n=%.0f/%.0f/%.0f%% g=%.3f %.1fs/步 %s'
               % (it, mm['V'] * 1e18, mm['L_cal'] * 1e9, mm['W_cal'] * 1e9,
                  mm['T_cal'] * 1e9, mm['L'] * 1e9, mm['W'] * 1e9, mm['T'] * 1e9,
                  mm['Lb'] * 1e9, mm['Wb'] * 1e9, mm['Tb'] * 1e9,
-                 mm['LW_cal'], mm['LT_cal'], mm['WT_cal'], mm['fill_n'],
+                 mm['LW_cal'], mm['LT_cal'], mm['WT_cal'],
+                 mm['V'] / max(mm['L_cal'] * mm['W_cal'] * mm['T_cal'], 1e-30),
                  mm['ang_a_deg'], 100 * mm['f_a'], 100 * mm['f_w'], 100 * mm['f_n'],
                  mm['gmed'], (time.time() - t_start) / it, ' '.join(fl)))
+            if a.ed_diag and np.isfinite(mm.get('ded_all', float('nan'))):
+                P('          P-1 分面 `Δed=ed[V%d]−ed[0]`（J/m³）：'
+                  '**尖端 %.3e  侧面 %.3e  宽面 %.3e**  全体 %.3e  '
+                  '⇒ 净驱动比 (Δf+Δed_尖)/(Δf+Δed_侧) = **%.3f**'
+                  % (K0, mm['ded_a'], mm['ded_w'], mm['ded_n'], mm['ded_all'],
+                     (DF + mm['ded_a']) / max(DF + mm['ded_w'], 1e-30)))
         if it % a.snap_every == 0 or it == a.steps:
             np.savez_compressed(os.path.join(outdir, 'snap_%05d.npz' % it),
                                 region=g.region(), step=it, t=t_sim)

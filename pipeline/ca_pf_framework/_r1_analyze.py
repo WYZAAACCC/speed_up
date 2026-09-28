@@ -128,6 +128,19 @@ for d in a.dirs:
               % (W / L, T / L, np.exp(-2.3), np.exp(-3.5)))
         print('   ⇒ 相对设计的**倍率**：W 快 ×%.1f  T 快 ×%.1f'
               % ((W / L) / np.exp(-2.3), (T / L) / np.exp(-3.5)))
+        # ★★ **碎片守卫**（第 2 轮记账）：`norm_smooth > 0` 的臂出现过 `ncomp>1`
+        #   （最大到 3）。而 `L_cal` 用的是**全体胞**口径 ⇒ 卫星碎片会把 L 拉长。
+        #   ⇒ 用 `L_big`（**最大连通分量**的跨度）做一次**独立**回归来交叉核对。
+        sb, r2b, nb = reg(st, S['L_big'], i0)
+        fb = float(np.nanmin(S['frac_big'])) if np.any(np.isfinite(S['frac_big'])) else float('nan')
+        if np.isfinite(sb) and sb > 0:
+            print('   ★ 碎片守卫：`L_big`（最大分量）回归 = %+.4f nm/步（R²=%.4f）'
+                  ' ⇒ `ΔL:ΔW` = 1 : %.3f（全体口径给 %.3f）；`frac_big` 最小 %.3f'
+                  % (sb * 1e9, r2b, (W / sb), (W / L), fb))
+            if abs((W / sb) - (W / L)) > 0.25 * (W / L):
+                print('      ⚠ **全体口径与最大分量口径差 >25%% ⇒ 形貌读数被碎片污染，低置信度**')
+        if fb < 0.95:
+            print('      ⚠ `frac_big` 最小值 %.3f < 0.95 ⇒ 过程中确实分裂过' % fb)
         # R21：逐方向胞数（**整段**的净增量，不是每步）
         dL = (S['L_cal'][last] - S['L_cal'][0]) / dx
         dW = (S['W_cal'][last] - S['W_cal'][0]) / dx
