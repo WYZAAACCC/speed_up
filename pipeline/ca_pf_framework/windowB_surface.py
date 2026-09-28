@@ -2144,7 +2144,26 @@ class LevelSetMulti(object):
             for v in range(self.nv):
                 self.pf.phi[v] = (reg == v + 1)
         # ★★ T3：走 gather 路径（`region` 已经算过 ⇒ 不必再建 nv 个指示场）
-        sig = self.pf.sigma_tensor(reg)
+        #
+        # ★★★ 2026-09-28（Round 137）**修 `F-2`：`elastic_soft` 原本是一个"死开关"**。
+        #   症状（`_chk_edsoft.py` 实测）：`elastic_driving(soft=True)` 与 `(soft=False)`
+        #     `np.array_equal` = **True**，`max|Δ| = 0.000e+00` ⇒ 改它**完全不动任何东西**。
+        #   根因：上面 `if soft:` 分支刚把**软剖面**写进 `self.pf.phi`，
+        #     但这一行原来一律传**硬 `reg`**：
+        #       `sigma_tensor(reg)` → `_epsh(reg)` → `eps0_fields_idx(reg)`
+        #       而 `eps0_fields_idx`（`windowB_pf3d.py:255`）用 `idx > 0` 直接 gather，
+        #       **根本不读 `self.phi`** ⇒ T3 的快路径把软剖面整个丢掉了。
+        #     ⇒ AUDIT-#9 声称的"用平滑指示场消除界面 σ 的 O(1) 阶梯噪声"**从未生效**
+        #       （`AGENTS.md §3.7`：编译通过、不报错，完全不代表改动生效了）。
+        #   修法（**最小改动、且默认路径逐位不变**）：
+        #     `soft=False` ⇒ 仍旧传 `reg` ⇒ 与修前**逐位相同**（归档读数不受影响）；
+        #     `soft=True`  ⇒ 传 `None` ⇒ 走 `eps0_fields()`（`windowB_pf3d.py:235-240`），
+        #                    它按 `Σ_v e0v[v,p]·self.phi[v]` 装配 ⇒ **真正吃到软剖面**。
+        #   ⇒ 本条遵守 `WINDOWB_ROADMAP_TO_CORRECT.md §8.6` 定下的"两步走"纪律：
+        #     **先落地"默认逐位不变"的能力，把"启用"留成单独一次显式改动**。
+        #   ⚠ 代价记账：`soft=True` 时 `eps0_fields` 是 `6×nv = 72` 次整场乘加
+        #     （T3 的记账说这是弹性耗时的大头）⇒ **`soft=True` 会明显变慢**，属预期。
+        sig = self.pf.sigma_tensor(None if soft else reg)
         for v in range(self.nv):
             # ★★ T1 修（P0-1，2026-09-28）：符号 `−` → `+`（见 `elastic_driving` 的记账）。
             out[v + 1] = (+np.einsum('p,p...->...', self.e0v_eng[v], sig)
