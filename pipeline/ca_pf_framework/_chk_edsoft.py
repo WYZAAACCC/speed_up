@@ -96,7 +96,51 @@ else:
     print('   ⇒ `self.pf.phi` 看起来不像软剖面 ⇒ 需重新定位（可能连写都没写）。')
 
 print('\n' + '=' * 96)
-print('结论：%s' % ('⛔ **F-2 确认** —— `elastic_soft` 死开关，界面 `ed` 一直是硬阶梯污染值'
-                  if same else '✅ `elastic_soft` 有效'))
+
+# ============================================================================
+# ★★★ E-4（本轮**加了才知道为什么必须加**）：**端到端**检验 —— 开关必须改得动**动力学**。
+#   为什么：`E-2` 只查了 `elastic_driving()`（**诊断路径**），而 `advance` 实际走的是
+#     `elastic_driving_pair()` —— 它**也**硬编码了硬 `reg`。
+#   实测症状（`_w2_edhard2.log` vs `_w2_edsoft2.log`，引擎 `a1eb151f`，只差 `elastic_soft`）：
+#     **形状逐位相同**（L=1458.6 W=1414.5 T=844.0、胞=233、M-3/M-5 全同），
+#     而 M-6 的 `ed` 却不同 ⇒ 只看 E-2 会**误判"修好了"**，实际动力学一点没变。
+#   ⇒ 判据：两臂各推 `NSTEP` 步，`region()` **必须不同**。
+#     （`AGENTS.md §3.7`：改完必须确认**框架真正调用的那条路**也变了。）
+# ============================================================================
+NSTEP = 3
+DT = 0.15 * dx / (1e-9 * 3.5e8)
+
+
+def _run(nstep, soft):
+    gg = W.LevelSetMulti(a.N, L, C=C, eps0=EPS0, gamma=0.15, Mob=1e-9,
+                         df=[0.0] + [3.5e8] * NV, workers=2, reinit_every=0)
+    gg.elastic_soft = bool(soft)
+    gg.seed_plate(K, np.array([L / 2] * 3), n_hab, 500e-9, 700e-9)
+    gg.init_parent()
+    for _ in range(nstep):
+        gg.advance(DT, aniso=0.4, npref=NPF, band_cells=20,
+                   mob_beta=3.5, mob_beta_w=2.3, adv_grad='proj2')
+    return gg.region()
+
+
+r_hard = _run(NSTEP, False)
+r_soft = _run(NSTEP, True)
+dyn_same = bool(np.array_equal(r_hard, r_soft))
+ndiff = int((r_hard != r_soft).sum())
+print('\n【E-4 ★★端到端】同样种子、同样 %d 步，只差 `elastic_soft`：'
+      '`region()` 不同胞数 = **%d** ⇒ %s'
+      % (NSTEP, ndiff, '**逐位相同**（开关到不了动力学）' if dyn_same
+         else '✅ 动力学确实被改变了'))
+if dyn_same:
+    print('   ⇒ ⛔ `elastic_soft` 仍然到不了 `advance` 实际走的那条路径。')
+    print('      查 `elastic_driving_pair()`（`windowB_surface.py`）—— 它必须也 honor 软剖面。')
+    print('      这正是 `AGENTS.md §3.7` 的形状：**改了 A，框架走的是 B**。')
+else:
+    print('   ⇒ ✅ 两条路径（`elastic_driving` 诊断 / `elastic_driving_pair` 动力学）都吃到了软剖面。')
+
+print('\n' + '=' * 96)
+_ok = (not same) and (not dyn_same)
+print('结论：%s' % ('✅ `elastic_soft` 有效（诊断路径 + 动力学路径都验证过）' if _ok
+                  else '⛔ **F-2 未完全修复** —— 见上 E-2 / E-4'))
 print('=' * 96)
-sys.exit(0)
+sys.exit(0 if _ok else 1)

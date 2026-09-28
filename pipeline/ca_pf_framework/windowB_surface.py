@@ -2220,7 +2220,19 @@ class LevelSetMulti(object):
         if self.pf is None:
             z = np.zeros(self.phi.shape[1:])
             return z.copy(), z
-        if self.aniso_elastic:
+        # ★★★ 2026-09-28（Round 137）**`F-2` 的第二处实例**（同一 bug 的另一条路径）。
+        #   实测证据（`_w2_edhard2.log` vs `_w2_edsoft2.log`，引擎 `a1eb151f`）：
+        #     两臂的**形状逐位相同**（`L=1458.6 W=1414.5 T=844.0`、`胞=233`、M-3/M-5 全同），
+        #     而探针直接调 `elastic_driving()` 读到的 M-6 `ed` **却不同**
+        #     （尖端 −2.517e8 → −1.957e8）⇒ **说明 `advance` 用的不是 M-6 读的那条路径**。
+        #   走查确认：`advance` 走的是本函数（`:2374`），而下面 `sigma_tensor(reg)`
+        #   **同样不读 `self.phi`** ⇒ 与 `elastic_driving` 里那处是同一个 bug。
+        #   ⇒ `soft=True` 时改走通用实现（与 `aniso_elastic` 分支同款）。
+        #   ⚠ 代价：`elastic_driving()` 会造 `(nreg,N³)` 并做 `nreg` 次 einsum
+        #     —— 正是 T3 优化掉的东西 ⇒ **`soft=True` 会明显更慢**（预期，非 bug）；
+        #     `soft=False`（**默认**）路径与修前**逐位相同**。
+        soft = bool(getattr(self, 'elastic_soft', False))
+        if self.aniso_elastic or soft:
             ed = self.elastic_driving()
             return (np.take_along_axis(ed, karr[None], 0)[0],
                     np.take_along_axis(ed, larr[None], 0)[0])
