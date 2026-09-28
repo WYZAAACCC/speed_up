@@ -449,6 +449,14 @@ def _run(a, outdir, L, dx):
                    reinit_wall=float(getattr(g, '_reinit_wall_last', float('nan'))),
                    reinit_pairs=int(getattr(g, '_reinit_pairs_last', 0)))
         row.update({k: mm.get(k, float('nan')) for k in COLS})
+        # ★★ 记账（R1 自查的**第三个** bug）：上面这一行最初写的是 `row.update(...)`，
+        #   而 `COLS` 里**同时**含"测量量"与"记账量"（`step`/`t_s`/`dt`/`dG_max`/
+        #   `nreinit`/…）⇒ `mm` 里没有后者 ⇒ **把已经填好的正确值覆盖成 NaN**
+        #   ⇒ 实测 `_exp/lath1/series.csv` 的 `step`/`t_s`/`dt`/`dG_max`/… **全是空**
+        #     （几何量完好，但步号丢了 ⇒ 回归只能靠行号重建）。
+        #   ⇒ 改为 `setdefault`：**已填的不许被覆盖**。
+        for k in COLS:
+            row.setdefault(k, float('nan'))
         fh.write(','.join(_fmt(row.get(c, float('nan'))) for c in COLS) + '\n')
         for K in sorted(set(vlist)):
             m2 = measure(g, K, *axes_of(g, K), a.box_frac)

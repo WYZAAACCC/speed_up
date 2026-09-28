@@ -1,0 +1,43 @@
+{
+ "case": "mid",
+ "shape": {
+  "kind": "prism",
+  "L": 2000.0,
+  "W": 800.0,
+  "T": 320.0
+ },
+ "nseed": 1,
+ "N": 192,
+ "dx_nm": 125.0,
+ "L_um": 24.000000000000004,
+ "steps": 500,
+ "kv": 1,
+ "variants": [
+  1
+ ],
+ "beta_h": 3.5,
+ "beta_w": 2.3,
+ "norm_smooth": 0,
+ "adv": "proj2",
+ "nthreads": 6,
+ "reinit_band": 6.0,
+ "reinit_dt": 6e-07,
+ "df": 350000000.0,
+ "Mob": 1e-09,
+ "gamma": 0.15,
+ "box_frac": 0.8,
+ "centers_nm": [
+  [
+   12000.000000000002,
+   12000.000000000002,
+   12000.000000000002
+  ]
+ ],
+ "sha256": {
+  "windowB_surface.py": "a3e355722b7e4914e34e3fb6c583d783da0adcd2a9fdf507c9027046c84726b2",
+  "windowB_pf3d.py": "dc68d665eeb90a8a6ddb25d3bf0f85bbe3eb9e958845bd3d7acb205e7f940e00",
+  "windowB_par.py": "f710df7f41b2be46c1026ccc2333e0087b855c7ec88a14c82ec7b9e2bca43b4c"
+ },
+ "git": "c2913a24518a15c8a5344c672cec88fa79468705",
+ "t0": "2026-09-29T02:15:18"
+}
