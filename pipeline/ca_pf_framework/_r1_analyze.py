@@ -119,18 +119,29 @@ for d in a.dirs:
         nc = S['nc']
         print('\n   --- ★ 块判定（逐分量量具，判据 B-1/B-2/B-3）---')
         ncs = nc[np.isfinite(nc)]
-        if ncs.size:
-            print('   `nc`（连通分量数）：起始 %.0f → 末态 %.0f ；最小 %.0f ；'
-                  '取值序列（去重）%s'
-                  % (ncs[0], ncs[-1], ncs.min(),
-                     np.unique(ncs.astype(int)).tolist()[:12]))
-            # 合并时刻：`nc` 首次低于起始值
-            if ncs[-1] < ncs[0]:
-                k = int(np.argmax(nc < ncs[0]))
-                print('   ⇒ **首次合并于 step %d**（nc %.0f → %.0f）'
-                      % (int(st[k]), ncs[0], nc[k]))
+        # ★★ 记账（第 4 轮，**靠快照解剖抓到的判据 bug，连错两次**）：
+        #   ①`nc`（分量数）**不能**当"合并没有"的判据 —— 水平集会**甩出微小液滴**
+        #     （`_r1_snapinfo.py`：`e4` step125 = 6 个 ~650 胞大分量 + 18 个 1–13 胞碎屑；
+        #      `e6` step125 = 1 个 4806 胞(96.9%) 大分量 + 50 个碎屑）。
+        #   ②`big_frac`（最大分量占比）**同样不能单独用** —— 6 根**等大**的独立板条给
+        #     `big_frac ≈ 1/6 = 0.167`，看上去像"83% 是碎屑"，其实那 83% 是另外 5 根板条。
+        #   ⇒ **正确量具 = 按尺寸阈值筛"显著分量"**：`nsig` = 胞数 ≥1% 总分量的分量数
+        #     （未合并 ⇒ 6；已合并 ⇒ 1），`debris` = <1% 分量占的总体积比。
+        nsig = S.get('nsig', np.full(n, np.nan))
+        nsv = nsig[np.isfinite(nsig)]
+        if nsv.size:
+            print('   **`nsig`（≥1%% 胞的显著分量数）：起始 %.0f → 末态 %.0f**'
+                  % (nsv[0], nsv[-1]))
+            hit = int(np.argmax(nsig <= 1)) if np.any(nsig <= 1) else -1
+            if hit >= 0:
+                print('   ⇒ ✅ **已合并**：`nsig` 于 **step %d** 首次降到 1' % int(st[hit]))
             else:
-                print('   ⇒ ⚠ **全程未合并**（`nc` 没降）⇒ 判据 B-2 **未通过**')
+                print('   ⇒ ⚠ **未合并**：`nsig` 全程 >1 ⇒ 判据 B-2 **未通过**')
+        db = S.get('debris', np.full(n, np.nan))
+        dbv = db[np.isfinite(db)]
+        if dbv.size:
+            print('   Q-d 洁净度 **`debris`（碎屑体积占比）：末态 %.1f%%**（数值产物，须记账）'
+                  % (100 * dbv[-1]))
         for tag, col in (('Lc', 'Lc'), ('Wc', 'Wc'), ('Tc', 'Tc')):
             sl, r2, nn = reg(st, S[col], i0)
             print('   逐分量中位 %-3s 速率 = %+8.4f nm/步  R²=%.4f (n=%d)  ⇒ %+5.2f 胞/步'
@@ -139,6 +150,10 @@ for d in a.dirs:
         slL, _, _ = reg(st, S['Lc'], i0)
         slW, _, _ = reg(st, S['Wc'], i0)
         slT, _, _ = reg(st, S['Tc'], i0)
+        # ⚠ `nc` 被碎屑污染时，逐分量中位也会被碎屑拉偏 ⇒ 只在 big_frac 高时信它
+        if bfv.size and bfv[-1] < 0.90:
+            print('   ⚠ `big_frac`=%.3f < 0.90 ⇒ **逐分量中位被碎屑污染**，'
+                  '下面的 `Lc/Wc/Tc` 速率**仅供参考**' % bfv[-1])
         if np.isfinite(slL) and slL > 0:
             print('   ⇒ 逐分量 **ΔL:ΔW:ΔT = 1 : %.3f : %.3f**（设计 1 : %.3f : %.3f）'
                   % (slW / slL, slT / slL, np.exp(-2.3), np.exp(-3.5)))

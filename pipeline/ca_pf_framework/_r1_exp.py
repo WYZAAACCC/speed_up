@@ -106,6 +106,7 @@ COLS = ['step', 't_s', 'dt', 'ncell', 'V', 'L', 'W', 'T', 'Lb', 'Wb', 'Tb',
         'ncomp', 'frac_big', 'L_big', 'nif', 'gmed', 'f_a', 'f_w', 'f_n',
         # ★★ 第 3 轮：**逐分量的"块"量具**（多核算例专用）
         'nc', 'Lc', 'Wc', 'Tc', 'LWc', 'LTc', 'align_deg', 'big_frac', 'gap_w_nm',
+        'nsig', 'debris',
         # ★★ R1 第 2 轮：**分面弹性能诊断**（P-1，机理判决用）
         'ded_a', 'ded_w', 'ded_n', 'ded_all', 'ed_par_mean',
         'box_touch', 'band_bad', 'ok', 'dG_max', 'nreinit', 'nskip', 'regflip',
@@ -132,7 +133,7 @@ def measure(g, K, a_ax, w_ax, n_hab, box_frac, ed_all=None):
               'A_tot', 'A_a', 'A_w', 'A_n', 'ded_a', 'ded_w', 'ded_n', 'ded_all',
               'ed_par_mean', 'L_cal', 'W_cal', 'T_cal', 'LW_cal', 'LT_cal',
               'WT_cal', 'nc', 'Lc', 'Wc', 'Tc', 'LWc', 'LTc', 'align_deg',
-              'big_frac', 'gap_w_nm'):
+              'big_frac', 'gap_w_nm', 'nsig', 'debris'):
         out[c] = float('nan')
     out['ok'] = 0
     if ncell < 8:
@@ -248,6 +249,16 @@ def measure(g, K, a_ax, w_ax, n_hab, box_frac, ed_all=None):
                     al = float('nan')
                 comps.append((nci, Li, Wi, Ti, cm, al))
             out['nc'] = float(len(comps))
+            # ★★ 第 4 轮（**快照解剖驱动的量具修正**）：`nc` 会被水平集甩出的
+            #   微小液滴污染（实测 `e4` step125 = 6 大 + 18 碎屑；`e6` = 1 大 + 50 碎屑），
+            #   而 `big_frac` 在"6 根等大独立板条"时只有 1/6、看上去像碎屑 —— **两个都不够**。
+            #   ⇒ 增加**按尺寸阈值**的两个量：
+            #     `nsig`  = 胞数 ≥1% 总分量的**显著分量数**（未合并 ⇒ N；已合并 ⇒ 1）
+            #     `debris`= <1% 分量占的**体积比**（数值产物，须记账）
+            _thr = 0.01 * max(ncell, 1)
+            _sig = [c[0] for c in comps if c[0] >= _thr]
+            out['nsig'] = float(len(_sig))
+            out['debris'] = 1.0 - float(sum(_sig)) / max(ncell, 1)
             if comps:
                 out['Lc'] = float(np.median([c[1] for c in comps]))
                 out['Wc'] = float(np.median([c[2] for c in comps]))
