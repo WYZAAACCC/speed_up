@@ -449,7 +449,13 @@ def main():
     #   「转变量过半时自催化形核速率相对无自催化情形增加的倍数」，增益 = 1+p_auto·4f(1−f)）。
     #   ⛔ **原"唯一标定靶 = block:lath ≈ 26（Morito 2009）"已撤回**
     #     （`MEASUREMENT_SPEC R10` / `REFERENCE_AUDIT` #6）：**那是钢**，跨材料。
-    #   ✅ 同材料靶：板条厚 0.51–0.68(–0.88) µm（Shuai 2026）、几何长:厚 ≈ 9:1（Wang 2026）。
+    #   ⛔⛔ **2026-09-28 Round 139 再撤一条**：原写「同材料靶：几何**长:厚** ≈ 9:1（Wang 2026）」
+    #     —— **口径错配**。Wang 2026 的逐字原文是「average **length and width** ... 8.1 ± 2.0 µm
+    #     and 0.9 ± 0.4 µm」⇒ 那是 **长:宽**，**不是长:厚**（`REFERENCE_AUDIT.md:86/95` 一直记对，
+    #     是下游用错了）。而本文件的 `geom_ar()` 量的**就是长:厚**（`atab[k]` ÷ `npref[k]`）
+    #     ⇒ **`geom_ar()` 目前没有任何同工艺同材料靶**（两份同工艺文献给的都是"宽"：
+    #     Wang 2026 length 8.1 / **width** 0.9；Shuai 2026 "lath **widths** 0.51–0.68 µm"）。
+    #   ✅ 正确的同材料靶是 **长:宽 ≈ 9:1** ⇒ 要判它，**必须同时报面内长:宽**（本文件尚未取该数）。
     #   ⚠ `block:lath` 改作**本项目自设的机制自检量**（LPBF Ti-64 的 block 尺寸文献查不到）。
     ap.add_argument('--p-auto', type=float, default=0.0)
     # ★ Round 80（闭合 Round 77 标为"未验证"的那条）：核的变体选择规则
@@ -518,9 +524,17 @@ def main():
               % (np.median(th) * 1e9, np.percentile(th, 10) * 1e9))
         # ★★★ 2026-09-28 更正（`MEASUREMENT_SPEC R10`）：旧文本把**钢**的数（30:1、block:lath≈26）
         #   与 Ti-64 的数并列使用 ⇒ 已剔除。**只保留同材料同工艺的靶**。
-        print('     ✅ **同材料同工艺靶（LPBF Ti-64 as-built α′）**：板条厚 **0.51–0.88 µm**'
-              '（Shuai 2026, 10.3390/ma19061049）；几何长:厚 **≈ 9:1**'
-              '（Wang 2026, 10.20517/microstructures.2025.144，8.1±2.0 × 0.9±0.4 µm）')
+        # ⛔⛔ **Round 139 再纠一条**：旧文本把 Wang 2026 的 ≈9:1 写成"几何**长:厚**" —— **错**。
+        #   原文是 "average **length and width** ... 8.1 ± 2.0 µm and 0.9 ± 0.4 µm"
+        #   ⇒ **长:宽**。而上面那个 `geom_ar()` 量的是**长:厚** ⇒ **两者不可比**，
+        #   ⛔ 不得再写"长:厚 vs 靶 9:1 ⇒ FAIL"。**`geom_ar()` 目前没有同工艺靶。**
+        print('     ✅ **同工艺同材料（LPBF Ti-64 as-built α′）的靶**：**长:宽 ≈ 9:1**'
+              '（Wang 2026, 10.20517/microstructures.2025.144，原文 "average **length and width**'
+              ' ... 8.1 ± 2.0 µm and 0.9 ± 0.4 µm"）')
+        print('     ⛔ **本表的"几何长:厚"没有同工艺靶**（上面那个 9:1 是**长:宽**，口径不同）：'
+              '两份同工艺文献给的都是**宽** —— Wang 2026 length 8.1 / **width** 0.9 µm；'
+              'Shuai 2026 "lath **widths** 0.51–0.68 µm"（`docs/refcheck/ref01_shuai2026.txt:299` 逐字）')
+        print('     ⚠ **已知缺口**：要判靶② 必须同时报**面内长:宽**，本文件尚未取该数。')
         print('     ⛔ **已剔除**：长:厚 30:1（Rezazadeh 2024 = **钢**）、'
               'block:lath ≈ 26（Morito 2009 = **钢**）、2D AR 带 2.8–8.4（**原文未取到**）')
         print('     ⚠ **LPBF Ti-64 的 block/packet 尺寸在公开文献里查不到**'
