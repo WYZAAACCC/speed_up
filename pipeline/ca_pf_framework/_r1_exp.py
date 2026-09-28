@@ -563,6 +563,11 @@ def _run(a, outdir, L, dx):
                 adv=a.adv, nthreads=a.nthreads, reinit_band=a.reinit_band,
                 reinit_dt=6.0e-7, df=DF, Mob=MOB, gamma=0.15, box_frac=a.box_frac,
                 centers_nm=(centers * 1e9).tolist(), sha256=shas,
+                # ★ 逐轴口径定标因子（**离线分析必须用它们**，见 `_r1_calib.py`：
+                #   `a`/`n*` 斜交 ⇒ `max−min` 好；`w` 是低指数方向 ⇒ `+dx` 好。
+                #   不存下来的话，`components.csv` 里的 `+dx` 读数会把 `T` 高读 48%。）
+                cal={k: [v[0], v[1]] for k, v in CAL.items()},
+                cal_bias={k: [v[2], v[3]] for k, v in CAL.items()},
                 git=subprocess.run(['git', '-C', '/mnt/f/speed_up', 'rev-parse', 'HEAD'],
                                    capture_output=True, text=True).stdout.strip(),
                 t0=time.strftime('%Y-%m-%dT%H:%M:%S'))

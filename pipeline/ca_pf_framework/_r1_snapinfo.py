@@ -30,6 +30,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument('snaps', nargs='*')
 ap.add_argument('--dx-nm', type=float, default=125.0)
 ap.add_argument('--kv', type=int, default=1)
+ap.add_argument('--shape', default='mid',
+                help='现场定标用的种子形状族（`lath`/`mid`/`equi`）')
 ap.add_argument('--top', type=int, default=10)
 ap.add_argument('--series', default=None,
                 help='给定一个 `_exp/<name>` 目录：遍历**全部**快照，输出'
@@ -55,6 +57,48 @@ if a.series:
     _a = np.asarray(_g.atab[a.kv], float)
     _a = _a - (_a @ _nh) * _nh
     _a = _a / np.linalg.norm(_a)
+    # ★ 读 `meta.json` 里的逐轴定标（`_r1_exp.py` 起算时自动测的）
+    import json
+    cal = None
+    mp = os.path.join(d, 'meta.json')
+    if os.path.exists(mp):
+        try:
+            cal = json.load(open(mp)).get('cal')
+        except Exception:
+            cal = None
+    if cal:
+        print('★ 已读 meta.json 的逐轴定标：%s（将同时输出定标口径 `L_cal/W_cal/T_cal`）'
+              % {k: (v[0], round(v[1], 4)) for k, v in cal.items()})
+    else:
+        # ★★★ 记账（第 6 轮自查抓到的**真偏差**）：`components.csv` 原来一律用 `+dx` 口径，
+        #   而按 `_r1_calib.py`：`a`、`n*` 与网格**斜交**时 `+dx` 高读（实测 T **+48%**），
+        #   `w` 是低指数方向 (1,1,0)/√2 时 `+dx` 才对。
+        #   ⇒ 未定标时 `LT_big` 被**低读约 30%**，绝对值不可引用。
+        #   修法：**现场算一次定标**（解析长方体 + 同一 Δx，不需要引擎；两个 N³ 场 ≈ 108 MB）。
+        try:
+            from _r1_exp import calibrate_axes, SHAPES
+            _N = int(round(24.0e-6 / dx))
+            _L = _N * dx
+
+            class _Stub(object):
+                def __init__(self):
+                    self.N = _N
+                    self.L = _L
+                    self.dx = dx
+            _dims = SHAPES.get(a.shape, SHAPES['mid'])
+            _dn = ((_dims['L'], _dims['W'], _dims['T']) if _dims['kind'] == 'prism'
+                   else (2 * _dims['R'], 2 * _dims['R'], 2 * _dims['R']))
+            cal, _ = calibrate_axes(_Stub(), _dn, (_a, _w, _nh))
+            print('★ **现场定标**（解析长方体 %.0f×%.0f×%.0f nm，Δx=%.1f nm）：%s'
+                  % (_dn[0], _dn[1], _dn[2], dx * 1e9,
+                     {k: (v[0], round(v[1], 4)) for k, v in cal.items()}))
+            for k in ('L', 'W', 'T'):
+                if k in cal:
+                    print('     %s：%s（偏差 max−min %+.2f%% / +dx %+.2f%%）⇒ ×%.4f'
+                          % (k, cal[k][0], 100 * cal[k][2], 100 * cal[k][3], cal[k][1]))
+        except Exception as _e:
+            print('⚠ 现场定标失败（%s）⇒ 只有 `+dx` 口径，`LT_big` 低读约 30%%' % _e)
+            cal = None
     rows = []
     for p in snaps:
         z = np.load(p)
@@ -77,21 +121,36 @@ if a.series:
         Li = (pa.max() - pa.min() + 1) * dx
         Wi = (pw.max() - pw.min() + 1) * dx
         Ti = (pn.max() - pn.min() + 1) * dx
+        # ★ 定标口径（有 `cal` 时）：逐轴用它自己那条偏差更小的口径 × 修正因子
+        def _pick(ax_tag, arr_plusdx, arr_maxmin):
+            if not cal or ax_tag not in cal:
+                return arr_plusdx
+            conv, fac = cal[ax_tag][0], cal[ax_tag][1]
+            return (arr_maxmin if conv == 'maxmin' else arr_plusdx) * fac
+        Lim = (pa.max() - pa.min()) * dx
+        Wim = (pw.max() - pw.min()) * dx
+        Tim = (pn.max() - pn.min()) * dx
+        Lc_ = _pick('L', Li, Lim)
+        Wc_ = _pick('W', Wi, Wim)
+        Tc_ = _pick('T', Ti, Tim)
         rows.append((step, ncomp, sig, big / tot,
-                     1.0 - sz[sz >= thr].sum() / tot, Li, Wi, Ti, Li / Wi, Li / Ti))
+                     1.0 - sz[sz >= thr].sum() / tot, Li, Wi, Ti, Li / Wi, Li / Ti,
+                     Lc_, Wc_, Tc_, Lc_ / max(Wc_, 1e-30), Lc_ / max(Tc_, 1e-30)))
     out = os.path.join(d, 'components.csv')
     with open(out, 'w') as f:
-        f.write('step,ncomp,nsig,big_frac,debris,L_big,W_big,T_big,LW_big,LT_big\n')
+        f.write('step,ncomp,nsig,big_frac,debris,L_big,W_big,T_big,LW_big,LT_big,'
+                'L_cal,W_cal,T_cal,LW_cal,LT_cal\n')
         for r in rows:
-            f.write('%d,%d,%d,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g\n' % r)
+            f.write('%d,%d,%d,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g,%.6g\n'
+                    % r)
     print('已写 %s' % out)
-    print('  %6s %7s %6s %9s %9s | %8s %8s %8s %7s %7s'
+    print('  %6s %7s %6s %9s %9s | %8s %8s %8s %7s %7s | **%7s %7s**'
           % ('step', 'ncomp', 'nsig', 'big_frac', 'debris',
-             'L_big', 'W_big', 'T_big', 'LW', 'LT'))
+             'L_big', 'W_big', 'T_big', 'LW', 'LT', 'LW_cal', 'LT_cal'))
     for r in rows:
-        print('  %6d %7d %6d %9.4f %9.4f | %8.0f %8.0f %8.0f %7.2f %7.2f'
+        print('  %6d %7d %6d %9.4f %9.4f | %8.0f %8.0f %8.0f %7.2f %7.2f | **%7.2f %7.2f**'
               % (r[0], r[1], r[2], r[3], r[4],
-                 r[5] * 1e9, r[6] * 1e9, r[7] * 1e9, r[8], r[9]))
+                 r[5] * 1e9, r[6] * 1e9, r[7] * 1e9, r[8], r[9], r[13], r[14]))
     sys.exit(0)
 
 import windowB_surface as W                                     # noqa: E402
