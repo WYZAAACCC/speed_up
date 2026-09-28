@@ -61,6 +61,36 @@ Shuai Table 3 的**分数口径**（长度分数还是数目分数）、以及 C
 
 ---
 
+### L-5 ✅ 文献数值的**独立二次复核**已回来（子代理全文核对，2026-09-29）—— 三条增量
+
+**取全文的可用路线（实测，供后续复用）**：
+✅ `https://www.ebi.ac.uk/europepmc/webservices/rest/PMC<ID>/fullTextXML`（Europe PMC REST 全文 XML）
+✅ 出版方 HTML（OAE）：`https://www.oaepublish.com/articles/microstructures.2025.144`
+✅ PMC 图片 CDN：`https://cdn.ncbi.nlm.nih.gov/pmc/blobs/<hash>/<pmcid>/<file>`
+❌ `www.mdpi.com` 403；❌ `pmc.ncbi.nlm.nih.gov` reCAPTCHA；⚠ Europe PMC 的 `FULL_TEXT:` 字段在本机**恒返 0（静默失效）**，要用无字段短语检索。
+
+| # | 结论 | 对本项目的影响 |
+|---|---|---|
+| **L-5a** | **Xie Table 2 表头逐字 = `Thickness (mm)` / `Average Length (µm)` / **`Average Width (µm)`**；10 行数值 **10/10 逐字命中**；抽样语句逐字命中。**无长度预筛**（但"论文里没有这句话"）。⚠ **该文没给 length/width 的测量定义**（补充材料被 403 挡）。⚠ **工艺参数可疑**：190 W + **90 mm/s** + 140 µm hatch + 30 µm layer ⇒ VED ≈ **503 J/mm³**，比 LPBF Ti-64 常见值高 6–10 倍，疑 900 mm/s 笔误。 | ✅ R18 用的"宽"字与 16.7–23.8 站得住；<br>⛔ **口径只能"括号"不能"复现"** ⇒ 加强 `R22`；<br>⛔ **Xie 的工艺参数不得进仿真**（`R17`） |
+| **L-5b** | **Shuai 全文没有任何 α′ 板条长度**（`lath length`=0；`length` 仅 1 次且指 prior-β 柱状晶 `>1.00 mm`）；同一段 §2.2 里同一次测量**先叫 `lath width` 后叫 `lath thickness`**（逐字）；`0.51–0.68 µm`（6 样品）与 `0.51–0.88 µm`（56 条件）是**两个不同总体** | ✅ **L-1 的"9–16 跨篇拼接彻底作废"得到全文级确认**；<br>⛔ 靶① 短横向报数时必须**标明是哪个总体** |
+| **L-5c** | 靶③：Table 3 / Fig. 9a 数值与角度轴**逐字命中**（子代理下载原图读图复核）。⛔ **但论文未说明是长度分数还是数目分数**（`length fraction`=0、`number fraction`=0，y 轴只写 `Relative fraction (%)`）；⚠ 该表 OR 引自其参考 [55] = **laser hot-wire DED**；⚠ **EBSD 步长 0.35 µm vs 板条宽 0.51–0.88 µm ⇒ 每条板条仅 1.5–2.5 个步长** | ⛔ **靶③ 的对照值带一个口径未知 + 分辨率勉强的双重偏差** ⇒ 与模型比时必须显式标注，不得当精确靶 |
+
+**★ L-5d 对我自己此前说法的一处更正（DeMott 2020）**
+
+我此前写「唯一真 3D 的 α 板条工作是 DeMott 2020（E-PBF/EBM）」。子代理独立 grep 两路提取的全文后更正：
+DeMott **确实是真三维**（plasma-FIB 3D-EBSD，100 nm 体素，~30×30×14 µm³，316 切片）**也确实是 ARCAM EBM**（非 LPBF），
+**但它没有报告任何定量三维板条宽度**（`width` 全文仅 1 次且指"某特征几乎横跨整个采集体积的宽度"；
+`thickness` 3 次全是切片/层厚；`aspect ratio`=0；`lath width`=0）。
+⇒ 属**「论文里没有这句话」**，不是"有数但不适用"。
+⇒ **即使跨到 EBM，"三维 α 板条宽度"这个数在本次检索范围内也不存在。**
+
+**★ L-5e 负结论的措辞必须收窄**：应写「**在本次检索范围内未找到反例**」，
+⛔ 不得写「不存在」。**最大盲区已记账**：**Elsevier 全系期刊无法做全文短语检索**，
+而那正是相关文献最集中的地方；且已实测 **Europe PMC 覆盖不足**
+（`"nf-HEDM" AND "titanium"` → 0 命中，但 Wielewski 2015 确实存在）。
+
+---
+
 ## §2 初始条件 —— 五条
 
 ### IC-1 ⛔ **种子不是板条胚：设计各向异性 1:0.10:0.03，种子实际 1:1:0.70**
