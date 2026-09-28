@@ -150,6 +150,12 @@ for d in a.dirs:
         slL, _, _ = reg(st, S['Lc'], i0)
         slW, _, _ = reg(st, S['Wc'], i0)
         slT, _, _ = reg(st, S['Tc'], i0)
+        # ⚠ 记账：`bfv` 在第 8 轮我删 `big_frac` 段落时**被一起删掉了**，
+        #   但下面还在引用它 ⇒ 分析器在 e4 上崩掉（`NameError`），
+        #   进而让**自走驱动**在第 1 步就以 exit 1 退出（见 `R1_STAGE_REVIEW.md`）。
+        #   教训与 `AGENTS §3.24` 同类：**删一段代码时要顺着引用往回查**。
+        bf = S.get('big_frac', np.full(n, np.nan))
+        bfv = bf[np.isfinite(bf)]
         # ⚠ `nc` 被碎屑污染时，逐分量中位也会被碎屑拉偏 ⇒ 只在 big_frac 高时信它
         if bfv.size and bfv[-1] < 0.90:
             print('   ⚠ `big_frac`=%.3f < 0.90 ⇒ **逐分量中位被碎屑污染**，'
