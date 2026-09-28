@@ -32,6 +32,8 @@ ap.add_argument('--dx-nm', type=float, default=125.0)
 ap.add_argument('--skip', type=int, default=0, help='前 N 步不计入回归（瞬态）')
 ap.add_argument('--every', type=int, default=4,
                 help='采样间隔；当 CSV 的 step 列为空（旧版 bug）时用它按行号重建步号')
+ap.add_argument('--block', action='store_true',
+                help='★ 多核算例的"块"判定：逐分量量具 + `nc` 合并判据（实验 4/5/6）')
 a = ap.parse_args()
 dx = a.dx_nm * 1e-9
 
@@ -111,6 +113,56 @@ for d in a.dirs:
 
     i0 = max(a.skip, 0)
     i0 = min(i0, max(n - 6, 0))
+
+    # ================= ★ 多核算例的"块"判定（实验 4/5/6）=================
+    if a.block and np.any(np.isfinite(S.get('nc', np.array([np.nan])))):
+        nc = S['nc']
+        print('\n   --- ★ 块判定（逐分量量具，判据 B-1/B-2/B-3）---')
+        ncs = nc[np.isfinite(nc)]
+        if ncs.size:
+            print('   `nc`（连通分量数）：起始 %.0f → 末态 %.0f ；最小 %.0f ；'
+                  '取值序列（去重）%s'
+                  % (ncs[0], ncs[-1], ncs.min(),
+                     np.unique(ncs.astype(int)).tolist()[:12]))
+            # 合并时刻：`nc` 首次低于起始值
+            if ncs[-1] < ncs[0]:
+                k = int(np.argmax(nc < ncs[0]))
+                print('   ⇒ **首次合并于 step %d**（nc %.0f → %.0f）'
+                      % (int(st[k]), ncs[0], nc[k]))
+            else:
+                print('   ⇒ ⚠ **全程未合并**（`nc` 没降）⇒ 判据 B-2 **未通过**')
+        for tag, col in (('Lc', 'Lc'), ('Wc', 'Wc'), ('Tc', 'Tc')):
+            sl, r2, nn = reg(st, S[col], i0)
+            print('   逐分量中位 %-3s 速率 = %+8.4f nm/步  R²=%.4f (n=%d)  ⇒ %+5.2f 胞/步'
+                  % (tag, sl * 1e9 if np.isfinite(sl) else float('nan'), r2, nn,
+                     sl / dx if np.isfinite(sl) else float('nan')))
+        slL, _, _ = reg(st, S['Lc'], i0)
+        slW, _, _ = reg(st, S['Wc'], i0)
+        slT, _, _ = reg(st, S['Tc'], i0)
+        if np.isfinite(slL) and slL > 0:
+            print('   ⇒ 逐分量 **ΔL:ΔW:ΔT = 1 : %.3f : %.3f**（设计 1 : %.3f : %.3f）'
+                  % (slW / slL, slT / slL, np.exp(-2.3), np.exp(-3.5)))
+        # B-1 平行性
+        al = S['align_deg'][np.isfinite(S['align_deg'])]
+        if al.size:
+            print('   B-1 各分量长轴与 `a` 的夹角：起始 %.2f° → 末态 %.2f° ；最大 %.2f°'
+                  '  ⇒ %s' % (al[0], al[-1], al.max(),
+                              '**通过**（≤20°）' if al.max() <= 20 else '**不通过**'))
+        # B-3 间距
+        # ⚠ 记账：这里是**又一次自己踩的单位坑** —— `Wc` 存的是**米**，`%.0f nm` 直接打就成了 0。
+        if np.any(np.isfinite(S.get('gap_w_nm', np.array([np.nan])))):
+            g = S['gap_w_nm'][np.isfinite(S['gap_w_nm'])]
+            wc = S['Wc'][np.isfinite(S['Wc'])]
+            if g.size and wc.size:
+                wm = float(np.median(wc)) * 1e9          # ← 米 → nm
+                print('   B-3 相邻分量质心沿 `w` 间距：起始 %.0f nm → 末态 %.0f nm ；'
+                      '逐分量宽度中位 %.0f nm ⇒ 间距/宽度 = %.2f'
+                      % (g[0], g[-1], wm, g[-1] / max(wm, 1e-30)))
+        print('   ⚠ 记账（**模型的结构性限制**）：本模型只有 12 个**离散**变体，'
+              '**同变体**的两根板条接触即合并 ⇒ **块内部的低角晶界无法表示**。'
+              '所以"块里有几根板条"**不可观测**；可观测的是'
+              '"多个平行核 → 合并成一个沿 `a` 拉长的板"。')
+
     print('\n   --- 增量速率（R20 全样本回归，去掉前 %d 个采样）---' % i0)
     rates = {}
     for tag, col in (('L', 'L_cal'), ('W', 'W_cal'), ('T', 'T_cal'),
@@ -157,6 +209,10 @@ for d in a.dirs:
 
     # 判据
     print('\n   --- 判据（先写死，再看数）---')
+    if a.block:
+        print('   ⚠ **多核算例：下面这套 C-1..C-6 用的是"全部胞当一个对象"的口径**'
+              '（即整列的 Span/PCA），对多核**没有意义**（实测夹角 90°、W=8442 nm）。'
+              '多核请看上面的 **§块判定**。')
     lastv = last
     LW = S['LW_cal'][lastv]
     LT = S['LT_cal'][lastv]
