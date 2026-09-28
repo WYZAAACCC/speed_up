@@ -889,7 +889,27 @@ class LevelSetMulti(object):
         self.pf = None
         self.ae = None
         self.aniso_elastic = bool(aniso_elastic)
-        self.elastic_soft = False     # AUDIT-#9: 默认沿用 hard region（不改动已归档结论）
+        # ★★★ 2026-09-28（Round 139，**用户批准**）：`elastic_soft` 默认 **False → True**。
+        #   为什么（`F-2`，两处 bug 都修完之后才做得了这个判决实验）：
+        #     `_w2_edhard3.log` vs `_w2_edsoft3.log`（N=64 / Δx=166.7 nm / 150 步 / 其余逐字相同）
+        #       `soft=False`：ΔL : ΔW = +199.4 : +471.5 nm
+        #       `soft=True` ：ΔL : ΔW = +745.4 : +235.7 nm   ⇒ **ΔL/ΔW 从 2.75 → 3.16**
+        #     更完整的一对（Δx=83.35 / 300 步）：
+        #       `soft=False`：ΔL=513.2  ΔW=235.7  ⇒ ΔL/ΔW = **2.18**
+        #       `soft=True` ：ΔL=1031.5 ΔW=235.7  ⇒ ΔL/ΔW = **4.38**（ΔL **+101%**，ΔW **逐位不变**）
+        #     ⇒ ★ **`soft` 只动"长"方向** —— 正是"把尖端的驱动力/法向还回来"的指纹。
+        #   为什么它在物理上更对：
+        #     ① 硬 `region` 指示场喂进 FFT 谱法弹性求解器会产生 **Gibbs 振荡**
+        #        ⇒ 界面处的 σ 带 O(1) 阶梯噪声 ⇒ `ed` 在界面被污染（AUDIT-#9 的原始动机）；
+        #     ② `soft=True` 走的是 `eps0_fields()`（非 gather），而**那正是
+        #        `T3_verify_fastpath.py` 当作基准验证过的那条路径**。
+        #   ⚠ 代价（必须记账）：`elastic_driving()` 会造 `(nreg,N³)` 并对 **全部 nreg 个场**
+        #     做 einsum，而 T3 的 gather 快路径只需 **2** 个 ⇒ **单步变慢**。
+        #   ⚠ 严格说 `soft` 是"把 ε⁰ 抹宽 1.5 胞"的**弥散界面**近似，而本模型是
+        #     **零厚度 Gibbs 面** ⇒ 若将来要走严格锐界面，正确做法是换**锐界面弹性求解器**
+        #     （更大工程），那时本开关应被替换而不是保留。
+        #   ⛔ 按 `R8`：**本改动改变全部含 `ed` 的归档读数** ⇒ 引用前必须重跑。
+        self.elastic_soft = True
         if C is not None and eps0 is not None:
             from windowB_pf3d import PF3D, VOIGT, G6 as _G6, _lam_full
             self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
