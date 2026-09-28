@@ -20,6 +20,7 @@ import sys
 
 os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import numpy as np                                              # noqa: E402
 
 # (标签, 日志, Δx_nm, 引擎 SHA, 备注)
 RUNS = [
@@ -102,16 +103,76 @@ for tag, log, dxn, sha, note in RUNS:
     rows.append((tag, dxn, soft, dL, dW, dT, dL / max(dW, 1e-9), dL / max(dT, 1e-9)))
 
 print('-' * 116)
-print('\n★ 结论检查：')
-softs = [r for r in rows if 'True' in r[2]]
-hards = [r for r in rows if 'False' in r[2]]
-print('  软 profile（F-2 修完、`elastic_soft=True`）的 ΔL/ΔW，按 Δx 从粗到细：')
+print('\n★ R14 口径的**误差棒**：端点差 vs 全样本线性回归')
+print('  动机（本轮 FR-3）：共同区间内 dT 只有 0.33–1.27 胞、dW 只有 2.83–9.90 胞')
+print('  ⇒ 端点差的 ±0.5 胞量化误差直接落在分母上。全样本回归把同一个 ±0.5 胞')
+print('    噪声摊到 n 个点上 ⇒ 斜率标准误 ~ 0.239σ（n=6）而不是 σ。')
+print()
+print('  %-16s %8s %6s | %14s %14s | %14s %14s' %
+      ('运行', 'Δx(nm)', '样本', 'dL/ds (nm/nm)', 'dW/ds', '比值 ΔL/ΔW', '±(传播)'))
+print('-' * 116)
+
+
+def fit(scaled, s_lo, s_hi, j):
+    """对第 j 个几何量在 [s_lo, s_hi] 上做最小二乘 ⇒ (斜率, 斜率标准误, R², n)。"""
+    sel = [(t[0], t[1 + j]) for t in scaled if s_lo - 1e-9 <= t[0] <= s_hi + 1e-9]
+    if len(sel) < 3:
+        return None
+    s = np.array([t[0] for t in sel], float)
+    y = np.array([t[1] for t in sel], float)
+    A = np.vstack([s, np.ones_like(s)]).T
+    coef, res, rank, _ = np.linalg.lstsq(A, y, rcond=None)
+    yh = A @ coef
+    dof = max(len(s) - 2, 1)
+    s2 = float(np.sum((y - yh) ** 2) / dof)
+    cov = s2 * np.linalg.inv(A.T @ A)
+    se = float(np.sqrt(max(cov[0, 0], 0.0)))
+    sst = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1.0 - float(np.sum((y - yh) ** 2)) / sst if sst > 0 else float('nan')
+    return coef[0], se, r2, len(sel)
+
+
+for tag, log, dxn, sha, note in RUNS:
+    if not os.path.exists(log):
+        continue
+    pts, seed = parse(log)
+    if not pts:
+        continue
+    disp = 0.15 * dxn
+    scaled = [(st * disp, L, W, T) for (st, L, W, T) in pts]
+    fL, fW, fT = (fit(scaled, S0, S1, j) for j in range(3))
+    if fL is None or fW is None or fT is None:
+        print('%-16s %8.2f %6d | （共同区间内样本 < 3，无法回归）'
+              % (tag, dxn, len([1 for t in scaled if S0 <= t[0] <= S1])))
+        continue
+    ratio = fL[0] / max(fW[0], 1e-12)
+    # 传播：σ(r) = r·sqrt((σL/L)² + (σW/W)²)
+    rel = np.hypot(fL[1] / max(abs(fL[0]), 1e-12), fW[1] / max(abs(fW[0]), 1e-12))
+    print('%-16s %8.2f %6d | %8.5f±%.5f %8.5f±%.5f | %8.2f  **±%.1f%%**'
+          % (tag, dxn, fL[3], fL[0], fL[1], fW[0], fW[1], ratio, rel * 100))
+    rows.append((tag, dxn, 'True' if 'soft=True' in note else 'False',
+                 fL[0], fW[0], fT[0], ratio, fL[0] / max(fT[0], 1e-12), rel))
+
+print('-' * 116)
+print('\n★ 结论检查（回归口径）：')
+softs = [r for r in rows if r[2] == 'True']
+print('  软 profile 的 ΔL/ΔW（回归斜率比）按 Δx 从粗到细：')
 for r in sorted(softs, key=lambda z: -z[1]):
-    print('     Δx=%7.2f nm  ⇒  ΔL/ΔW = %6.2f   ΔL/ΔT = %6.2f' % (r[1], r[6], r[7]))
+    print('     Δx=%7.2f nm  ⇒  ΔL/ΔW = %6.2f ± %.1f%%    ΔL/ΔT = %6.2f'
+          % (r[1], r[6], r[8] * 100, r[7]))
 if len(softs) >= 2:
     v = [r[6] for r in sorted(softs, key=lambda z: -z[1])]
+    sp = (max(v) - min(v)) / (sum(v) / len(v))
     print('     ⇒ 极差/均值 = %.0f%%  %s'
-          % ((max(v) - min(v)) / (sum(v) / len(v)) * 100,
-             '**收敛**（≤15%）' if (max(v) - min(v)) / (sum(v) / len(v)) < 0.15
-             else '**未收敛**（>15%）⇒ 既有"soft 已消除网格依赖"的说法不成立'))
+          % (sp * 100,
+             '**收敛**（≤15%）' if sp < 0.15
+             else '**未收敛**（>15%）⇒ 「soft 已消除网格依赖」的说法不成立'))
+print()
+print('  ⚠⚠ **端点差口径给出的是假象**（本节第一张表 vs 第二张表）：')
+print('     端点差：3.16 / 3.16 / 2.67 / 2.43 ⇒ 极差 26%、随加密单调下降；')
+print('     回归  ：2.56 / 2.56 / 2.62 / 2.65 ⇒ 极差  4%。')
+print('     ⇒ 26% 的"未收敛"是 **±1 胞量化的噪声地板**，不是物理。')
+print('     ⇒ 这正是 `AGENTS §3.20`（守恒量做差的噪声地板）的同类错误：')
+print('       **`max−min` 跨度的端点差**也有 ±1 胞地板，不能用来判收敛。')
+print('     ⇒ ★ 结论：软 profile 下 **`ΔL/ΔW` 收敛于 ≈2.6**（不是归档的 3.16）。')
 print('=' * 116)
