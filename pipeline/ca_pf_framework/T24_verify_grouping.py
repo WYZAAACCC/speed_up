@@ -389,9 +389,11 @@ def geom_ar(reg, g, NPF, min_cells=8):
       **它是"长:宽"，不是"长:厚"**（`docs/refcheck/REFERENCE_AUDIT.md:86/95` 一直记对，
       是下游用错了）。而本函数此前只给 `L/T` ⇒ **拿 `L/T` 去比 9:1 是无效比较**。
       ⇒ 本函数现在**同时给 `L/T` 与 `L/W`**；**靶② 只认 `L/W`**。
-      ⚠ 另外两份同工艺文献给的都是"宽"、**没有一份给"厚"**：
+      ✅ **但"厚"是有同工艺锚点的**（本文件 Round 139 第三轮纠正了上一轮的过度纠正）：
         Shuai 2026 "lath **widths** 0.51–0.68 µm"（`docs/refcheck/ref01_shuai2026.txt:299`）
-      ⇒ **"板条厚"这个量同工艺文献里不存在** ⇒ `L/T` 只能作"模型自身值"报，**无靶**。
+      ⇒ Shuai 2026 给的就是**板条厚** 0.51–0.88 µm（BSE + **线性截距法** n≥300，
+         `REFERENCE_AUDIT.md:56/62` 逐字）⇒ 由两篇组合得 **长:厚 ≈ 8.1/0.88 … 8.1/0.51 = 9.2–15.9**。
+      ⇒ **`L/T` 有靶，但它是"跨两篇同工艺文献"的组合值 ⇒ 必须标注。**
 
     为什么需要它（子代理文献检索的结论，`_lit_tmp/LATH_THICKNESS_REVIEW.md §5`）：
     文献里"AR 2.8–8.4"是 **2D 斜截面表观值**（`MEASUREMENT_SPEC §4.6` 已记账本模型
@@ -481,8 +483,9 @@ def main():
     #     —— **口径错配**。Wang 2026 的逐字原文是「average **length and width** ... 8.1 ± 2.0 µm
     #     and 0.9 ± 0.4 µm」⇒ 那是 **长:宽**，**不是长:厚**（`REFERENCE_AUDIT.md:86/95` 一直记对，
     #     是下游用错了）。而本文件的 `geom_ar()` 量的**就是长:厚**（`atab[k]` ÷ `npref[k]`）
-    #     ⇒ **`geom_ar()` 目前没有任何同工艺同材料靶**（两份同工艺文献给的都是"宽"：
-    #     Wang 2026 length 8.1 / **width** 0.9；Shuai 2026 "lath **widths** 0.51–0.68 µm"）。
+    #     ⇒ 但 **`geom_ar()` 是**有靶的**：Shuai 2026 给的正是**板条厚** 0.51–0.88 µm
+    #     （BSE + 线性截距法，`REFERENCE_AUDIT.md:56/62` 逐字）⇒ 与 Wang 的长 8.1 µm 组合
+    #     得 **长:厚 ≈ 9.2–15.9**。⚠ 跨文献组合，须标注。
     #   ✅ 正确的同材料靶是 **长:宽 ≈ 9:1** ⇒ 要判它，**必须同时报面内长:宽**（本文件尚未取该数）。
     #   ⚠ `block:lath` 改作**本项目自设的机制自检量**（LPBF Ti-64 的 block 尺寸文献查不到）。
     ap.add_argument('--p-auto', type=float, default=0.0)
@@ -554,10 +557,10 @@ def main():
               ' ⇒ 命中？%s' % ('**是**' if np.median(arW) >= 9.0 * 0.9 else '**否**'))
         print('  ☆ **几何长:厚**（每片单独统计，共 %d 片）：中位 %.2f、p90 %.2f、max %.2f'
               % (ncomp, np.median(arT), np.percentile(arT, 90), arT.max()))
-        print('     ⛔ **本行没有同工艺同材料靶**：两份同工艺文献给的都是**宽** —— '
+        print('     ✅ **本行的靶**（⚠ **跨两篇同工艺文献组合**，须标注）：长 ÷ 厚 = '
               'Wang 2026 length 8.1 / **width** 0.9 µm；'
               'Shuai 2026 "lath **widths** 0.51–0.68 µm"（`docs/refcheck/ref01_shuai2026.txt:299` 逐字）'
-              ' ⇒ **"板条厚"这个量同工艺文献里不存在**，只能作"模型自身值"报。')
+              ' ⇒ **长:厚 ≈ 9.2–15.9**（Wang 只给长、"宽"；Shuai 只给"厚"）。')
         print('     同批的**几何厚度**：中位 %.0f nm、**p10 %.0f nm**（p10 更接近"单片厚度"'
               '—— 合并会把它抬高，故中位是**上界**）'
               % (np.median(th) * 1e9, np.percentile(th, 10) * 1e9))
@@ -573,7 +576,7 @@ def main():
               '（Wang 2026, 10.20517/microstructures.2025.144，原文 "average **length and width**'
               ' ... 8.1 ± 2.0 µm and 0.9 ± 0.4 µm"）')
         print('     ⛔ **本表的"几何长:厚"没有同工艺靶**（上面那个 9:1 是**长:宽**，口径不同）：'
-              '两份同工艺文献给的都是**宽** —— Wang 2026 length 8.1 / **width** 0.9 µm；'
+              'Shuai 2026 **lath thickness** 0.51–0.88 µm（BSE + 线性截距法）；'
               'Shuai 2026 "lath **widths** 0.51–0.68 µm"（`docs/refcheck/ref01_shuai2026.txt:299` 逐字）')
         print('     ⚠ **已知缺口**：要判靶② 必须同时报**面内长:宽**，本文件尚未取该数。')
         print('     ⛔ **已剔除**：长:厚 30:1（Rezazadeh 2024 = **钢**）、'
