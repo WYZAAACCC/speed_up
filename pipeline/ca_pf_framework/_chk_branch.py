@@ -194,12 +194,34 @@ if a.xiang_m.strip():
         _, ss = sols[k]
         cands += [(k, 'n1', ss[0][0]), (k, 'n2', ss[1][0]),
                   (k, 'a1', ss[0][1]), (k, 'a2', ss[1][1])]
-    print('  外部向量 -> 最近候选：')
+    print('  外部向量 -> 最近候选（分支按"离 n_micro 更近"判定，**不按标签**）：')
+    # ⚠ 关键：`n1/n2/a1/a2` 的**标签**会随 `eigh` 特征向量的符号翻转而在变体间互换
+    #   ⇒ 必须用"哪一支离微弹性极小点 `n_micro` 更近"来定义 A/B 支，标签不可跨变体比较。
+    brA = {}
+    for k in range(1, NV + 1):
+        eps_k, ss_k = sols[k]
+        nm_k, _v, _c = argmin_normal(C, eps_k, nsamp=a.nsamp)
+        four = [('n1', ss_k[0][0]), ('n2', ss_k[1][0]),
+                ('a1', ss_k[0][1]), ('a2', ss_k[1][1])]
+        lbl = min(four, key=lambda t: ang(nm_k, t[1]))[0]
+        brA[k] = {'n2', 'a1'} if lbl in ('n2', 'a1') else {'n1', 'a2'}
+    tab = {1: 0, 0: 0}
     for j, m in enumerate(ext):
         best = min(cands, key=lambda c: ang(m, c[2]))
         dd = ang(m, best[2])
-        print('    [%d] (%+.4f,%+.4f,%+.4f)  => 最近 = 变体%d / %s ，夹角 %.2f deg'
-              % (j, m[0], m[1], m[2], best[0], best[1], dd))
+        kk, lbl = best[0], best[1]
+        br = 'A(近 n_micro)' if lbl in brA[kk] else 'B(另一支)'
+        tab[1 if lbl in brA[kk] else 0] += 1
+        print('    [%2d] (%+.4f,%+.4f,%+.4f)  => 变体%2d / %-2s ，夹角 %.2f deg ，**%s**'
+              % (j, m[0], m[1], m[2], kk, lbl, dd, br))
+    print('    => 落在 **A 支 %d 个 / B 支 %d 个**（共 %d）'
+          % (tab[1], tab[0], tab[1] + tab[0]))
+    if tab[0] == 0:
+        print('    => ★ 全部落在同一支 ⇒ **选支定案**。')
+    elif tab[1] == 0:
+        print('    => ★ 全部落在另一支 ⇒ **选支定案（取 B 支）**。')
+    else:
+        print('    => ⚠ 两支都有 ⇒ 要么变体配对还没对齐，要么"两支"与 PTMT 的两解不是同一个区分。')
     print('  => 若夹角普遍 <2 deg => 外部数据与我们的候选在同一坐标系、同一约定，可直接定选支；')
     print('     若普遍 >20 deg => 坐标系或符号约定不同，须先对齐（不得据此下结论）。')
 print('=' * 112)
