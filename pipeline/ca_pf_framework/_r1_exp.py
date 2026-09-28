@@ -257,11 +257,14 @@ def measure(g, K, a_ax, w_ax, n_hab, box_frac, ed_all=None):
                 out['align_deg'] = float(np.nanmedian([c[5] for c in comps]))
                 out['big_frac'] = float(max(c[0] for c in comps)) / max(ncell, 1)
                 # 相邻分量质心在 `w` 上的间距（取最近邻中位数）
+                # ⚠ 记账（第 3 轮自查抓到的单位 bug）：`cms` 来自 `np.argwhere` ⇒ 是**胞号**，
+                #   不是米。第一版忘了乘 `dx`，报出 `1.2e10 nm`。
+                #   前两只阶段③算例（`e4_lath6`/`e6_mid6`）的 `gap_w_nm` 列因此**无效**
+                #   （可从 `snap_*.npz` 重算）；`nc`/`align_deg`/`LWc`/`big_frac` **不受影响**。
                 if len(comps) >= 2:
                     cms = np.array([c[4] for c in comps])
-                    pw = cms @ w_ax
-                    pw = np.sort(pw)
-                    out['gap_w_nm'] = float(np.median(np.diff(pw))) * 1e9
+                    pw = np.sort(cms @ w_ax)
+                    out['gap_w_nm'] = float(np.median(np.diff(pw))) * dx * 1e9
         U = np.stack([a_ax, w_ax, n_hab], 0)
         cn3 = np.abs(nv @ U.T)                      # (nif,3)
         acell = gm[iface] * dx ** 2 / 3.0           # coarea 面积元（与 cell_area_geom 同口径）
