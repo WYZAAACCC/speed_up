@@ -27,6 +27,7 @@ RUNS = [
     ('DX1  硬 profile', '_w2_dx1.log', 166.70, 'b9565f69', 'N=64 10.67µm soft=False'),
     ('DX2  硬 profile', '_w2_dx2.log', 83.35, 'b9565f69', 'N=128 10.67µm soft=False'),
     ('ED3  软 profile', '_w2_edsoft3.log', 166.70, 'b9565f69', 'N=64 10.67µm soft=True'),
+    ('ED3D 软/加密采样', '_w2_ed3dense.log', 166.70, 'b9565f69', 'N=64 10.67µm soft=True every=25'),
     ('DX2S 软 profile', '_w2_dx2soft.log', 83.35, 'b9565f69', 'N=128 10.67µm soft=True'),
     ('DXF1 软/4µm盒', '_w2_dxf1.log', 83.35, 'b9565f69', 'N=48 4.0µm soft=True'),
     ('DXF2 软/4µm盒', '_w2_dxf2.log', 50.00, 'b9565f69', 'N=80 4.0µm soft=True'),
