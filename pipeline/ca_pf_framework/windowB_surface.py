@@ -811,6 +811,31 @@ class LevelSetMulti(object):
         self._t_since_reinit = 0.0
         self.nv = (nv if nv is not None else (1 if eps0 is None else len(eps0)))
         self.nreg = self.nv + 1                      # 0 = 母相
+        # ★★★ R1 任务②（2026-09-29）：**共享内存多线程并行上下文**（`windowB_par.py`）。
+        #   【此前的事实】`workers` 只喂给 `sfft.fftn/ifftn`（`windowB_pf3d.py:262,265`）
+        #     ⇒ `advance` 里**全部**逐胞算子（迎风通量、minmod、argmin、梯度、einsum）
+        #     都是 numpy 单线程调用 ⇒ **defacto 单核**。这就是"advance 只能单核"的原因：
+        #     不是不能并行，而是**从来没有把并行度接进去**。
+        #   【能不能并行 —— 实测，`_w2_r1par_N192.log`】
+        #     ① numpy 的逐元素算子**确实释放 GIL**：把算子按 axis=0 切 slab 用线程跑，
+        #        wall 时间真的下降。**双对照**证明量具有分辨力：
+        #          正对照 `time.sleep`×20 任务 → 0.054 s（真并行 ✓）
+        #          负对照 纯 Python 循环     → 完全平坦（GIL 串行 ✓）
+        #     ② **硬天花板 = DRAM 带宽**：本机 triad（读2写1）单线程 11.08 GB/s、
+        #        多线程饱和 23.0 GB/s ⇒ **×2.08**。纯流式算子最多 ×2.1；
+        #        延迟受限的算子能到 ×4–6.8（`np.where` 4.6、winner/runner-up 6.8、
+        #        `argmin` 4.1、`norm` 5.3）⇒ **并行化的收益由"算子的性质"决定，
+        #        不是"核数"**。
+        #   【正确性】**逐位相同**。所有核都在**空间**上切片，逐胞归约次序不变
+        #     （`argmin`/`einsum`/`norm` 的 axis 归约次序没变），且 halo 取法分两类：
+        #       · `np.roll` 系（周期 stencil）⇒ halo **环绕取**（`np.take(mode='wrap')`）
+        #       · `np.gradient`（盒边界单边差分）⇒ halo 在**盒边界截断**
+        #     两条都由 `windowB_par._selftest` 逐位判据把关（10/10 PASS）。
+        #   ⚠ 记账：线程数**不是**物理参数（结果逐位相同）⇒ **不触发 `R8`**。
+        #     `workers<=1` ⇒ 全部算子退回原单线程实现，行为逐位不变。
+        from windowB_par import ParCtx
+        self.par = ParCtx(workers)
+        self.nthreads = int(workers or 1)
         # ★★ T3（2026-09-28）：`XYZ`（24 B/胞）**惰性分配** —— 它只在撒晶核时用到，
         #   而生产跑里撒核是稀疏事件（B1 的 athermal 形核），却全程占着内存。
         self._XYZ = None
@@ -1081,6 +1106,11 @@ class LevelSetMulti(object):
         return tab
 
     def region(self):
+        # ★★ R1（2026-09-29）：空间切片并行（逐位相同；`argmin` 沿 axis=0 的次序不变）。
+        #   实测（N=192）：`argmin over 13 fields` 单线程 0.216 s → ×4.1 @16 线程。
+        _p = getattr(self, 'par', None)
+        if _p is not None:
+            return _p.argmin(self.phi).astype(np.int8)
         return np.argmin(self.phi, axis=0).astype(np.int8)
 
     # ================= 长大中的形核（D18，2026-09-28 用户批准并入）=================
@@ -2102,12 +2132,18 @@ class LevelSetMulti(object):
         """委托给模块级 `sussman_reinit`。
            EXPERT-#3: 默认改用 self.reinit_iters 并透传 dtau/grad
            （原来这里硬编码 iters=30，且丢掉了 dtau/grad）。
-           ★ W1-2: 再透传 `band_cells=self.reinit_band_cells`（默认 None ⇒ 全域 ⇒ 逐位兼容）。"""
-        return sussman_reinit(phi, self.dx,
-                              iters=(self.reinit_iters if iters is None else iters),
-                              dtau=getattr(self, 'reinit_dtau', None),
-                              grad=getattr(self, 'reinit_grad', 'upwind2'),
-                              band_cells=getattr(self, 'reinit_band_cells', None))
+           ★ W1-2: 再透传 `band_cells=self.reinit_band_cells`（默认 None ⇒ 全域 ⇒ 逐位兼容）。
+           ★★ R1（2026-09-29）：有 `self.par` 时改走**并行版**（`windowB_par.ParCtx.
+             sussman_reinit`）—— 逐胞算子并行、但 `max(gm)` 的**串行依赖保持原样**
+             ⇒ 与单线程**逐位相同**（`windowB_par._selftest` 判据把关）。"""
+        _kw = dict(iters=(self.reinit_iters if iters is None else iters),
+                   dtau=getattr(self, 'reinit_dtau', None),
+                   grad=getattr(self, 'reinit_grad', 'upwind2'),
+                   band_cells=getattr(self, 'reinit_band_cells', None))
+        _p = getattr(self, 'par', None)
+        if _p is not None and _p.n > 1:
+            return _p.sussman_reinit(phi, self.dx, **_kw)
+        return sussman_reinit(phi, self.dx, **_kw)
 
     def _advance_phi(self, k, vn, dt):
         """④ 用迎风 |∇φ| 推进：φ_t + v_n|∇φ| = 0"""
@@ -2184,9 +2220,13 @@ class LevelSetMulti(object):
                 # ★ T3：布尔指示场装不下"软"剖面 ⇒ 按需一次性转成浮点（默认不走这条路）
                 self.pf.phi = self.pf.phi.astype(np.float64)
             # AUDIT-#9: 平滑指示场（level-set 的 phi 是 SDF => 0.5*(1-tanh) 是自然选择）
+            # ★ R1（2026-09-29）：12 个场互不相交 ⇒ 按场并行（`tanh` 是超越函数，
+            #   单线程时是 `elastic_driving` 里的一项实打实的开销）。
             _w = 1.5 * self.dx
-            for v in range(self.nv):
-                self.pf.phi[v] = 0.5 * (1.0 - np.tanh(self.phi[v + 1] / _w))
+            self.par.for_each([
+                (lambda v=v: self.pf.phi.__setitem__(
+                    v, 0.5 * (1.0 - np.tanh(self.phi[v + 1] / _w))))
+                for v in range(self.nv)], tag='ed.soft_phi')
         else:
             for v in range(self.nv):
                 self.pf.phi[v] = (reg == v + 1)
@@ -2211,10 +2251,12 @@ class LevelSetMulti(object):
         #   ⚠ 代价记账：`soft=True` 时 `eps0_fields` 是 `6×nv = 72` 次整场乘加
         #     （T3 的记账说这是弹性耗时的大头）⇒ **`soft=True` 会明显变慢**，属预期。
         sig = self.pf.sigma_tensor(None if soft else reg)
-        for v in range(self.nv):
-            # ★★ T1 修（P0-1，2026-09-28）：符号 `−` → `+`（见 `elastic_driving` 的记账）。
-            out[v + 1] = (+np.einsum('p,p...->...', self.e0v_eng[v], sig)
-                          + self.sext_e0[v])
+        # ★ R1（2026-09-29）：12 个场只写 `out[v+1]`（互不相交）⇒ 按场并行。
+        self.par.for_each([
+            (lambda v=v: out.__setitem__(
+                v + 1, (+np.einsum('p,p...->...', self.e0v_eng[v], sig)
+                        + self.sext_e0[v])))
+            for v in range(self.nv)], tag='ed.einsum')
         return out
 
     # ================= ★★ T6：温度的钟（T → 驱动力） =================
@@ -2387,14 +2429,15 @@ class LevelSetMulti(object):
         #   （104 B/胞，N=96 时 92 MB）—— 而下游只要前两名。
         #   改法：`argmin` 拿 winner，再用 nreg 次"掩模内取更小"扫出 runner-up
         #   ⇒ 不产生 (nreg,N³) 临时量；数值与 argsort 前两名**逐位相同**（无并列时）。
-        karr = np.argmin(self.phi, axis=0)
-        larr = np.empty(karr.shape, dtype=karr.dtype)
-        _best = np.full(karr.shape, np.inf)
-        for _j in range(nreg):
-            _pj = self.phi[_j]
-            _mj = (karr != _j) & (_pj < _best)
-            larr[_mj] = _j
-            _best[_mj] = _pj[_mj]
+        #   ★★ R1（2026-09-29）：整段交给 `windowB_par.ParCtx.argmin2` —— 在**空间**上
+        #     切片并行，`np.argmin` 沿 axis=0 的次序与 runner-up 扫描的 j 次序**都没变**
+        #     ⇒ 与上面这段**逐位相同**（`windowB_par._selftest` 已验证）。
+        #     实测（N=192）：「winner+runner-up（13 场）」单线程 1.486 s → **×6.8 @16 线程**
+        #     —— 它是本步里**加速比最高**的一块（说明它本来不是带宽受限，而是掩模
+        #     布尔索引的延迟受限）。
+        karr, larr = self.par.argmin2(self.phi)
+        karr = karr.astype(np.intp)
+        larr = larr.astype(np.intp)
         if per_field:
             ed = self.elastic_driving()
             # ★★ 按**场**推进（2026-09-25 新增，方案 (a)）—— 见 `_advance_perfield` 的记账。
@@ -2414,15 +2457,15 @@ class LevelSetMulti(object):
         stl_w = np.ones(_shape) if pair_kernel else None
         act = np.unique(np.concatenate((np.unique(karr), np.unique(larr))))
         self._t3_nact = int(act.size)
-        for k in act:
-            k = int(k)
+
+        def _geom_k(k):
             mw = (karr == k)
             ml = (larr == k)
             mk = mw | ml
             bb = _bbox_pad(mk, 2)
             if bb is None:
-                continue
-            gsub = np.gradient(self.phi[k][bb], self.dx, edge_order=2)
+                return
+            gsub = self.par.gradient(self.phi[k][bb], self.dx, edge_order=2)
             gnsub = np.sqrt(sum(gi ** 2 for gi in gsub)) + 1e-30
             kapsub = self.curvature_of(k, grad=gsub, gn=gnsub)
             # ★★ T9：刚度按**面片身份** (k, larr) 逐胞查表（`facet_id_gamma=False` 时退回旧行为）
@@ -2447,6 +2490,15 @@ class LevelSetMulti(object):
                 stk_w[bb][mwb] = stksub[mwb]
                 if stl_w is not None:
                     stl_w[bb][ml[bb]] = stksub[ml[bb]]
+
+        # ★★ R1（2026-09-29）：按场并行。**为什么安全**：各 k 的写入位置互不相交 ——
+        #   一个胞的 winner 唯一 ⇒ `mwb = (karr[bb]==k)` 对不同的 k 是**不相交**的掩模
+        #   （`stl_w` 那一路写 `ml[bb]`，同一胞的 runner-up 也唯一）⇒ 无竞争。
+        #   `facet_nref` / `_stiff_of` / `curvature_of` 都是**纯函数**（只读实例表），
+        #   唯一例外是 `gel_facet` 的 `_gel_cache`（dict 赋值在 GIL 下原子；且
+        #   `lambda_el=0` 默认时根本不会被调用）。
+        self.par.for_each([(lambda k=int(k): _geom_k(int(k))) for k in act],
+                          tag='advance.geom_k')
         # 每胞的配对速度（正 = winner 长大）
         # ★ T3：只算 winner/runner-up 两份（旧写法造 (nreg,N,N,N) 再 take_along_axis）
         edk, edl = self.elastic_driving_pair(karr, larr)
@@ -2468,7 +2520,7 @@ class LevelSetMulti(object):
         #   不给 eps0) 时 ncmp=None => 整块被跳过 => **mob_beta 静默不生效**。
         #   现在：ncmp 缺失时退化为"只用 npref"，并在下面 has_pair 分支做保护。
         if _need_ref:
-            gd_ = np.gradient(pha - phb, self.dx, edge_order=2)
+            gd_ = self.par.gradient(pha - phb, self.dx, edge_order=2)
             # ★★★ 2026-09-28（根因报告 ① 的候选修法，**默认关闭**）：`norm_smooth>0`
             #   时把差分场的梯度各分量做一次 `(2m+1)³` 盒式平滑再归一化。
             #   动机（`_probe_LT.py` + `_probe_LT_ed.log` 实测）：
@@ -2590,7 +2642,7 @@ class LevelSetMulti(object):
                 #   `∇d` 方向一致 ⇒ κ 跨界面连续 ✓
                 _sg = np.where(karr < larr, 1.0, -1.0)
                 _dd = _sg * (pha - phb)
-                _gd = np.gradient(_dd, self.dx, edge_order=2)
+                _gd = self.par.gradient(_dd, self.dx, edge_order=2)
                 _gn = np.sqrt(sum(_g ** 2 for _g in _gd)) + 1e-30
                 _kap_idx = self.curvature_of(0, grad=_gd, gn=_gn)
                 # ★★★ A1（2026-09-28）**补上丢掉的 winner 定向因子** —— 这是 T11j
@@ -2632,8 +2684,8 @@ class LevelSetMulti(object):
                 _hp = (karr > 0) & (larr > 0)
                 self._n_vv = int(_hp.sum())
                 if _hp.sum() > 0:
-                    _gk = np.gradient(pha, self.dx, edge_order=2)
-                    _gl = np.gradient(phb, self.dx, edge_order=2)
+                    _gk = self.par.gradient(pha, self.dx, edge_order=2)
+                    _gl = self.par.gradient(phb, self.dx, edge_order=2)
                     _nk = np.sqrt(sum(t ** 2 for t in _gk)) + 1e-30
                     _nl = np.sqrt(sum(t ** 2 for t in _gl)) + 1e-30
                     _cos = sum(_gk[i] * _gl[i] for i in range(3)) / (_nk * _nl)
@@ -2827,33 +2879,51 @@ class LevelSetMulti(object):
         if _is_proj:
             _vc_ext = sigma * coef
             _dd = np.where(karr < larr, 1.0, -1.0) * (pha - phb)
-            _gd = np.gradient(_dd, self.dx, edge_order=2)
+            _gd = self.par.gradient(_dd, self.dx, edge_order=2)
             _gn = np.sqrt(sum(_g ** 2 for _g in _gd)) + 1e-30
             Vvec = [_vc_ext * (_g / _gn) for _g in _gd]
         else:
             Vvec = None
-        for k in range(nreg):
-            # ④ 推进：默认 Godunov 迎风（鲁棒）；`adv_grad='central'` 用于"光滑 SDF +
-            #   需要无偏各向异性幅度"的场合（W1/H1 判据实测：迎风把各向异性压低 ~8%，
-            #   中心差分把 a2 复原到 1.0±0.02 —— 见 W1 的记账）
-            #   `coef = sigma·V_c`（带内延拓后的规范形速度）⇒ winner φ 拿 +V_ab、
-            #   runner-up φ 拿 −V_ab ⇒ **两侧同一个标量** ✓
+        # ★★★ R1 任务②（2026-09-29）：**逐场推进改为多核并行**。
+        #   为什么这一处是"并行化收益最大、风险最小"的：
+        #     ① **天然无依赖**：第 k 个场只读 `self.phi[k]` 与 `Vvec`（只读），
+        #        只写 `self.phi[k]`（第 k 行，各 k **互不相交**）⇒ 不需要 halo、
+        #        不需要同步、不需要通信。
+        #     ② 它是**单步里最贵的一块**：`upwind_flux_vec(order=2)` 每次调用约
+        #        **60 个 DRAM 级 pass**，被每个活跃场各调一次（最多 13 次）
+        #        ⇒ 实测 0.854 s × 13 ≈ 11 s（N=192，占 `advance` 的 ~1/3）。
+        #     ③ 实测加速比 ×2.43 @20 线程（`_w2_r1par_N192.log`，算子级）。
+        #   ★★★ **自查抓到的一处我自己的错**（记账，`AGENTS §3.24` 的同类陷阱）：
+        #     我最初以为这个循环体里写了 `self.dG_max`（共享标量）⇒ 并行会有竞态，
+        #     于是加了一行 `self.dG_max = max_k max|vnk| / M` 去"修"它。
+        #     **逐行核对后确认：本循环体里根本没有 `dG_max` 赋值** ——
+        #     它的唯一来源在 `advance` 的前半段（`:2664` 的 `max|dG_cell|`，
+        #     或 `:2737` 的 `max|dG_cell·Mfac|`），**在循环之前就已定值、无竞态**。
+        #     ⇒ 我那一行是**凭想象加的行为改动**，会静默改掉 `dG_max` 的语义
+        #       （`suggest_dt` / `_t21b_1step.py` / `prod_boxB_mob.py` / `_chk_m6_route.py`
+        #        都在读它）⇒ **已删除**。本循环**只**并行化，**不碰** `dG_max`。
+
+        def _step_k(k):
             vnk = coef * (np.where(karr == k, 1.0, 0.0)
                           - np.where(larr == k, 1.0, 0.0))
-            if np.any(vnk != 0):
-                if _is_proj:
-                    # ★★ D17：矢量速度 + 迎风通量（两场共用同一个 V）
-                    self.phi[k] = self.phi[k] - dt * upwind_flux_vec(
-                        self.phi[k], Vvec, self.dx,
-                        order=(2 if adv_grad == 'proj2' else 1))
-                elif adv_grad == 'central':
-                    g = np.gradient(self.phi[k], self.dx, edge_order=2)
-                    gmag = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
-                    self.phi[k] = self.phi[k] - dt * vnk * gmag
-                else:
-                    sgn = np.where(vnk > 0, 1.0, -1.0)
-                    gmag = self._upwind_grad(self.phi[k], sgn)
-                    self.phi[k] = self.phi[k] - dt * vnk * gmag
+            if not np.any(vnk != 0):
+                return
+            if _is_proj:
+                # ★★ D17：矢量速度 + 迎风通量（两场共用同一个 V）
+                self.phi[k] = self.phi[k] - dt * self.par.upwind_flux_vec(
+                    self.phi[k], Vvec, self.dx,
+                    order=(2 if adv_grad == 'proj2' else 1))
+            elif adv_grad == 'central':
+                g = self.par.gradient(self.phi[k], self.dx, edge_order=2)
+                gmag = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+                self.phi[k] = self.phi[k] - dt * vnk * gmag
+            else:
+                sgn = np.where(vnk > 0, 1.0, -1.0)
+                gmag = self._upwind_grad(self.phi[k], sgn)
+                self.phi[k] = self.phi[k] - dt * vnk * gmag
+
+        self.par.for_each([(lambda k=k: _step_k(k)) for k in range(nreg)],
+                          tag='advance.k_loop')
         return self._finish_advance(reg0, dt)
 
     def _finish_advance(self, reg0, dt=None):
