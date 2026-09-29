@@ -99,10 +99,36 @@ def main():
               % (k, v1, v2, 'OK' if same else '**不一致**'))
     print('-' * 96)
     print('  不一致项 = %d' % bad)
+
+    # ---- ②b 参数一致之外，还要核**这套参数本身合法** ---------------------
+    #   两处"一致"可能是"一致地都错" ⇒ 必须独立核闭式的判据。
+    rec = CL.recommend(alpha_KM=a.alpha_km)
+    ok_o, ratio_o, qm = CL.ordered_ok(rec['q'], 1e-9, a.alpha_km, rec['L_lath'],
+                                      dG_worst=rec['dG_at_start'])
+    checks = [
+        ('C-3 有序性 Δt_grow/Δt_nuc ≤ 1', ok_o, '%.3f（q_cap=%.3e）' % (ratio_o, qm)),
+        ('C-4 t/Δx ≥ 4（本仓库分辨率目标）', rec['t_over_dx'] >= 4.0,
+         '%.2f' % rec['t_over_dx']),
+        ('C-4 几何装得下 n 根', rec['n_geo_cap'] >= rec['n_lath'],
+         'n_cap=%d ≥ n=%d' % (rec['n_geo_cap'], rec['n_lath'])),
+        ('C-2 n == floor(α(M_s−T_end))', rec['n_lath'] ==
+         CL.n_lath_int(298.0, a.alpha_km), 'n=%d' % rec['n_lath']),
+        ('C-8 供给限速（不是几何限速）',
+         CL.who_limits(rec['n_geo_cap'], a.alpha_km)['binding'] == 'kinetics',
+         str(CL.who_limits(rec['n_geo_cap'], a.alpha_km))),
+        ('C-3 步数 ≥ 下界 / 安全系数', rec['steps'] >= rec['steps_min'] / 0.8,
+         '%d ≥ %.0f' % (rec['steps'], rec['steps_min'] / 0.8)),
+    ]
+    bad2 = 0
+    for nm, ok_, det in checks:
+        if not ok_:
+            bad2 += 1
+        print('  %-34s %s  %s' % (nm, 'OK' if ok_ else '**不合法**', det))
+    print('  参数合法性：不合法项 = %d' % bad2)
     if r2.returncode != 0:
         print('  ⚠ `--closed --dry-run` 退出码 = %d（尾部输出：%s）'
               % (r2.returncode, r2.stderr.strip().splitlines()[-1:] or ''))
-    return 1 if bad else 0
+    return 1 if (bad or bad2) else 0
 
 
 if __name__ == '__main__':
