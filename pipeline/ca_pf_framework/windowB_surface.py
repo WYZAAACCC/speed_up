@@ -1232,7 +1232,7 @@ class LevelSetMulti(object):
                 var_rule='ed', use_fcrit=False,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
                 elong=1.0, along=None, prefer_end=True, nfsv_strict=True,
-                block_edge=True):
+                block_edge=True, align_inplane=True):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
         （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
         `WINDOWB_AUDIT_REGISTER.md` D4/A7。三种处置任选其一，**但必须显式**：
@@ -1356,6 +1356,9 @@ class LevelSetMulti(object):
                          # ★ R17：`attach` 落位基准用**整块外缘**（而非源板条自身外缘）。
                          #   只在 `attach=True` 时被读到 ⇒ 默认路径不变。
                          block_edge=bool(block_edge),
+                         # ★ R18：新片的**面内中心**对齐到"整块的面内中心"
+                         #   （而不是源板条自己的质心）。只在 `attach=True` 时读到。
+                         align_inplane=bool(align_inplane),
                          rng=np.random.default_rng(seed))
         # ★★ 记账（Round 63 接线；**Round 84 更正依据**——`ReferenceAudit` #14）：
         #   `p_auto` **已接线并使用**（见下面 sympathetic 分支的 `_gain`）。
@@ -1735,6 +1738,30 @@ class LevelSetMulti(object):
                                       float(_pn.min()) - _e_lo) / self.dx
                             _dbg['edge_gap_min_dx'] = min(
                                 _dbg.get('edge_gap_min_dx', 9.9), _gp)
+                            # ★★★ R18：**面内对齐到"整块的面内中心"**（`align_inplane`）。
+                            #   依据（`eng8` 的**逐对** F3 面积表，逐点实测）：
+                            #     step 30  1-2=1.535                       （一张满界面）
+                            #     step 60  1-2=1.547  1-3=1.542            （两张，都满）
+                            #     step 70→90  1-3 涨到 **2.043**           ← **超过一张满界面**
+                            #     step 90  3-4=1.507
+                            #     step 100 1-3 **−0.672**  3-4 **+0.329**  ← 界面在迁移
+                            #     step 130 3-4 **−0.890**，且 **2-3=0.003 出现**
+                            #   ⇒ 接触拓扑**不是一条链**（`1-2`、`1-3`、`2-3` 同时存在，
+                            #     即 1/2/3 互相接触）⇒ **板条在面内没对齐**（横向错开）。
+                            #   `1-3` 涨到 2.04 > 一张满界面（≈1.54）就是铁证：
+                            #   两片不只在一个面上接触。
+                            #   根因：新片的**面内中心**取的是**源板条自己的质心**
+                            #   `c0`。板条沿 `a` **不对称长大** ⇒ 质心在面内漂移
+                            #   ⇒ 新片跟着偏。而驱动层 `_seed_next` 把新片放在
+                            #   **原始盒心**上、只沿 n* 平移 ⇒ 面内**永远对齐**。
+                            #   ⇒ 改用**整块 α′ 的面内中心**：
+                            #     `_ip = c_blk − (c_blk·nrm)·nrm`（面内部分），
+                            #     再沿 n* 平移到 `_edge + side·(t/2 − o)`。
+                            #     注意 `_ip·nrm ≡ 0`（构造如此）⇒ 沿 n* 的位置
+                            #     完全由 `_edge` 定，不会被面内中心影响。
+                            if c.get('align_inplane', True):
+                                _cb = ((_bi.astype(float) + 0.5) * self.dx).mean(0)
+                                c0 = _cb - float(_cb @ nrm) * nrm
                         else:
                             _e_hi, _e_lo = float(_pn.max()), float(_pn.min())
                         done = False                 # ★ 必须先初始化：下面 `if done`
