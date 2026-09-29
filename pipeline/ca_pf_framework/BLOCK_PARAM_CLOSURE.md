@@ -325,6 +325,7 @@ M(n̂) = M0·e^{−β_h}  ⇒  N_steps 步累积法向位移 ≤ cfl·N_steps·�
 | `_bk_nuc_identity.py`（引擎恒等性 U-1..U-4） | 7 | 0 | `python3 _bk_nuc_identity.py` |
 | **`_bk_docnum.py`（本文档里手打的数字 vs 代码重算）** | — | **0 处不一致** | `python3 _bk_docnum.py` |
 | **`_bk_closedcheck.py`（"一条命令" == 长命令行）** | **20 项** | **0 处不一致** | `python3 _bk_closedcheck.py` |
+| **`_bk_param_audit.py`（完备性：源码里还有没有漏登记的物理量）** | — | **0 条未登记** | `python3 _bk_param_audit.py` |
 
 > ★ `_bk_docnum.py` 是**为这份文档专门写的**：本仓库最贵的一课就是
 > 「**文档里的数字会悄悄过期**」（`kappa_c` 只改了一半、T7 的判读被自己的文档说服）。
