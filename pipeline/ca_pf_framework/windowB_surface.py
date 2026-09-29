@@ -1232,7 +1232,8 @@ class LevelSetMulti(object):
                 var_rule='ed', use_fcrit=False,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
                 elong=1.0, along=None, prefer_end=True, nfsv_strict=True,
-                block_edge=True, align_inplane=True, alt_side=True):
+                block_edge=True, align_inplane=True, alt_side=True,
+                force_reinit_after_event=True):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
         （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
         `WINDOWB_AUDIT_REGISTER.md` D4/A7。三种处置任选其一，**但必须显式**：
@@ -1362,6 +1363,9 @@ class LevelSetMulti(object):
                          # ★ R21：`attach` 下**交替选端**（对齐驱动层 `_seed_next` 的
                          #   `side = +1 if j%2==0 else -1`）。只在 `attach=True` 时读到。
                          alt_side=bool(alt_side),
+                         # ★ R22：有形核事件时是否强制 reinit（默认 True = 归档行为）。
+                         #   `False` ⇒ 与驱动层 `_seed_next` 一致（后者不置该标志）。
+                         force_reinit_after_event=bool(force_reinit_after_event),
                          rng=np.random.default_rng(seed))
         # ★★ 记账（Round 63 接线；**Round 84 更正依据**——`ReferenceAudit` #14）：
         #   `p_auto` **已接线并使用**（见下面 sympathetic 分支的 `_gain`）。
@@ -1883,8 +1887,20 @@ class LevelSetMulti(object):
         #   ⇒ 盘边界出现 O(|旧 φ_j|) 的跳变（可达 −1 µm 量级），而 `region()` 靠 argmin 仍然正确
         #   ⇒ **不报错、但 φ 已不是距离函数**。定时 reinit 是唯一的兜底，而它可能被跳过。
         #   ⚠ 只在 `out` 非空（真有事件）时置位 ⇒ 不形核的算例**逐位不变**。
-        if out:
+        # ★★★ R22：可用 `nuc_cfg(force_reinit_after_event=False)` **关掉**这一强制。
+        #   动机（R21 的结论与 R19 的观察）：**驱动层 `_seed_next` 只调
+        #   `seed_plate()`，不置这个标志** ⇒ 两条路径在"事件后是否强制 reinit"
+        #   上**不同**。而 R19 实测「`1-3` 在**两次形核之间**自己从 1.545 涨到 2.246」
+        #   ⇒ 界面的变化发生在**事件之后**，正是这条强制 reinit 会起作用的地方
+        #   （Sussman reinit 会**移动零水平集**）。
+        #   ⇒ `False` 时与驱动层一致（默认 `True` = 归档行为，逐位不变）。
+        if out and c.get('force_reinit_after_event', True):
             self._need_reinit = True
+        if out:
+            _dbg['n_events'] = _dbg.get('n_events', 0) + len(out)
+            _dbg['forced_reinit'] = (_dbg.get('forced_reinit', 0)
+                                     + (1 if c.get('force_reinit_after_event', True)
+                                        else 0))
         return out
 
     def _npref_of(self, k):

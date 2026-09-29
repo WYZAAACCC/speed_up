@@ -333,7 +333,8 @@ def run(a):
                   vgroup=vmap, nfsv=True, attach=True,
                   attach_overlap=a.nuc_overlap_nm * 1e-9,
                   elong=(a.eng_elong if a.eng_elong > 1.0 else 1.0),
-                  along=(a_ax if a.eng_elong > 1.0 else None))
+                  along=(a_ax if a.eng_elong > 1.0 else None),
+                  force_reinit_after_event=not a.eng_no_force_reinit)
         _ed_dummy = np.zeros((g.nreg, 1, 1, 1))
         P('★★★ 臂 eng：**形核交给引擎**（`nucleate` 的 stack 通道 + attach + nfsv）'
           '；R=%.0f nm t=%.0f nm，咬入 %.1f nm，节奏 %s，seed=%d'
@@ -648,6 +649,9 @@ def main():
     ap.add_argument('--eng-r-nm', type=float, default=320.0)
     ap.add_argument('--eng-t-nm', type=float, default=250.0)
     ap.add_argument('--eng-seed', type=int, default=11)
+    # ★ R22：关掉"有事件就强制 reinit"（默认开 = 归档行为）。
+    #   动机：驱动层 `_seed_next` 不置 `_need_reinit` ⇒ 两条路径在这点上不同。
+    ap.add_argument('--eng-no-force-reinit', action='store_true')
     # ★ R18：逐对 F3 面积记录间隔（步）。0 = 不记（默认，与改动前逐位相同）。
     ap.add_argument('--pair-every', type=int, default=0)
     # ★★★ R12：**核的形状**。默认 0 ⇒ 圆盘（= 引擎原行为）。
