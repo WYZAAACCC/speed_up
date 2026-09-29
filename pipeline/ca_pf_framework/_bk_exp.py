@@ -189,7 +189,15 @@ def run(a):
                 vlo, vhi = sp
                 side = 1.0 if (j % 2 == 0) else -1.0
                 edge = (vhi if side > 0 else vlo)
-                c = c0 + ((edge - cproj) + side * (T / 2 + 1.5 * dx)) * n_hab
+                # ★★ 记账（Round 3 实测更正）：原先放 **1.5 胞（94 nm）** 的间隙，
+                #   想让两侧"长到一起"。实测**不会**发生：
+                #     间隙里是**母相 β** ⇒ 两侧都是 F1（α′/β）界面，有驱动力，
+                #     但**宽面被 β_h 重钉扎** ⇒ 实测宽面推进只有 **0.26 nm/步**
+                #     （端板条 Δn=+13 nm/50 步）⇒ 47 nm 要 **~180 步** > 200 步预算。
+                #   ⇒ 物理上"sympathetic 邻位形核"本来指**在已有板条的界面上形核**
+                #     （Furuhara 2008 的 repeated nucleation adjacent to each other）
+                #     ⇒ 新核应当**贴着**已有块放。间隙由 `--nuc-gap-nm` 控制（默认 0）。
+                c = c0 + ((edge - cproj) + side * (T / 2 + a.nuc_gap_nm * 1e-9)) * n_hab
                 c = c - L * np.floor(c / L)          # 周期折回
         g.seed_plate(j, c, n_hab, a.plate_W * 0.5e-9, T,
                      elong=a.plate_L / a.plate_W, along=a_ax, flat_end=True)
@@ -408,6 +416,7 @@ def main():
                     help='★ G-1 方案 B：t=0 只播第 1 片，此后每 --nuc-every 步'
                          '在当前块外侧播下一片（同变体、新场）⇒ 生长中堆叠成块')
     ap.add_argument('--nuc-every', type=int, default=30)
+    ap.add_argument('--nuc-gap-nm', type=float, default=0.0)
     ap.add_argument('--norm-smooth', type=int, default=0)
     ap.add_argument('--beta-h', type=float, default=3.5)
     ap.add_argument('--beta-w', type=float, default=2.3)
