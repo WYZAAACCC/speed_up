@@ -70,6 +70,20 @@ def build_table(laths, omega_max_deg, omega_mode, a_ax=None, gamma0=0.15):
                         gamma0=gamma0)
 
 
+def _block_span_n(g, n_hab, BM_):
+    """当前 α′ 集合沿 n* 的 (中心, 最小投影, 最大投影)。只在小包围盒上算。"""
+    reg = g.region()
+    m = (reg > 0)
+    if not m.any():
+        return None
+    bb = BM_._bbox_of(m, pad=2)
+    cc = BM_._sub_coord(bb, g.dx)
+    pn = (n_hab[0] * cc[0][:, None, None] + n_hab[1] * cc[1][None, :, None]
+          + n_hab[2] * cc[2][None, None, :])
+    v = pn[m[bb]]
+    return float(v.min()), float(v.max())
+
+
 def run(a):
     N, L = a.N, a.dx_nm * 1e-9 * a.N
     dx = L / N
@@ -147,17 +161,61 @@ def run(a):
       '沿 a 长 %.0f nm、沿 w 宽 %.0f nm'
       % (len(laths_eff), laths_eff, a.plate_T, a.gap_nm, (span + T) * 1e6,
          a.plate_L, a.plate_W))
-    if len(laths_eff) == 1 and M > 1:
+    # ================= ★★★ G-1 方案 B：**生长中的同变体邻位形核** =================
+    #   文献机制（Furuhara 2008）：「A BLOCK IS FORMED BY REPEATED NUCLEATION OF THE
+    #   SAME VARIANT OF LATHS ADJACENT TO EACH OTHER」。
+    #   ⇒ t=0 **只播第 1 片**；此后每 `--nuc-every` 步，在当前块的**外侧**播下一片
+    #     （**同一个变体、新的场**）⇒ 片与片之间自动成为 F3（低角晶界）。
+    #   ★ 与"预先把 6 片摆好"的区别：核是**在长大过程中逐个出现**的，且每次出现前
+    #     都要**先量当前块的实际延伸**（因为块已经长大了）⇒ 是"生长后堆叠"。
+    #   ★ **零引擎改动**：场表 / `LathTable` 在构造时就按 `--laths` 建好，
+    #     未播种的场一直是空的（φ=1e3 ⇒ 永远不是 argmin）。
+    grow = bool(a.grow_stack)
+    n_seeded = 0
+
+    def _seed_next():
+        nonlocal n_seeded
+        j = n_seeded + 1
+        if j > nv:
+            return None
+        if j == 1:
+            c = c0.copy()
+        else:
+            sp = _block_span_n(g, n_hab, BM)
+            cproj = float(c0 @ n_hab)
+            if sp is None:
+                c = c0.copy()
+            else:
+                vlo, vhi = sp
+                side = 1.0 if (j % 2 == 0) else -1.0
+                edge = (vhi if side > 0 else vlo)
+                c = c0 + ((edge - cproj) + side * (T / 2 + 1.5 * dx)) * n_hab
+                c = c - L * np.floor(c / L)          # 周期折回
+        g.seed_plate(j, c, n_hab, a.plate_W * 0.5e-9, T,
+                     elong=a.plate_L / a.plate_W, along=a_ax, flat_end=True)
+        n_seeded = j
+        return j
+
+    if grow:
+        j0 = _seed_next()
+        g.init_parent()
+        P('★★ 生长中的同变体邻位形核：t=0 只播第 %d 片（场 %d）；'
+          '此后每 %d 步在外侧播下一片（同一变体、新场）⇒ 片间自动成 F3'
+          % (j0, j0, a.nuc_every))
+    elif len(laths_eff) == 1 and M > 1:
         for i in range(M):
             off = (i - (M - 1) / 2.0) * (T + gap)
             g.seed_plate(1, c0 + off * n_hab, n_hab, a.plate_W * 0.5e-9, T,
                          elong=a.plate_L / a.plate_W, along=a_ax, flat_end=True)
+        n_seeded = M
+        g.init_parent()
     else:
         for i in range(M):
             off = (i - (M - 1) / 2.0) * (T + gap)
             g.seed_plate(i + 1, c0 + off * n_hab, n_hab, a.plate_W * 0.5e-9, T,
                          elong=a.plate_L / a.plate_W, along=a_ax, flat_end=True)
-    g.init_parent()
+        n_seeded = M
+        g.init_parent()
     margin = 0.5 * L - 0.5 * (span + T) - 0.5 * a.plate_L * 1e-9
     P('   沿 n* 到盒壁余量 %.2f µm；沿 a 余量 %.2f µm（**700 步长跑会撞壁，见 §4.1**）'
       % ((0.5 * L - 0.5 * (span + T)) * 1e6, margin * 1e6))
@@ -231,6 +289,12 @@ def run(a):
                                     phi=g.phi, step=it)
                 nfail = 4
                 break
+        # ★★★ G-1 方案 B：**生长中的邻位形核**（在推进之前播下一片）
+        if grow and a.nuc_every > 0 and it > 0 and (it % a.nuc_every == 0):
+            _j = _seed_next()
+            if _j is not None:
+                P('   ★★ 形核事件 @ step %d：新核进入**新场 %d**（变体 %d）'
+                  % (it, _j, laths_eff[_j - 1]))
         if (it % a.every) and (it != a.steps):
             continue
         reg = g.region()
@@ -340,6 +404,10 @@ def main():
     ap.add_argument('--plate-W', type=float, default=640.0)
     ap.add_argument('--plate-T', type=float, default=250.0)
     ap.add_argument('--gap-nm', type=float, default=0.0)
+    ap.add_argument('--grow-stack', action='store_true',
+                    help='★ G-1 方案 B：t=0 只播第 1 片，此后每 --nuc-every 步'
+                         '在当前块外侧播下一片（同变体、新场）⇒ 生长中堆叠成块')
+    ap.add_argument('--nuc-every', type=int, default=30)
     ap.add_argument('--norm-smooth', type=int, default=0)
     ap.add_argument('--beta-h', type=float, default=3.5)
     ap.add_argument('--beta-w', type=float, default=2.3)
