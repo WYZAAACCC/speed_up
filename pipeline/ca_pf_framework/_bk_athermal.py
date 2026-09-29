@@ -148,16 +148,26 @@ def judge(tag, root, verbose=True):
                't_sim=%.4e 需要≥%.4e（比 %.3f）[T_start=%.2f K 来自 %s]'
                % (t_end_sim, need, t_end_sim / need, T_start, tsrc)))
 
-    # ---- A-8：总体积与几何预期一致 ---------------------------------------
-    #   `Vt` 应 ≈ n·L·W·t_physical（每片都长到**物理**尺寸）。
-    #   ⚠ 必须用 `T_physical` 而**不是**播种厚：播种厚里含"预补的被咬量"。
+    # ---- A-8：总体积的**量级**检查（**单边**，见下） ----------------------
+    #   `Vt` 应 ≥ `n·L·W·t_phys × 0.8`：块里确实有 n 根"物理尺寸"的板条。
+    #   ⚠ **不设上界** —— 这是 Round 5 发现的**我自己的判据设计错**：
+    #     第一版写成 `Vt ≈ n·L·W·t_phys（±30%）`，隐含"板条保持种子足迹"。
+    #     但**只有惯习法向被 `β_h` 钉住**，面内 α′/β 界面会继续往母相里长
+    #     ⇒ `Vt` 超过种子几何是**物理的**，不是缺陷。
+    #     实测（`dry_cln2`，step 700）：Vt=8.73 µm³ 而 n·L·W·t_phys=5.73 µm³
+    #     ⇒ 比值 1.52 ⇒ 旧判据会给出一个**假的 FAIL**。
+    #   ⚠ 另外 `Vt` 是**胞数×dx³**（`region` 的计数），比几何投影略大
+    #     （界面粗糙、边缘圆化）⇒ 这条只能当**量级检查**，逐片厚度看 V-8b。
     geo_nm = float(cl['geometry'].get('plate_T_physical_nm')
                    or cl['geometry']['plate_T_nm'])
     geo = (M * float(cl['geometry']['plate_L_nm'])
            * float(cl['geometry']['plate_W_nm']) * geo_nm) * 1e-9   # nm³ → µm³
     Vt = float(fnum(last, 'Vt'))
-    ck.append(('A-8 总体积 ≈ n·L·W·t（±25%）', abs(Vt / geo - 1.0) <= 0.25,
-               'Vt=%.4f µm³  几何=%.4f µm³  比=%.3f' % (Vt, geo, Vt / geo)))
+    ck.append(('A-8 总体积 ≥ 0.8 × n·L·W·t_phys（单边量级检查）',
+               Vt >= 0.8 * geo,
+               'Vt=%.4f µm³ ≥ %.4f µm³（几何 %.4f，比 %.2f；'
+               '**不设上界**：面内会继续长）'
+               % (Vt, 0.8 * geo, geo, Vt / geo)))
 
     if verbose:
         print('=' * 104)

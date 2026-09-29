@@ -38,7 +38,10 @@ def main():
             print('%-34s （缺快照或 meta）' % d)
             continue
         meta = json.load(open(mp, encoding='utf-8'))
-        t0 = a.plate_t or float((meta.get('plate') or {}).get('T', 250.0))
+        _pl = meta.get('plate') or {}
+        # ★ 靶必须是**物理**厚（`T_physical`），不是播种厚 `T` —— 与 V-8b 同口径。
+        #   （播种厚里含"预补的被咬量"，拿它当靶等于自己跟自己比。）
+        t0 = a.plate_t or float(_pl.get('T_physical') or _pl.get('T', 250.0))
         z = np.load(snaps[-1], allow_pickle=True)
         reg = z['region']
         dx = float(z['L']) / reg.shape[0]
