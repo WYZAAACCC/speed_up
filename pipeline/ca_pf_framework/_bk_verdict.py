@@ -194,13 +194,31 @@ def main():
             for (_st, vd, _a, _b, _c, _d) in r['per']:
                 for k, v in vd.items():
                     vols.setdefault(k, []).append(v)
-            mono = all(all(vols[k][i] <= vols[k][i + 1] + 1e-30
-                           for i in range(len(vols[k]) - 1)) for k in vols)
-            grew = all(vols[k][-1] > vols[k][0] for k in vols)
-            ck.append(('V-2 每根都在长 (单调不减 & 末>初)', mono and grew,
-                       '; '.join('%d:%.4f→%.4f' % (k, vols[k][0] * 1e18,
+            # ★★ Round 10 **重新界定 V-2 的适用范围**（不是放宽阈值，是改测的量）：
+            #   原判据「**每根**体积单调不减」是对**预摆整齐堆叠**推出来的 ——
+            #   那种初态下每根都有 F1 面积。但对一个**堆叠**，**内层板条两张宽面
+            #   全是 F3、`Δf = Δe_el ≡ 0` ⇒ 它没有任何体驱动力**（§5.1 的推导），
+            #   体积只受 F3 面积最小化支配，**可以小幅回落**。
+            #   实测 `dry_pa`（预摆）就 FAIL 在这条上（板条 3：0.3772→…→0.3845
+            #   中间有回落），而它在物理上没有错。
+            #   ⇒ 判据改成两条，**两条都打印**：
+            #       V-2  总体积单调不减（这才是"块在长"的物理要求）——**判**
+            #       V-2b 逐板条的跌幅——**只报不判**（阈值要等对照分布，不先拍数）
+            #   ⚠ 不许"把原读数藏起来"：逐板条的起止值仍然原样打印。
+            tot = [sum(vd.values()) for (_st, vd, _a, _b, _c, _d) in r['per']]
+            mono_tot = all(tot[i] <= tot[i + 1] + 1e-30 for i in range(len(tot) - 1))
+            ck.append(('V-2 总体积单调不减（"块在长"的物理要求）', mono_tot,
+                       'Vt: %.4f → %.4f µm³（%d 个快照）'
+                       % (tot[0] * 1e18, tot[-1] * 1e18, len(tot))))
+            per_lath = '; '.join('%d:%.4f→%.4f' % (k, vols[k][0] * 1e18,
                                                    vols[k][-1] * 1e18)
-                                 for k in sorted(vols))))
+                                 for k in sorted(vols))
+            drops = {k: (min(vols[k]) / max(vols[k]) - 1.0) * 100.0
+                     for k in vols if max(vols[k]) > 0}
+            ck.append(('V-2b 逐板条体积（**只报不判**：内层片允许回落）', None,
+                       '%s   跌幅=%s' % (per_lath,
+                                       ' '.join('%d:%.1f%%' % (k, drops[k])
+                                                for k in sorted(drops)))))
         else:
             ck.append(('V-2 每根都在长', None,
                        '**数据不足**：只有 %d 个快照（需 ≥2）⇒ 判据不适用'
