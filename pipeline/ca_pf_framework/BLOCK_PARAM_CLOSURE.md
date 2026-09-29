@@ -495,6 +495,16 @@ python3 _bk_exp.py --closed --gamma0 0.25 --steps 2853 --tag cl1b --out _exp/_bk
 
 ## 8. 怎么复现
 
+### ★ 8.0 一条命令跑完全部自动检查（**给挑毛病的人**）
+
+```bash
+bash _bk_closure_all.sh              # 约 6–10 min（`_bk_nuc_identity` 最慢）
+SKIP_SLOW=1 bash _bk_closure_all.sh  # 跳过引擎恒等性，约 1 min
+```
+
+它把 R29 建立的**全部**守卫一次跑完并打一张表（A 闭式与判据 / B 工具自检 /
+C 一致性），完整输出落 `_w2_bk_closure_all.log`。
+
 ```bash
 cd pipeline/ca_pf_framework
 PY=/root/miniconda3/envs/ml/bin/python
