@@ -174,6 +174,19 @@ def main():
             continue
         ns = [fnum(x, 'nslab_n') for x in rows]
         nc = [fnum(x, 'nf3_col') for x in rows]
+        # ★★★ R30（`R30_AUDIT_LEDGER.md` **P0-1**）：**判决优先用修正口径**。
+        #   旧列 `nslab_n`/`nf3_col` 有两个静默少读（`min_run=2` 丢薄层、
+        #   `r_col=300 nm` 硬编码看不见面内偏置的板条）——【实测】6 层 2Δx 读成 5；
+        #   `dry_cln11` step2000 的场 2 完全不可见。
+        #   ⇒ 有 `nslab_n1`/`nf3_col1` 就用它判；**旧读数照样打印**（不藏）。
+        #   兼容：老归档没有新列 ⇒ 自动退回旧口径（并在 detail 里注明）。
+        _newcol = bool(rows) and ('nslab_n1' in rows[0])
+        if _newcol:
+            ns_old, nc_old = list(ns), list(nc)
+            ns = [fnum(x, 'nslab_n1') for x in rows]
+            nc = [fnum(x, 'nf3_col1') for x in rows]
+        else:
+            ns_old, nc_old = None, None
         nf = [fnum(x, 'nf3') for x in rows]
         # ★ nan 必须**先滤掉**再取 max：生长臂在前几个快照还没有任何 F3 面
         #   ⇒ `f3_pos_dx` 恒为 nan ⇒ `max([nan, ...])` 返回 nan
@@ -187,8 +200,13 @@ def main():
         ck.append(('V-1 块结构 (nslab==M & nf3col==M-1 & nf3faces>0)',
                    bool(M) and all(v == M for v in ns)
                    and all(v == M - 1 for v in nc) and all(v > 0 for v in nf[1:]),
-                   'nslab=%s  nf3col=%s  nf3faces=%s'
-                   % (sorted(set(ns)), sorted(set(nc)), [int(x) for x in nf[:3]])))
+                   'nslab%s=%s  nf3col%s=%s  nf3faces=%s'
+                   % ('' if _newcol else '(旧口径)',
+                      sorted(set(ns)), '' if _newcol else '(旧口径)',
+                      sorted(set(nc)), [int(x) for x in nf[:3]])
+                   + ('' if not _newcol else
+                      '   ｜ 旧口径 nslab=%s nf3col=%s'
+                      % (sorted(set(ns_old)), sorted(set(nc_old))))))
         if 'per' in r and len(r.get('per', [])) >= 2:
             vols = {}
             for (_st, vd, _a, _b, _c, _d) in r['per']:
@@ -346,7 +364,36 @@ def main():
         #   `gs3` 实测板条 1 被咬成 20 个碎片、从柱剖面里消失，而 `V-1g` 仍 PASS
         #   （它只看阶梯的级数）⇒ 必须有这一条兜住"片还在不在"。
         if grown and any('ths' in x for x in rows):
-            last = rows[-1]
+            # ★★★ R30（`R30_AUDIT_LEDGER.md` **P0-5**）：**时间基必须统一**。
+            #   病灶：本段原来 `last = rows[-1]`（**CSV 最后一行**）取 `vols`/`runs`/`ths`，
+            #   而同一条判据在下面又去读 **`_snaps[-1]`（最后一个快照）** 用
+            #   `_bk_cmp.robust_thickness` 算厚度，并与 `present`（CSV 口径）**混用**。
+            #   ⇒ 只要 **CSV 比最后一个快照新**，某个场就会"在 CSV 里在位、在快照里不存在"
+            #     ⇒ `robust_thickness` 给 0 ⇒ **FAIL 是伪影**。
+            #   【实测】`dry_cln11`：CSV 末行 step=2300（6 场在位）vs `snap_02000`（5 场）
+            #     ⇒ 场 6 被读成 0 nm。
+            #   修法：**两个口径都对齐到最后一个快照的 step**（有快照就用快照那一步的
+            #     CSV 行；没有快照才退回 CSV 末行），并把实际用的 step 打印出来。
+            _snaps0 = sorted(glob.glob(os.path.join(r['dir'], 'snap_*.npz')))
+            _step_of = {}
+            for x in rows:
+                try:
+                    _step_of[int(float(x.get('step', 'nan')))] = x
+                except (TypeError, ValueError):
+                    pass
+            _last_snap_step = None
+            if _snaps0:
+                try:
+                    _last_snap_step = int(np.load(_snaps0[-1])['step'])
+                except Exception:
+                    _last_snap_step = None
+            if _last_snap_step is not None and _last_snap_step in _step_of:
+                last = _step_of[_last_snap_step]
+                _tb = 'CSV step=%d（= 最后快照）' % _last_snap_step
+            else:
+                last = rows[-1]
+                _tb = ('CSV 末行 step=%s（⚠ 与最后快照 step=%s 不一致 ⇒ 时间基未对齐）'
+                       % (last.get('step'), _last_snap_step))
             try:
                 th = [float(t) for t in last.get('ths', '').split('/')]
             except ValueError:
@@ -356,8 +403,8 @@ def main():
             nrun = len(set(int(x) for x in last.get('runs', '').split('/') if x))
             ck.append(('V-8 六片全在位（柱剖面里的场数 == M）',
                        nrun == M if M else None,
-                       'runs=%s ⇒ %d 个不同场（应为 %d）；在位的场=%s'
-                       % (last.get('runs'), nrun, M, present)))
+                       'runs=%s ⇒ %d 个不同场（应为 %d）；在位的场=%s；时间基：%s'
+                       % (last.get('runs'), nrun, M, present, _tb)))
             # ★★★ R29：厚度判据的窗口**必须随物理板条厚缩放**，且必须用
             #   `T_physical` 而**不是**播种厚 `T` —— 两回事：
             #   `T` 是引擎播种用的（要预先补上被共享界面咬掉的那部分），

@@ -79,8 +79,58 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         #   实测会让界面每步位移到 **0.6–0.75 dx**（超 CFL 4–5 倍）⇒ 剖面失真。
         #   ⇒ 实际用量必须落盘，判据才能事后核。
         #   （`_bk_defcheck.py` 只遍历**旧行**的键 ⇒ 新增列不影响归档的逐位比较。）
-        'cfl_used']
+        'cfl_used',
+        # ★★★ R30（`R30_AUDIT_LEDGER.md` P0-1）：柱剖面的**修正口径**。
+        #   归档口径 `nslab_n`/`runs`/`nf3_col` 有两个静默少读（`min_run=2` 丢薄层、
+        #   `r_col=300 nm` 硬编码看不见面内偏置的板条）—— 实测 6 层 2Δx 读成 5、
+        #   `dry_cln11` step2000 的场 2 完全不可见。
+        #   ⇒ **两个口径都存**：旧列保留（历史读数可复现），新列供判决。
+        #   `r_col_nm`/`col_cover_min` 是**可见性守卫**：静默丢层从此是落盘数字。
+        'nslab_n1', 'runs1', 'nf3_col1', 'r_col_nm', 'col_cover_min']
 assert len(COLS) == len(set(COLS))
+
+
+def _sparse_band(phi, dx, band_cells):
+    """★★★ R30（`R30_AUDIT_LEDGER.md` **P0-4**）：**带内稀疏 φ** 的落盘编码。
+
+    为什么需要它（用户的硬要求 + `BLOCK_DERIVATION §10 I-6` 的原文）：
+      「将仿真过程的全部数据保存在 F 盘下 …… 之后也能使用新的测量工具重新测量」
+      —— 而实测：全库 297–517 个 `snap_*.npz` 里 **`phi` 键出现 0 次**
+      （`_r30_scanphi.py`）⇒ 任何需要 φ 的量（界面剖面 / 法向 / **曲率 κ** /
+      亚胞厚度 / `§8 P-1b` 的判据 / `§7 S-10` 的检验办法）**都无法离线重算**。
+
+    为什么是"带内稀疏"而不是整场：
+      整场 φ 在 N=192/7 场是 **+164.7 MB / 快照、+10.5 s / 次**（S5 实测）；
+      而界面带只占全盒的 **0.02–0.4%** ⇒ 稀疏编码把代价降到 **~1 MB / 快照**。
+
+    编码（三个等长的一维数组 + 一个标量）：
+      `band_idx`  int32   线性索引（C 序，`np.ravel_multi_index`）
+      `band_val`  float32 φ 的值（**米**）
+      `band_fld`  int8    该胞属于哪个场
+      `band_cells` int    `band_cells`（判定带用的胞数，重建时要）
+
+    ⚠ 记账：**只存 `|φ| ≤ band_cells·Δx` 的胞** ⇒ 带外重建不出来。
+      对本模型这够用（界面几何全部在带内），但**必须写清**，不得说成"全量 φ"。
+    """
+    idxs, vals, flds = [], [], []
+    nreg = phi.shape[0]
+    for k in range(nreg):
+        m = np.abs(phi[k]) <= band_cells * dx
+        if not m.any():
+            continue
+        ii = np.flatnonzero(m.ravel()).astype(np.int32)
+        idxs.append(ii)
+        vals.append(phi[k].ravel()[ii].astype(np.float32))
+        flds.append(np.full(ii.size, k, np.int8))
+    if not idxs:
+        return dict(band_idx=np.zeros(0, np.int32),
+                    band_val=np.zeros(0, np.float32),
+                    band_fld=np.zeros(0, np.int8),
+                    band_cells=np.int64(band_cells))
+    return dict(band_idx=np.concatenate(idxs),
+                band_val=np.concatenate(vals),
+                band_fld=np.concatenate(flds),
+                band_cells=np.int64(band_cells))
 
 
 def read_series(path):
@@ -723,7 +773,11 @@ def run(a):
             # ★ R29：CFL 实际用量（胞/步）。`advance` 每步把总驱动的最大值写在
             #   `g.dG_max`（第 0 步还没 advance ⇒ 没有该属性 ⇒ 记 nan，不假装是 0）。
             cfl_used=(float(dt) * MOB * float(getattr(g, 'dG_max', float('nan')))
-                      / dx))
+                      / dx),
+            # ★ R30（P0-1）：柱剖面的修正口径 + 可见性守卫
+            nslab_n1=mm['nslab_n1'], runs1=mm['runs1'].replace(',', '/'),
+            nf3_col1=mm['nf3_col1'], r_col_nm=round(mm['r_col_nm'], 1),
+            col_cover_min=round(mm['col_cover_min'], 4))
         # ★ 防御：`cw.writerow([row[c] for c in COLS])` 里少一个键就是 KeyError，
         #   而它出现在**第 0 步写第一行**时 —— 那时构造已经花掉 60 s，
         #   且发生在长跑开头而不是起跑前。这里提前硬失败，把话说明白。
@@ -733,17 +787,29 @@ def run(a):
         cw.writerow([row[c] for c in COLS]); csvf.flush()
         if (it % a.snap_every == 0) or (it == a.steps):
             # ★★ 落盘策略（用户要求"全过程数据留 F 盘，量具有 bug 也能事后重测"）：
-            #   · **`region`（int8, 7 MB）每个快照都存** —— 这是
-            #     `_bk_measure.measure_state` 的**唯一输入**（体积/分量/nslab/nf3col/
-            #     三轴尺寸/面积/位置全都只吃它）⇒ **量具可完全事后重测**。
-            #   · **`phi`（7×28 MB float32）按 `--phi-every` 单独控制** ——
-            #     只有"曲率/界面形状"这类测量需要它，而 `savez_compressed` 压 198 MB
-            #     实测要 ~60 s（是单步耗时的可见一部分）。
-            #   · 默认 `--phi-every 0` = 与 `snap_every` 相同 ⇒ **行为与改动前一致**。
-            d = dict(region=reg, step=it, n_hab=n_hab, w_ax=w_ax, a_ax=a_ax,
+            #   · **`region`（int8）每个快照都存** —— 这是 `_bk_measure.measure_state`
+            #     的**唯一输入**（体积/分量/nslab/nf3col/三轴尺寸/面积/位置全都只吃它）
+            #     ⇒ **只靠 region 的那些量可完全事后重测**（S5 已端到端实测：0 处不一致）。
+            #   · **带内稀疏 `φ`（R30 新增）默认每个快照都存** ⇒ 界面剖面/法向/κ/
+            #     亚胞厚度也能事后重测。⚠ 记账：**只存 `|φ| ≤ band·Δx` 的胞**。
+            #   · **整场 `phi`（+164.7 MB/快照、+10.5 s @N=192）** 仍由 `--phi-every`
+            #     单独控制；语义是 **`>0` 才存**（`0` = **从不**）—— R30 修正了
+            #     原来与代码相反的 help 文字。
+            d = dict(region=reg, step=it, t_s=float(t_sim),
+                     n_hab=n_hab, w_ax=w_ax, a_ax=a_ax,
                      N=N, L=L, arm=a.arm,
                      vmap_keys=np.array(sorted(vmap)),
-                     vmap_vals=np.array([vmap[k] for k in sorted(vmap)]))
+                     vmap_vals=np.array([vmap[k] for k in sorted(vmap)]),
+                     # ★ R30：`Δpos` 的基准必须落盘 —— 否则 `f3_pos_dx` 无法离线复算
+                     #   （它是在**中间某一步**被钉下的，而那一步常常没有快照；
+                     #    S5 实测第一版重算差 1.31 Δx 就是这个原因）。代价 ≈ 0。
+                     f3_pos_p0_m=(float(P0) if P0 is not None else np.nan))
+            if getattr(a, 'phi_band_every', 0) >= 0 and (
+                    a.phi_band_every == 0 or it % a.phi_band_every == 0
+                    or it == a.steps):
+                d.update(_sparse_band(g.phi, dx, int(a.phi_band_cells)))
+            if getattr(g, 'psi', None) is not None:
+                d['psi'] = np.asarray(g.psi, np.float32)
             if a.phi_every > 0 and (it % a.phi_every == 0 or it == a.steps):
                 d['phi'] = g.phi.astype(np.float32)
             np.savez_compressed(os.path.join(outdir, 'snap_%05d.npz' % it), **d)
@@ -881,7 +947,18 @@ def main():
     ap.add_argument('--every', type=int, default=10)
     ap.add_argument('--snap-every', type=int, default=100)
     ap.add_argument('--phi-every', type=int, default=0,
-                    help='存 phi 的间隔；0 = 与 snap-every 相同（region 每次都存）')
+                    help='存**整场** phi 的间隔；**必须 >0 才存**（0 = 从不存）。'
+                         '⚠ R30 修正：原文案写"0 = 与 snap-every 相同"，与代码'
+                         '（`>0` 才存）相反，导致 297 个归档快照里 phi 出现 0 次'
+                         '（`R30_AUDIT_LEDGER` P0-4）。整场 φ 在 N=192/7 场是'
+                         '+164.7 MB/快照、+10.5 s/次；一般**不需要**它，'
+                         '用下面的 `--phi-band-every` 就够。')
+    ap.add_argument('--phi-band-every', type=int, default=0,
+                    help='存**带内稀疏** phi 的间隔；**0 = 每个快照都存**（默认，'
+                         '代价 ~1 MB/快照）；-1 = 关闭。'
+                         '带内稀疏 φ 是"新量具事后重测界面几何/曲率"的唯一来源。')
+    ap.add_argument('--phi-band-cells', type=int, default=6,
+                    help='带内稀疏 φ 的判定带：存 |phi| <= 本值·dx 的胞（默认 6）')
     ap.add_argument('--laths', default='1,1,1,1,1,1')
     ap.add_argument('--omega-max-deg', type=float, default=5.0)
     ap.add_argument('--omega-mode', default='ladder', choices=['ladder', 'random'])

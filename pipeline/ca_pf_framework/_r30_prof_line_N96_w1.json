@@ -1,0 +1,2760 @@
+{
+ "N": 96,
+ "dx": 1.25e-07,
+ "workers": 1,
+ "nreg": 12,
+ "n_active": 12,
+ "dt": 5.3571428571428564e-08,
+ "wall_untraced": 6.5680357974997605,
+ "wall_traced": 6.497501584999554,
+ "nsample": 2,
+ "kwargs": {
+  "aniso": 0.4,
+  "band_cells": 20,
+  "mob_beta": 3.5,
+  "mob_beta_w": 2.3,
+  "adv_grad": "proj2",
+  "norm_smooth": 0,
+  "facet_lam": 0.0,
+  "facet_eps": 0.05
+ },
+ "par_stats": {},
+ "par_total": 0,
+ "lines": [
+  {
+   "file": "windowB_surface.py",
+   "func": "_minmod",
+   "line": 44,
+   "excl": 0.9700156740036618,
+   "incl": 0.9700156740036618,
+   "hits": 72
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2714,
+   "excl": 0.5027235090001341,
+   "incl": 0.5027235090001341,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stiff_of",
+   "line": 2576,
+   "excl": 0.3493228299994371,
+   "incl": 0.3493228299994371,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 416,
+   "excl": 0.32879346899972006,
+   "incl": 0.32879346899972006,
+   "hits": 36
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "gradient",
+   "line": 266,
+   "excl": 0.31805514600455354,
+   "incl": 0.31805514600455354,
+   "hits": 17
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 414,
+   "excl": 0.2915178159946663,
+   "incl": 0.7666345519974129,
+   "hits": 36
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "curvature_of",
+   "line": 2460,
+   "excl": 0.2792289599983633,
+   "incl": 0.2792289599983633,
+   "hits": 39
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 413,
+   "excl": 0.232221688998834,
+   "incl": 0.7271206269997492,
+   "hits": 36
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 408,
+   "excl": 0.2041625150013715,
+   "incl": 0.2041625150013715,
+   "hits": 36
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2489,
+   "excl": 0.18125504599993292,
+   "incl": 0.18125504599993292,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stiff_of",
+   "line": 2575,
+   "excl": 0.17323608400693047,
+   "incl": 0.17323608400693047,
+   "hits": 44
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 409,
+   "excl": 0.14602471400576178,
+   "incl": 0.14602471400576178,
+   "hits": 36
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<lambda>",
+   "line": 2689,
+   "excl": 0.1432181100044545,
+   "incl": 0.1432181100044545,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2488,
+   "excl": 0.1368815989972063,
+   "incl": 0.1368815989972063,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<lambda>",
+   "line": 2718,
+   "excl": 0.13393727599759586,
+   "incl": 0.13393727599759586,
+   "hits": 22
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "curvature_of",
+   "line": 2459,
+   "excl": 0.11273477299982915,
+   "incl": 0.11273477299982915,
+   "hits": 39
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "<lambda>",
+   "line": 230,
+   "excl": 0.10413883599903784,
+   "incl": 0.10413883599903784,
+   "hits": 3
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stiff_of",
+   "line": 2577,
+   "excl": 0.10237025699643709,
+   "incl": 0.10237025699643709,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 411,
+   "excl": 0.0852576420056721,
+   "incl": 0.0852576420056721,
+   "hits": 36
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3346,
+   "excl": 0.08454788800008828,
+   "incl": 0.08454788800008828,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 412,
+   "excl": 0.0836049639947305,
+   "incl": 0.0836049639947305,
+   "hits": 36
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2484,
+   "excl": 0.07650459999968007,
+   "incl": 0.07650459999968007,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "line": 143,
+   "excl": 0.07097422299557365,
+   "incl": 0.07097422299557365,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3344,
+   "excl": 0.07081034899965744,
+   "incl": 0.07081034899965744,
+   "hits": 2
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3271,
+   "excl": 0.06826474799891002,
+   "incl": 0.06826474799891002,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<genexpr>",
+   "line": 2976,
+   "excl": 0.0673588959944027,
+   "incl": 0.0673588959944027,
+   "hits": 48
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "curvature_of",
+   "line": 2461,
+   "excl": 0.06378971400226874,
+   "incl": 0.06378971400226874,
+   "hits": 39
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_step_k",
+   "line": 3420,
+   "excl": 0.05634498099789198,
+   "incl": 0.05634498099789198,
+   "hits": 24
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2976,
+   "excl": 0.05487177900249662,
+   "incl": 0.12223067499689932,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "herring_stiffness",
+   "line": 327,
+   "excl": 0.05382044700127153,
+   "incl": 0.05382044700127153,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_step_k",
+   "line": 3421,
+   "excl": 0.04699328700189653,
+   "incl": 0.04699328700189653,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_step_k",
+   "line": 3426,
+   "excl": 0.04421111799092614,
+   "incl": 2.416933690990845,
+   "hits": 24
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2965,
+   "excl": 0.04237579300024663,
+   "incl": 0.04237579300024663,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 224,
+   "excl": 0.03808576700248523,
+   "incl": 0.03808576700248523,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3080,
+   "excl": 0.03136002700011886,
+   "incl": 0.03136002700011886,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 217,
+   "excl": 0.031129627999689546,
+   "incl": 0.031129627999689546,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3064,
+   "excl": 0.028685586999927182,
+   "incl": 0.028685586999927182,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 406,
+   "excl": 0.025228112997865537,
+   "incl": 0.025228112997865537,
+   "hits": 36
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3079,
+   "excl": 0.025032477999047842,
+   "incl": 0.025032477999047842,
+   "hits": 2
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 222,
+   "excl": 0.024823091005600872,
+   "incl": 0.024823091005600872,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2487,
+   "excl": 0.02368150799884461,
+   "incl": 0.02368150799884461,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "herring_stiffness",
+   "line": 325,
+   "excl": 0.02242850399852614,
+   "incl": 0.02242850399852614,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3083,
+   "excl": 0.01941558900034579,
+   "incl": 0.01941558900034579,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3221,
+   "excl": 0.018571362001239322,
+   "incl": 0.018571362001239322,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3272,
+   "excl": 0.01766334999956598,
+   "incl": 0.01766334999956598,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<lambda>",
+   "line": 2717,
+   "excl": 0.015773644003274967,
+   "incl": 0.015773644003274967,
+   "hits": 22
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3081,
+   "excl": 0.01575842900092539,
+   "incl": 0.01575842900092539,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3020,
+   "excl": 0.015467616000023554,
+   "incl": 0.015467616000023554,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3273,
+   "excl": 0.01477856300334679,
+   "incl": 0.01477856300334679,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3063,
+   "excl": 0.014508219001072575,
+   "incl": 0.014508219001072575,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<lambda>",
+   "line": 3010,
+   "excl": 0.01413432900699263,
+   "incl": 2.0337655520015687,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3263,
+   "excl": 0.01394981699922937,
+   "incl": 0.01394981699922937,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 223,
+   "excl": 0.01369374599562434,
+   "incl": 0.01369374599562434,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3373,
+   "excl": 0.012639462998777162,
+   "incl": 0.012639462998777162,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving_pair",
+   "line": 2788,
+   "excl": 0.011801980001109769,
+   "incl": 0.011801980001109769,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2969,
+   "excl": 0.011334719994920306,
+   "incl": 0.011334719994920306,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2970,
+   "excl": 0.0111221419992944,
+   "incl": 0.0111221419992944,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<genexpr>",
+   "line": 3204,
+   "excl": 0.010933038000075612,
+   "incl": 0.010933038000075612,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2485,
+   "excl": 0.010402425001302618,
+   "incl": 0.010402425001302618,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2994,
+   "excl": 0.010375435995229054,
+   "incl": 0.010375435995229054,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_step_k",
+   "line": 3422,
+   "excl": 0.009653344000980724,
+   "incl": 0.009653344000980724,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3394,
+   "excl": 0.00940807400002086,
+   "incl": 0.00940807400002086,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<genexpr>",
+   "line": 3203,
+   "excl": 0.008946878999267938,
+   "incl": 0.008946878999267938,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<lambda>",
+   "line": 2688,
+   "excl": 0.008615753997219144,
+   "incl": 0.008615753997219144,
+   "hits": 22
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3397,
+   "excl": 0.008491104999848176,
+   "incl": 0.008491104999848176,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3159,
+   "excl": 0.008303582002554322,
+   "incl": 0.014203378999809502,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3203,
+   "excl": 0.008160324001437402,
+   "incl": 0.01710720300070534,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3269,
+   "excl": 0.008142533999489387,
+   "incl": 0.008142533999489387,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3084,
+   "excl": 0.007300735000171699,
+   "incl": 0.007300735000171699,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3349,
+   "excl": 0.007270242000231519,
+   "incl": 0.007270242000231519,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<genexpr>",
+   "line": 3202,
+   "excl": 0.00723706699682225,
+   "incl": 0.00723706699682225,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 3000,
+   "excl": 0.007082221998643945,
+   "incl": 0.007082221998643945,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3270,
+   "excl": 0.007027391000519856,
+   "incl": 0.007027391000519856,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3204,
+   "excl": 0.006907770000907476,
+   "incl": 0.01784080800098309,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3019,
+   "excl": 0.0063693259999126894,
+   "incl": 0.0063693259999126894,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2921,
+   "excl": 0.0062799650004308205,
+   "incl": 0.0062799650004308205,
+   "hits": 2
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3348,
+   "excl": 0.00612745499893208,
+   "incl": 0.00612745499893208,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving_pair",
+   "line": 2787,
+   "excl": 0.005900102998566581,
+   "incl": 0.005900102998566581,
+   "hits": 2
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<genexpr>",
+   "line": 3159,
+   "excl": 0.00589979699725518,
+   "incl": 0.00589979699725518,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3202,
+   "excl": 0.005822719002026133,
+   "incl": 0.013059785998848383,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<genexpr>",
+   "line": 3396,
+   "excl": 0.005572337002377026,
+   "incl": 0.005572337002377026,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2971,
+   "excl": 0.00534430000334396,
+   "incl": 0.00534430000334396,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3396,
+   "excl": 0.005251158996543381,
+   "incl": 0.010823495998920407,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<genexpr>",
+   "line": 3062,
+   "excl": 0.005081874000097741,
+   "incl": 0.005081874000097741,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "line": 152,
+   "excl": 0.004855007002333878,
+   "incl": 0.004855007002333878,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3339,
+   "excl": 0.004734995998660452,
+   "incl": 0.004734995998660452,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3062,
+   "excl": 0.004543184999420191,
+   "incl": 0.009625058999517933,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2981,
+   "excl": 0.004337463997217128,
+   "incl": 0.7081503169993084,
+   "hits": 24
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2979,
+   "excl": 0.00428647399712645,
+   "incl": 0.43518630499784194,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2977,
+   "excl": 0.004038409002532717,
+   "incl": 0.4237039560030098,
+   "hits": 12
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "upwind_flux_vec",
+   "line": 245,
+   "excl": 0.00400841300142929,
+   "incl": 2.372420914000031,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3241,
+   "excl": 0.003903794999132515,
+   "incl": 0.003903794999132515,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3282,
+   "excl": 0.0038550919998669997,
+   "incl": 0.0038550919998669997,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3281,
+   "excl": 0.003816913998889504,
+   "incl": 0.003816913998889504,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "line": 147,
+   "excl": 0.003793485999267432,
+   "incl": 0.003793485999267432,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3302,
+   "excl": 0.0037347659999795724,
+   "incl": 0.0037347659999795724,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3036,
+   "excl": 0.0035828529980790336,
+   "incl": 0.01772562899896002,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3206,
+   "excl": 0.0034176989993284224,
+   "incl": 0.0034176989993284224,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3205,
+   "excl": 0.0032283099990308983,
+   "incl": 0.0032283099990308983,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3157,
+   "excl": 0.0030060090011829743,
+   "incl": 0.0030060090011829743,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "line": 148,
+   "excl": 0.002997578001668444,
+   "incl": 0.002997578001668444,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3341,
+   "excl": 0.0029283469993970357,
+   "incl": 0.0029283469993970357,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "region",
+   "line": 1226,
+   "excl": 0.0028851509996457025,
+   "incl": 0.10718903199995111,
+   "hits": 3
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3340,
+   "excl": 0.0028783170018868987,
+   "incl": 0.0028783170018868987,
+   "hits": 2
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3156,
+   "excl": 0.0028071559991076356,
+   "incl": 0.0028071559991076356,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3360,
+   "excl": 0.0026680789997044485,
+   "incl": 0.0026680789997044485,
+   "hits": 2
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3229,
+   "excl": 0.002634701999340905,
+   "incl": 0.002634701999340905,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3267,
+   "excl": 0.0023840040012146346,
+   "incl": 0.0023840040012146346,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3197,
+   "excl": 0.002368014000239782,
+   "incl": 0.002368014000239782,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stiff_of",
+   "line": 2578,
+   "excl": 0.002253694001410622,
+   "incl": 0.07871301300292544,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3361,
+   "excl": 0.0021315880003385246,
+   "incl": 0.0021315880003385246,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3177,
+   "excl": 0.0021220919988991227,
+   "incl": 0.0021220919988991227,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3072,
+   "excl": 0.002069447999019758,
+   "incl": 0.002069447999019758,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3073,
+   "excl": 0.0020513950003078207,
+   "incl": 0.0020513950003078207,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3303,
+   "excl": 0.001960071000212338,
+   "incl": 0.001960071000212338,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2900,
+   "excl": 0.0019578189985622885,
+   "incl": 0.0019578189985622885,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3393,
+   "excl": 0.001916561999678379,
+   "incl": 0.001916561999678379,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3074,
+   "excl": 0.0018741429994406644,
+   "incl": 0.0018741429994406644,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3283,
+   "excl": 0.0018553900008555502,
+   "incl": 0.0018553900008555502,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3347,
+   "excl": 0.001683047001279192,
+   "incl": 0.001683047001279192,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3304,
+   "excl": 0.001680972998656216,
+   "incl": 0.001680972998656216,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3279,
+   "excl": 0.0016141200012498302,
+   "incl": 0.0016141200012498302,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2922,
+   "excl": 0.0015753490006318316,
+   "incl": 0.0015753490006318316,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2901,
+   "excl": 0.001528607999716769,
+   "incl": 0.001528607999716769,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 219,
+   "excl": 0.0014424059991142713,
+   "incl": 0.0014424059991142713,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2947,
+   "excl": 0.0013805250000586966,
+   "incl": 0.0013805250000586966,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2972,
+   "excl": 0.0012615550003829412,
+   "incl": 0.08499843299796339,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<lambda>",
+   "line": 3438,
+   "excl": 0.0011832389991468517,
+   "incl": 2.531262278998838,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2963,
+   "excl": 0.0011355339993315283,
+   "incl": 0.0011355339993315283,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2490,
+   "excl": 0.0009409290050825803,
+   "incl": 0.0009409290050825803,
+   "hits": 11
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "for_each",
+   "line": 187,
+   "excl": 0.0009075579873751849,
+   "incl": 4.867739979992621,
+   "hits": 46
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2923,
+   "excl": 0.000822784999400028,
+   "incl": 0.000822784999400028,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 404,
+   "excl": 0.0006898830015416024,
+   "incl": 0.0006898830015416024,
+   "hits": 48
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3362,
+   "excl": 0.0006859469995106338,
+   "incl": 0.0006859469995106338,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 410,
+   "excl": 0.0006792299955122871,
+   "incl": 0.0006792299955122871,
+   "hits": 36
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2483,
+   "excl": 0.0006456469982367707,
+   "incl": 0.0006456469982367707,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "curvature_of",
+   "line": 2458,
+   "excl": 0.0005726639974454883,
+   "incl": 0.0005726639974454883,
+   "hits": 52
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3198,
+   "excl": 0.0004529050002020085,
+   "incl": 0.0004529050002020085,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2486,
+   "excl": 0.00040658400030224584,
+   "incl": 0.00040658400030224584,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3199,
+   "excl": 0.0004017329993075691,
+   "incl": 0.0004017329993075691,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3230,
+   "excl": 0.00038838100044813473,
+   "incl": 0.00038838100044813473,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2995,
+   "excl": 0.0003585030026442837,
+   "incl": 0.0003585030026442837,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3160,
+   "excl": 0.0003401260000828188,
+   "incl": 0.03718340300110867,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2975,
+   "excl": 0.00032090999411593657,
+   "incl": 0.1992048589982005,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3280,
+   "excl": 0.0003169629999320023,
+   "incl": 0.0003169629999320023,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "for_each",
+   "line": 186,
+   "excl": 0.0003051670100830961,
+   "incl": 0.0003051670100830961,
+   "hits": 50
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "map0_two",
+   "line": 172,
+   "excl": 0.0002991659985127626,
+   "incl": 0.10974221299875353,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3395,
+   "excl": 0.0002898230031860294,
+   "incl": 0.021700378001696663,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving_pair",
+   "line": 2786,
+   "excl": 0.00028886799918836914,
+   "incl": 0.847448868000356,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "line": 155,
+   "excl": 0.0002887639984692214,
+   "incl": 0.0005072540006949566,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3017,
+   "excl": 0.0002843930014932994,
+   "incl": 0.8654420130005747,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<lambda>",
+   "line": 2719,
+   "excl": 0.00025980700229411013,
+   "incl": 0.00025980700229411013,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3438,
+   "excl": 0.0002527049982745666,
+   "incl": 2.531789228998605,
+   "hits": 14
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3268,
+   "excl": 0.00023249100013345014,
+   "incl": 0.00023249100013345014,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<genexpr>",
+   "line": 155,
+   "excl": 0.00021849000222573522,
+   "incl": 0.00021849000222573522,
+   "hits": 48
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "herring_stiffness",
+   "line": 326,
+   "excl": 0.00021036800171714276,
+   "incl": 0.00021036800171714276,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3070,
+   "excl": 0.00020686500465671998,
+   "incl": 0.00020686500465671998,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "line": 153,
+   "excl": 0.00018728599752648734,
+   "incl": 0.00018728599752648734,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "line": 144,
+   "excl": 0.00017135500274889637,
+   "incl": 0.00017135500274889637,
+   "hits": 12
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 220,
+   "excl": 0.00016180200145754497,
+   "incl": 0.00016180200145754497,
+   "hits": 13
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "line": 146,
+   "excl": 0.00014747100067324936,
+   "incl": 0.00014747100067324936,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 405,
+   "excl": 0.00014673599798697978,
+   "incl": 0.00014673599798697978,
+   "hits": 36
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2980,
+   "excl": 0.00013588199908554088,
+   "incl": 0.00013588199908554088,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3068,
+   "excl": 0.00012402600077621173,
+   "incl": 0.00012402600077621173,
+   "hits": 11
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "upwind_flux_vec",
+   "line": 243,
+   "excl": 0.00012274799883016385,
+   "incl": 0.000163830996825709,
+   "hits": 12
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "gradient",
+   "line": 264,
+   "excl": 0.00011535499288584106,
+   "incl": 0.0001977319971047109,
+   "hits": 17
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_step_k",
+   "line": 3424,
+   "excl": 0.00010332000238122419,
+   "incl": 0.00010332000238122419,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stiff_of",
+   "line": 2587,
+   "excl": 9.283999861509074e-05,
+   "incl": 9.283999861509074e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "_segments",
+   "line": 125,
+   "excl": 8.693799645698164e-05,
+   "incl": 8.693799645698164e-05,
+   "hits": 33
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2990,
+   "excl": 8.608699681644794e-05,
+   "incl": 8.608699681644794e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 3001,
+   "excl": 8.030099888856057e-05,
+   "incl": 8.030099888856057e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2982,
+   "excl": 7.271600043168291e-05,
+   "incl": 7.271600043168291e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3343,
+   "excl": 7.086199912009761e-05,
+   "incl": 7.086199912009761e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "curvature_of",
+   "line": 2453,
+   "excl": 6.77860025461996e-05,
+   "incl": 6.77860025461996e-05,
+   "hits": 13
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "upwind_flux_vec",
+   "line": 240,
+   "excl": 6.57459968351759e-05,
+   "incl": 6.57459968351759e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2482,
+   "excl": 6.512800064228941e-05,
+   "incl": 6.512800064228941e-05,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3067,
+   "excl": 6.360499719448853e-05,
+   "incl": 6.360499719448853e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2993,
+   "excl": 6.212000334926415e-05,
+   "incl": 6.212000334926415e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "map0",
+   "line": 158,
+   "excl": 5.967000106466003e-05,
+   "incl": 0.1041985060001025,
+   "hits": 3
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 221,
+   "excl": 5.7876995924743824e-05,
+   "incl": 5.7876995924743824e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3069,
+   "excl": 5.7631998060969636e-05,
+   "incl": 5.7631998060969636e-05,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 417,
+   "excl": 5.6261000281665474e-05,
+   "incl": 5.6261000281665474e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3010,
+   "excl": 5.5681999583612196e-05,
+   "incl": 2.03411444700032,
+   "hits": 14
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2973,
+   "excl": 5.469700408866629e-05,
+   "incl": 5.469700408866629e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "line": 154,
+   "excl": 5.437199797597714e-05,
+   "incl": 5.437199797597714e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3065,
+   "excl": 5.240499922365416e-05,
+   "incl": 5.240499922365416e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2492,
+   "excl": 5.109399717184715e-05,
+   "incl": 5.109399717184715e-05,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3014,
+   "excl": 5.0673999794526026e-05,
+   "incl": 5.0673999794526026e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "_segments",
+   "line": 124,
+   "excl": 4.956100747222081e-05,
+   "incl": 4.956100747222081e-05,
+   "hits": 33
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3274,
+   "excl": 4.911999712930992e-05,
+   "incl": 4.911999712930992e-05,
+   "hits": 3
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "line": 149,
+   "excl": 4.8845999117475e-05,
+   "incl": 4.8845999117475e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "gradient",
+   "line": 263,
+   "excl": 4.744400939671323e-05,
+   "incl": 4.744400939671323e-05,
+   "hits": 17
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3158,
+   "excl": 4.665899905376136e-05,
+   "incl": 0.015387891999125713,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "argmin",
+   "line": 230,
+   "excl": 4.642700150725432e-05,
+   "incl": 0.10428022099949885,
+   "hits": 6
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3201,
+   "excl": 4.20360011048615e-05,
+   "incl": 0.04935021600067557,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3082,
+   "excl": 4.185699981462676e-05,
+   "incl": 4.185699981462676e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "curvature_of",
+   "line": 2462,
+   "excl": 4.161200195085257e-05,
+   "incl": 4.161200195085257e-05,
+   "hits": 13
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2651,
+   "excl": 4.1412999053136446e-05,
+   "incl": 4.1412999053136446e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3200,
+   "excl": 4.0843000533641316e-05,
+   "incl": 0.019285541000499506,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 218,
+   "excl": 3.9045000448822975e-05,
+   "incl": 3.9045000448822975e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3391,
+   "excl": 3.9029000618029386e-05,
+   "incl": 3.9029000618029386e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "upwind_flux_vec",
+   "line": 241,
+   "excl": 3.6621004255721346e-05,
+   "incl": 3.6621004255721346e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2716,
+   "excl": 3.351800114614889e-05,
+   "incl": 0.15035560100113798,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "curvature_of",
+   "line": 2454,
+   "excl": 3.319299685244914e-05,
+   "incl": 3.319299685244914e-05,
+   "hits": 13
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2479,
+   "excl": 3.304900383227505e-05,
+   "incl": 3.304900383227505e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3026,
+   "excl": 3.197600017301738e-05,
+   "incl": 3.197600017301738e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3231,
+   "excl": 3.1198000215226784e-05,
+   "incl": 3.1198000215226784e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "gradient",
+   "line": 265,
+   "excl": 3.10689920297591e-05,
+   "incl": 3.10689920297591e-05,
+   "hits": 17
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2690,
+   "excl": 3.0964994948590174e-05,
+   "incl": 3.0964994948590174e-05,
+   "hits": 14
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2480,
+   "excl": 3.0801997127127834e-05,
+   "incl": 3.0801997127127834e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3477,
+   "excl": 2.9833001462975517e-05,
+   "incl": 3.8456000766018406e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stiff_of",
+   "line": 2573,
+   "excl": 2.9737993827438913e-05,
+   "incl": 2.9737993827438913e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_step_k",
+   "line": 3427,
+   "excl": 2.9192002330091782e-05,
+   "incl": 2.9192002330091782e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2984,
+   "excl": 2.8485999791882932e-05,
+   "incl": 2.8485999791882932e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3194,
+   "excl": 2.7826999939861707e-05,
+   "incl": 2.7826999939861707e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2688,
+   "excl": 2.614400364109315e-05,
+   "incl": 2.614400364109315e-05,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2687,
+   "excl": 2.467600097588729e-05,
+   "incl": 0.1521697120006138,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3261,
+   "excl": 2.450099964335095e-05,
+   "incl": 2.450099964335095e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stiff_of",
+   "line": 2563,
+   "excl": 2.3679001969867386e-05,
+   "incl": 2.3679001969867386e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "argmin",
+   "line": 231,
+   "excl": 2.3660000806557946e-05,
+   "incl": 2.3660000806557946e-05,
+   "hits": 3
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "curvature_of",
+   "line": 2455,
+   "excl": 2.3603002773597836e-05,
+   "incl": 2.3603002773597836e-05,
+   "hits": 13
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2650,
+   "excl": 2.2776001060265116e-05,
+   "incl": 0.04174125800091133,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stiff_of",
+   "line": 2562,
+   "excl": 2.2671001715934835e-05,
+   "incl": 2.2671001715934835e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3345,
+   "excl": 2.188500002375804e-05,
+   "incl": 2.188500002375804e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2962,
+   "excl": 2.1474001187016256e-05,
+   "incl": 2.1474001187016256e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_step_k",
+   "line": 3428,
+   "excl": 2.122500336554367e-05,
+   "incl": 2.122500336554367e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "map0",
+   "line": 156,
+   "excl": 2.080499689327553e-05,
+   "incl": 3.060699782508891e-05,
+   "hits": 3
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2720,
+   "excl": 2.0138999389018863e-05,
+   "incl": 2.0138999389018863e-05,
+   "hits": 14
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "upwind_flux_vec",
+   "line": 242,
+   "excl": 1.997599974856712e-05,
+   "incl": 1.997599974856712e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3392,
+   "excl": 1.9516999600455165e-05,
+   "incl": 1.9516999600455165e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3075,
+   "excl": 1.9445000361884013e-05,
+   "incl": 1.9445000361884013e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3440,
+   "excl": 1.9337001504027285e-05,
+   "incl": 0.032904044001043076,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "line": 2985,
+   "excl": 1.9066004824708216e-05,
+   "incl": 1.9066004824708216e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2863,
+   "excl": 1.9014001736650243e-05,
+   "incl": 0.03270312200038461,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3207,
+   "excl": 1.8712000382947735e-05,
+   "incl": 1.8712000382947735e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "argmin2",
+   "line": 226,
+   "excl": 1.863200122897979e-05,
+   "incl": 0.10976960799962399,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3318,
+   "excl": 1.8051001461572014e-05,
+   "incl": 1.8051001461572014e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3286,
+   "excl": 1.7459000446251594e-05,
+   "incl": 1.7459000446251594e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3369,
+   "excl": 1.652200080570765e-05,
+   "incl": 1.652200080570765e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "curvature_of",
+   "line": 2457,
+   "excl": 1.6518999473191798e-05,
+   "incl": 1.6518999473191798e-05,
+   "hits": 13
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3448,
+   "excl": 1.634199907130096e-05,
+   "incl": 0.03282296699944709,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "upwind_flux_vec",
+   "line": 244,
+   "excl": 1.548500222270377e-05,
+   "incl": 1.548500222270377e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3085,
+   "excl": 1.5255000107572414e-05,
+   "incl": 1.5255000107572414e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2717,
+   "excl": 1.444200097466819e-05,
+   "incl": 1.444200097466819e-05,
+   "hits": 11
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2932,
+   "excl": 1.3979999494040385e-05,
+   "incl": 1.3979999494040385e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "line": 403,
+   "excl": 1.3795000995742157e-05,
+   "incl": 1.3795000995742157e-05,
+   "hits": 12
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2899,
+   "excl": 1.3240001862868667e-05,
+   "incl": 0.10978557700036617,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3050,
+   "excl": 1.2795000657206401e-05,
+   "incl": 1.2795000657206401e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3372,
+   "excl": 1.2708000213024206e-05,
+   "incl": 1.2708000213024206e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3262,
+   "excl": 1.247100044565741e-05,
+   "incl": 1.247100044565741e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2964,
+   "excl": 1.1985999663011171e-05,
+   "incl": 1.1985999663011171e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3419,
+   "excl": 1.0793000910780393e-05,
+   "incl": 1.0793000910780393e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "region",
+   "line": 1225,
+   "excl": 1.0739000572357327e-05,
+   "incl": 1.0739000572357327e-05,
+   "hits": 3
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2918,
+   "excl": 1.0535000910749659e-05,
+   "incl": 1.0535000910749659e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2680,
+   "excl": 1.0014000508817844e-05,
+   "incl": 1.0014000508817844e-05,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "for_each",
+   "line": 188,
+   "excl": 9.964998753275722e-06,
+   "incl": 9.964998753275722e-06,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2948,
+   "excl": 9.59899989538826e-06,
+   "incl": 9.59899989538826e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2846,
+   "excl": 9.595001756679267e-06,
+   "incl": 9.595001756679267e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3029,
+   "excl": 9.555998985888436e-06,
+   "incl": 9.555998985888436e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "region",
+   "line": 1224,
+   "excl": 9.443998351343907e-06,
+   "incl": 9.443998351343907e-06,
+   "hits": 3
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2966,
+   "excl": 9.428000339539722e-06,
+   "incl": 9.428000339539722e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3449,
+   "excl": 9.014000170282088e-06,
+   "incl": 9.014000170282088e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3301,
+   "excl": 8.868000804795884e-06,
+   "incl": 8.868000804795884e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3150,
+   "excl": 8.720000550965779e-06,
+   "incl": 8.720000550965779e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2857,
+   "excl": 8.686998626217246e-06,
+   "incl": 8.686998626217246e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3035,
+   "excl": 8.43599991640076e-06,
+   "incl": 8.43599991640076e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3439,
+   "excl": 8.372000593226403e-06,
+   "incl": 8.372000593226403e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3071,
+   "excl": 7.471000571968034e-06,
+   "incl": 7.471000571968034e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3018,
+   "excl": 7.321999873965979e-06,
+   "incl": 7.321999873965979e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2835,
+   "excl": 7.306998668354936e-06,
+   "incl": 7.306998668354936e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "for_each",
+   "line": 185,
+   "excl": 7.295999239431694e-06,
+   "incl": 7.295999239431694e-06,
+   "hits": 4
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3066,
+   "excl": 7.280999852810055e-06,
+   "incl": 7.280999852810055e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3030,
+   "excl": 6.932001269888133e-06,
+   "incl": 6.932001269888133e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3089,
+   "excl": 6.930000381544232e-06,
+   "incl": 6.930000381544232e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3288,
+   "excl": 6.700998710584827e-06,
+   "incl": 6.700998710584827e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3099,
+   "excl": 5.7369998103240505e-06,
+   "incl": 5.7369998103240505e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2864,
+   "excl": 5.5229993449756876e-06,
+   "incl": 5.5229993449756876e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3086,
+   "excl": 5.521998900803737e-06,
+   "incl": 5.521998900803737e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2652,
+   "excl": 5.298001269693486e-06,
+   "incl": 5.298001269693486e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2919,
+   "excl": 5.0750004447763786e-06,
+   "incl": 5.0750004447763786e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2880,
+   "excl": 4.819001333089545e-06,
+   "incl": 4.819001333089545e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "map0",
+   "line": 157,
+   "excl": 4.681000064010732e-06,
+   "incl": 4.681000064010732e-06,
+   "hits": 3
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2686,
+   "excl": 4.601999535225332e-06,
+   "incl": 4.601999535225332e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2968,
+   "excl": 4.171999535174109e-06,
+   "incl": 4.171999535174109e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "map0_two",
+   "line": 170,
+   "excl": 4.05999890062958e-06,
+   "incl": 7.296999683603644e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stefan",
+   "line": 3569,
+   "excl": 3.870000000461005e-06,
+   "incl": 3.870000000461005e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2677,
+   "excl": 3.854000169667415e-06,
+   "incl": 3.854000169667415e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 215,
+   "excl": 3.793000360019505e-06,
+   "incl": 3.793000360019505e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving_pair",
+   "line": 2784,
+   "excl": 3.3790001907618716e-06,
+   "incl": 3.3790001907618716e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 216,
+   "excl": 3.326000296510756e-06,
+   "incl": 3.326000296510756e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2920,
+   "excl": 3.285998900537379e-06,
+   "incl": 3.285998900537379e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2679,
+   "excl": 3.0939991120249033e-06,
+   "incl": 3.0939991120249033e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2721,
+   "excl": 3.017999915755354e-06,
+   "incl": 3.017999915755354e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2648,
+   "excl": 3.017001290572807e-06,
+   "incl": 3.017001290572807e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2649,
+   "excl": 2.9009988793404773e-06,
+   "incl": 2.9009988793404773e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "argmin2",
+   "line": 214,
+   "excl": 2.728998879319988e-06,
+   "incl": 2.728998879319988e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "line": 225,
+   "excl": 2.565999238868244e-06,
+   "incl": 2.565999238868244e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3456,
+   "excl": 2.3490010789828375e-06,
+   "incl": 2.3490010789828375e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2933,
+   "excl": 2.347000190638937e-06,
+   "incl": 2.347000190638937e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stefan",
+   "line": 3570,
+   "excl": 2.336999386898242e-06,
+   "incl": 2.336999386898242e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving_pair",
+   "line": 2785,
+   "excl": 2.1140003809705377e-06,
+   "incl": 2.1140003809705377e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3453,
+   "excl": 2.074999429169111e-06,
+   "incl": 2.074999429169111e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3458,
+   "excl": 1.944001269293949e-06,
+   "incl": 1.944001269293949e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stiff_of",
+   "line": 2579,
+   "excl": 1.7410002328688279e-06,
+   "incl": 1.7410002328688279e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3472,
+   "excl": 1.7239999579032883e-06,
+   "incl": 1.7239999579032883e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 2887,
+   "excl": 1.720000000204891e-06,
+   "incl": 1.720000000204891e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3457,
+   "excl": 1.5209989214781672e-06,
+   "incl": 1.5209989214781672e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "map0_two",
+   "line": 171,
+   "excl": 1.4659999578725547e-06,
+   "incl": 1.4659999578725547e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stefan",
+   "line": 3577,
+   "excl": 1.4640008885180578e-06,
+   "incl": 1.4640008885180578e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "line": 2481,
+   "excl": 1.420001353835687e-06,
+   "incl": 1.420001353835687e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3459,
+   "excl": 1.2250002328073606e-06,
+   "incl": 1.2250002328073606e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3455,
+   "excl": 1.1909996828762814e-06,
+   "incl": 1.1909996828762814e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving_pair",
+   "line": 2770,
+   "excl": 1.1759984772652388e-06,
+   "incl": 1.1759984772652388e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3478,
+   "excl": 1.140999302151613e-06,
+   "incl": 1.140999302151613e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "line": 3463,
+   "excl": 1.0999992809956893e-06,
+   "incl": 1.0999992809956893e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "line": 2647,
+   "excl": 1.0189996828557923e-06,
+   "incl": 1.0189996828557923e-06,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "line": 3011,
+   "excl": 9.69999746303074e-07,
+   "incl": 9.69999746303074e-07,
+   "hits": 1
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stefan",
+   "line": 3578,
+   "excl": 9.519990271655843e-07,
+   "incl": 9.519990271655843e-07,
+   "hits": 1
+  }
+ ],
+ "funcs": [
+  {
+   "file": "windowB_surface.py",
+   "func": "upwind_flux_vec",
+   "excl": 1.39839682699494,
+   "incl": 2.368412500998602,
+   "hits": 432
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_minmod",
+   "excl": 0.9700156740036618,
+   "incl": 0.9700156740036618,
+   "hits": 72
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "advance",
+   "excl": 0.6857211650076351,
+   "incl": 6.491776937000395,
+   "hits": 220
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stiff_of",
+   "excl": 0.6273535340005765,
+   "incl": 0.7038128530020913,
+   "hits": 126
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving",
+   "excl": 0.5029743990016868,
+   "incl": 0.8471600000011676,
+   "hits": 70
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "curvature_of",
+   "excl": 0.45650882400150294,
+   "incl": 0.45650882400150294,
+   "hits": 234
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "facet_nref",
+   "excl": 0.4308998310007155,
+   "incl": 0.4308998310007155,
+   "hits": 135
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "gradient",
+   "excl": 0.31824901399886585,
+   "incl": 0.3183313910030847,
+   "hits": 68
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<lambda>",
+   "excl": 0.31712215901097807,
+   "incl": 4.8668324220052455,
+   "hits": 112
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_step_k",
+   "excl": 0.15735646699977224,
+   "incl": 2.5300790399996913,
+   "hits": 108
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_geom_k",
+   "excl": 0.1152732689952245,
+   "incl": 2.019631222994576,
+   "hits": 252
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "<genexpr>",
+   "excl": 0.11124837799252418,
+   "incl": 0.11124837799252418,
+   "hits": 120
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "work",
+   "excl": 0.10944304700024077,
+   "incl": 0.10944304700024077,
+   "hits": 67
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "<lambda>",
+   "excl": 0.10413883599903784,
+   "incl": 0.10413883599903784,
+   "hits": 3
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_bbox_pad",
+   "excl": 0.08351838799535471,
+   "incl": 0.08373687799758045,
+   "hits": 120
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "herring_stiffness",
+   "excl": 0.07645931900151481,
+   "incl": 0.07645931900151481,
+   "hits": 33
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "elastic_driving_pair",
+   "excl": 0.017997619997913716,
+   "incl": 0.8651576199990814,
+   "hits": 7
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "upwind_flux_vec",
+   "excl": 0.004268989003321622,
+   "incl": 2.372722572999919,
+   "hits": 72
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "region",
+   "excl": 0.0029053339985694038,
+   "incl": 0.10720921499887481,
+   "hits": 9
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "for_each",
+   "excl": 0.0012299859954509884,
+   "incl": 4.8680624080006965,
+   "hits": 104
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "map0_two",
+   "excl": 0.00030469199737126473,
+   "incl": 0.109750975998395,
+   "hits": 3
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "_segments",
+   "excl": 0.00013649900392920244,
+   "incl": 0.00013649900392920244,
+   "hits": 66
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "map0",
+   "excl": 8.515599802194629e-05,
+   "incl": 0.1042337939979916,
+   "hits": 9
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "argmin",
+   "excl": 7.008700231381226e-05,
+   "incl": 0.10430388100030541,
+   "hits": 9
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_finish_advance",
+   "excl": 6.945899986021686e-05,
+   "incl": 0.03288470699953905,
+   "hits": 12
+  },
+  {
+   "file": "windowB_par.py",
+   "func": "argmin2",
+   "excl": 2.1361000108299777e-05,
+   "incl": 0.1097723369985033,
+   "hits": 2
+  },
+  {
+   "file": "windowB_surface.py",
+   "func": "_stefan",
+   "excl": 8.622999303042889e-06,
+   "incl": 8.622999303042889e-06,
+   "hits": 4
+  }
+ ]
+}

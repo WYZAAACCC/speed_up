@@ -281,6 +281,76 @@ def _coord_grid(N, dx):
     return [ii[:, None, None] * dx, ii[None, :, None] * dx, ii[None, None, :] * dx]
 
 
+def _auto_r_col(region, dx, n_hab, w_ax, a_ax, allowed, floor=300e-9):
+    """**自适应柱半径**：把全部板条胞都包进柱内所需的最小面内半径。
+
+    ★ R30 P0-1 的修法。`r_col=300 nm` 硬编码时，面内偏置 > 300 nm 的板条
+      **整个不可见**（`dry_cln11` step 2000 实测：场 2 质心偏 a = −1775 nm）。
+
+    为什么不能用"面内包围盒的半对角线"：那只在**质心恰在包围盒中心**时成立。
+    实测（`_r30_mfix_smoke.py` P-4）把一层挪 1500 nm 后，半对角线口径给
+    `cover_2 = 0.88`（仍有 12% 的胞在柱外）。⇒ 这里改成**逐胞取最大值**（精确）。
+
+    代价：只在 `m_all` 的包围盒（外扩 1 胞）上算两个 (n,1,1)/(1,n,1)/(1,1,n)
+    广播出来的子盒数组 —— 对紧凑的板条堆叠是几万胞，**不 materialize 整盒**。
+    周期盒下质心用**可分离投影**求（与 `column_profile` 同一套定义，避免口径分叉）。
+    """
+    region = np.asarray(region)
+    N = region.shape[0]
+    m_all = np.isin(region, list(allowed))
+    if not m_all.any():
+        return float(floor)
+    ii = np.arange(N) * dx
+    cnt = float(m_all.sum())
+    s = [m_all.sum(axis=(1, 2)), m_all.sum(axis=(0, 2)), m_all.sum(axis=(0, 1))]
+    c = np.array([float((ii * s[t]).sum()) / cnt for t in range(3)])
+    bb = _bbox_of(m_all, pad=1)
+    if bb is None:
+        return float(floor)
+    sub = m_all[bb]
+    cc = _sub_coord(bb, dx)
+    r3 = [(cc[t] - c[t]) for t in range(3)]
+    r3 = [r3[0][:, None, None], r3[1][None, :, None], r3[2][None, None, :]]
+    pa = a_ax[0] * r3[0] + a_ax[1] * r3[1] + a_ax[2] * r3[2]
+    pw = w_ax[0] * r3[0] + w_ax[1] * r3[1] + w_ax[2] * r3[2]
+    d2 = (pa ** 2 + pw ** 2)[sub]
+    if d2.size == 0:
+        return float(floor)
+    return max(float(floor), float(np.sqrt(d2.max())) + 0.5 * dx)
+
+
+def _column_mask(region, dx, n_hab, w_ax, a_ax, allowed, r_col):
+    """柱剖面用的**布尔掩模**（全盒形状，`(N,N,N)` bool）。
+
+    ★ R30 新增：把 `column_profile` 里的柱掩模单独取出来，供**可见性守卫**使用
+      （"某个场的胞有多少落在柱内" —— 这正是 P0-1 静默丢层的机制）。
+    与 `column_profile` 用**同一套**定义（同一 `_bbox_of`/`_sub_coord`/`r_col`），
+    避免两处口径分叉。
+    """
+    region = np.asarray(region)
+    N = region.shape[0]
+    m_all = np.isin(region, list(allowed))
+    out = np.zeros((N, N, N), bool)
+    if not m_all.any():
+        return out
+    ii = np.arange(N) * dx
+    cnt = float(m_all.sum())
+    s = [m_all.sum(axis=(1, 2)), m_all.sum(axis=(0, 2)), m_all.sum(axis=(0, 1))]
+    c = np.array([float((ii * s[t]).sum()) / cnt for t in range(3)])
+    rc = int(np.ceil(r_col / dx)) + 1
+    bb = _bbox_of(m_all, pad=rc)
+    sub_m = m_all[bb]
+    if not sub_m.any():
+        return out
+    cc = _sub_coord(bb, dx)
+    r3 = [(cc[t] - c[t]) for t in range(3)]
+    r3 = [r3[0][:, None, None], r3[1][None, :, None], r3[2][None, None, :]]
+    pa = a_ax[0] * r3[0] + a_ax[1] * r3[1] + a_ax[2] * r3[2]
+    pw = w_ax[0] * r3[0] + w_ax[1] * r3[1] + w_ax[2] * r3[2]
+    out[bb] = sub_m & (pa ** 2 + pw ** 2 <= r_col ** 2)
+    return out
+
+
 def column_profile(region, dx, n_hab, w_ax, a_ax, allowed, r_col=300e-9,
                    min_run=2):
     """沿 @@\\mathbf n^*@@ 的**柱剖面**。
@@ -353,8 +423,28 @@ def _same_variant_adjacent(runs, vmap):
     return c
 
 
-def measure_state(region, dx, n_hab, w_ax, a_ax, vmap, r_col=300e-9):
-    """对一个状态做全套测量。`vmap` : {场号: 变体号}（只含板条场，不含母相 0）。"""
+def measure_state(region, dx, n_hab, w_ax, a_ax, vmap, r_col=300e-9,
+                  r_col_auto=True, min_run_new=1):
+    """对一个状态做全套测量。`vmap` : {场号: 变体号}（只含板条场，不含母相 0）。
+
+    ★★★ R30 修复（`R30_AUDIT_LEDGER.md` **P0-1**）：柱剖面原来有**两种静默少读**，
+    它们直接喂给 V-1 / V-7 / V-7b / A-5（"块形成"的主判据）：
+
+      ① `min_run=2` 把"沿 n* 只占 1 个箱"的层**整层丢掉** —— 而箱宽 = Δx、相位锚在
+         `v.min()` ⇒ 层厚 ≲2Δx 时读不读得到**取决于相位**。
+         【实测】6 层等厚、盒内 6 场全在：层厚 2Δx ⇒ `nslab_n = 5`（场 4 被丢）；
+         3.5Δx ⇒ 6 ✅。见 `_r30_ctl_measure.py`。
+      ② `r_col = 300 nm` **硬编码**且**不落盘** ⇒ 面内偏置 > 300 nm 的板条整个不可见，
+         截面大的板条还会被切成两段（`nslab_n` 反而多读）。
+         【实测】正在跑的 `dry_cln11` step 2000 就是这一例（场 2 质心偏 a=−1775 nm）。
+
+    **处置（遵守本仓库"两个口径都存、判决用新的、原始值留档"的纪律）**：
+      * `nslab_n` / `runs` / `nf3_col` —— **保持归档口径不变**（`r_col=300 nm`、`min_run=2`），
+        这样历史读数**逐位可复现**，不会被这次修复悄悄改掉；
+      * **新增** `nslab_n1` / `runs1` / `nf3_col1` —— 用**自适应柱半径** + `min_run=1`；
+      * **新增** `r_col_nm`（实际用的半径，落盘）与 `col_cover_min` / `col_cover_<k>`
+        （每个场有多少比例的胞落在柱内）⇒ **可见性守卫**：静默丢层从此可被检出。
+    """
     region = np.asarray(region)
     N = region.shape[0]
     nreg = max(int(region.max()) + 1, max(vmap) + 1)
@@ -380,10 +470,36 @@ def measure_state(region, dx, n_hab, w_ax, a_ax, vmap, r_col=300e-9):
     out['nreg_used'] = int(sum(1 for k in laths if out['vol_%d' % k] > 0))
     out['M'] = len(laths)
 
+    # ---- 柱剖面：**两个口径都存**（R30 P0-1）---------------------------------
+    # 归档口径（`r_col` / `min_run=2`）：逐位保持不变，历史读数可复现
     prof, runs = column_profile(region, dx, n_hab, w_ax, a_ax, allowed, r_col)
     out['nslab_n'] = len(runs)
     out['runs'] = ','.join(str(x) for x in runs)
     out['nf3_col'] = _same_variant_adjacent(runs, vmap)
+    # ★ 新口径：自适应柱半径 + `min_run=1`
+    r_eff = float(r_col)
+    if r_col_auto:
+        r_eff = _auto_r_col(region, dx, n_hab, w_ax, a_ax, allowed, floor=r_col)
+    prof1, runs1 = column_profile(region, dx, n_hab, w_ax, a_ax, allowed,
+                                  r_eff, min_run=int(min_run_new))
+    out['nslab_n1'] = len(runs1)
+    out['runs1'] = ','.join(str(x) for x in runs1)
+    out['nf3_col1'] = _same_variant_adjacent(runs1, vmap)
+    out['r_col_nm'] = r_eff * 1e9
+    out['r_col_legacy_nm'] = float(r_col) * 1e9
+    # ---- ★ 可见性守卫：每个场有多少比例的胞落在（新口径的）柱内 --------------
+    # 静默丢层的机制就是"柱看不见它" ⇒ 把这件事**变成落盘数字**。
+    sub_r = np.where(np.isin(region, list(allowed)), region, 0)
+    in_col = _column_mask(region, dx, n_hab, w_ax, a_ax, allowed, r_eff)
+    cov = []
+    for k in laths:
+        mk = (region == k)
+        nk = int(mk.sum())
+        out['col_cover_%d' % k] = (float((mk & in_col).sum()) / nk) if nk else 0.0
+        if nk:
+            cov.append(out['col_cover_%d' % k])
+    out['col_cover_min'] = float(min(cov)) if cov else float('nan')
+    del sub_r
 
     # ---- F3 面（按方向数面；**无偏**面积）----------------------------
     fdir = np.zeros(3, np.int64)
