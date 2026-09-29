@@ -48,7 +48,8 @@ from T16_verify_rve import C, EPS0, NPF, DF, MOB                # noqa: E402
 COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         'nslab_n', 'nf3_col', 'runs', 'ncomp_min', 'ncomp_max',
         'nf3', 'f3_area_m2', 'f3_area_stair', 'f3_pos_m', 'f3_pos_dx',
-        'f3_std_m', 'n_lath', 'w_lath', 'a_lath', 'box_touch', 'finite']
+        'f3_std_m', 'n_lath', 'w_lath', 'a_lath', 'box_touch', 'finite',
+        'psi_mean']
 assert len(COLS) == len(set(COLS))
 
 
@@ -112,6 +113,11 @@ def run(a):
         lt.gtab[np.isfinite(lt.gtab)] = 100.0
     elif a.arm == 'g0':
         lt.gtab[np.isfinite(lt.gtab)] = 0.0
+    # ★★★ `auto`：**面带 ψ 判决臂**（`BLOCK_DERIVATION` §4.6 / 预言 P-2）。
+    #   F3 面能按 γ_Σ(ψ) 混合，ψ 在 F3 胞上按局域 Allen–Cahn 演化。
+    #   ⚠ `psi0` **不能取 1.0**：ψ≡0 与 ψ≡1 都是 (4.9) 的**精确不动点**
+    #     （f'(0)=f'(1)=g'(0)=g'(1)=0）⇒ 从 1.0 出发一步都不动。
+    #     取 0.99 等价于给一个无穷小扰动（见 `windowB_film.py` 的记账）。
 
     eps0 = [np.asarray(EPS0[v - 1], float).copy() for v in laths_eff]
     npref = {i + 1: np.asarray(NPF[v], float) for i, v in enumerate(laths_eff)}
@@ -123,6 +129,11 @@ def run(a):
                         reinit_every=0, reinit_dt=6.0e-7,
                         reinit_band_cells=a.reinit_band)
     g.lath = lt
+    if a.arm == 'auto':
+        # `psi0` 取 0.99（**不能取 1.0**，见上面记账）
+        g.film = dict(gamma_f=float(a.gamma_film), W=0.05, L=1.0e8, psi0=0.99)
+        P('★ 臂 auto：面带 ψ 开启（γ_f=%.3f, W=0.05, L=1e8, psi0=0.99）'
+          % a.gamma_film)
     P('构造 %.1f s（%d 个场；`lath` 已挂上 ⇒ F3 走 γ_RS）' % (time.time() - t0, g.nreg))
     P('   n*=%s  w=%s  a=%s  (n*·a=%.4f)'
       % (np.array2string(n_hab, precision=4), np.array2string(w_ax, precision=4),
@@ -224,6 +235,12 @@ def run(a):
             continue
         reg = g.region()
         mm = BM.measure_state(reg, dx, n_hab, w_ax, a_ax, vmap)
+        # ψ 的带（只在 F3 胞上；`g.psi is None` 时不算）
+        if g.psi is not None:
+            karr_m, larr_m = g.par.argmin2(g.phi)
+            karr_m = karr_m.astype(np.intp); larr_m = larr_m.astype(np.intp)
+        else:
+            karr_m = larr_m = None
         pm = mm['f3_pos_n']
         if P0 is None and np.isfinite(pm):
             P0 = pm
@@ -243,7 +260,11 @@ def run(a):
             w_lath=float(np.median([mm['w_%d' % k] for k in range(1, nv + 1)])),
             a_lath=float(np.median([mm['a_%d' % k] for k in range(1, nv + 1)])),
             box_touch=int(mm['box_touch']),
-            finite=int(np.all(np.isfinite(g.phi))))
+            finite=int(np.all(np.isfinite(g.phi))),
+            psi_mean=(float(g.psi[np.isfinite(
+                lt.gtab[np.clip(karr_m, 0, g.nreg - 1),
+                        np.clip(larr_m, 0, g.nreg - 1)])].mean())
+                if (g.psi is not None) else float('nan')))
         cw.writerow([row[c] for c in COLS]); csvf.flush()
         if (it % a.snap_every == 0) or (it == a.steps):
             # ★★ 落盘策略（用户要求"全过程数据留 F 盘，量具有 bug 也能事后重测"）：
@@ -304,7 +325,7 @@ def subprocess_out(cmd):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--arm', default='dry',
-                    choices=['dry', 'wet', 'gpos', 'gneg', 'g0'])
+                    choices=['dry', 'wet', 'gpos', 'gneg', 'g0', 'auto'])
     ap.add_argument('--N', type=int, default=96)
     ap.add_argument('--dx-nm', type=float, default=62.5)
     ap.add_argument('--steps', type=int, default=400)
