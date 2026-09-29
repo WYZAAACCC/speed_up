@@ -107,10 +107,21 @@ def f1_count(g, k):
     return c
 
 
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''):
+            h.update(b)
+    return h.hexdigest()
+
+
 def run_arm(name, a, gamma, nv, dup, plate, outroot):
     N, L = a.N, a.L_um * 1e-6
     dx = L / N
-    outdir = os.path.join(outroot, name)
+    # ★★ 每次运行写在**带 tag 的子目录**里 —— 绝不覆盖上一次的数据
+    #   （用户要求：全过程数据留 F 盘，量具有 bug 也能事后重测）。
+    outdir = os.path.join(outroot, '%s_%s' % (name, a.tag) if a.tag else name)
     os.makedirs(outdir, exist_ok=True)
     print('=' * 100)
     print('臂 %-9s N=%d Δx=%.1f nm L=%.2f µm nv=%d γ=%.5g J/m² norm_smooth=%d '
@@ -155,6 +166,24 @@ def run_arm(name, a, gamma, nv, dup, plate, outroot):
 
     csvf = open(os.path.join(outdir, 'series.csv'), 'w', newline='')
     cw = csv.writer(csvf); cw.writerow(COLS)
+    import json
+    with open(os.path.join(outdir, 'meta.json'), 'w', encoding='utf-8') as _m:
+        json.dump(dict(arm=name, tag=a.tag, N=N, L=L, dx_nm=dx * 1e9,
+                       nv=nv, dup_eps0=bool(dup), gamma=gamma,
+                       norm_smooth=a.norm_smooth, beta_h=a.beta_h,
+                       beta_w=a.beta_w, gap_nm=a.gap_nm, steps=a.steps,
+                       every=a.every, plate=plate, dt=dt,
+                       t_sim=a.steps * dt,
+                       n_hab=n_hab.tolist(), w_ax=w_ax.tolist(),
+                       a_ax=a_ax.tolist(),
+                       # ★★ 引擎版本必须逐次记录 —— 否则不同臂之间会被"引擎版本"
+                       #    这个隐藏变量污染（本轮已踩过一次：ns 扫描跑在 pre-guard
+                       #    引擎上，长跑跑在 post-guard 引擎上，结果不可直接比）。
+                       sha_windowB_surface=_sha256(
+                           os.path.join(_HERE, 'windowB_surface.py')),
+                       sha_windowB_par=_sha256(os.path.join(_HERE, 'windowB_par.py')),
+                       sha_self=_sha256(os.path.abspath(__file__))),
+                  _m, ensure_ascii=False, indent=1)
     P0 = None
     t_sim, wall0 = 0.0, time.time()
     tstep = []
@@ -239,6 +268,8 @@ def main():
     ap.add_argument('--plate-W', type=float, default=640.0)
     ap.add_argument('--plate-T', type=float, default=250.0)
     ap.add_argument('--out', default='_exp/_bk_f3smoke')
+    ap.add_argument('--tag', default=time.strftime('%m%d_%H%M%S'),
+                    help='输出子目录后缀；**默认带时间戳 ⇒ 不覆盖历史数据**')
     ap.add_argument('--arms', default='main,ctrl_pos,ctrl_neg')
     ap.add_argument('--probe-only', action='store_true')
     a = ap.parse_args()

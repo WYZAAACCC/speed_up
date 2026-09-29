@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""_bk_exp.py —— **阶段 3 生产装置**：在一个盒子里播 M 根同变体板条，看它们
+能否各自长大、沿 @@\\mathbf n^*@@ 堆叠成块、被低角晶界分隔（F3）、而不是合并。
+
+## 与 `_bk_smoke_f3.py` 的区别
+
+| | smoke | **本文件（生产）** |
+|---|---|---|
+| 板条表 | 复制 `eps0`（无 θ） | **`windowB_lath.LathTable`**：逐板条变体 + 小转动 ⇒ F3 面能 = @@\\gamma_{\\rm RS}(\\theta)@@ |
+| 板条数 | 2 | **M（`--laths`）** |
+| 布条方式 | 面对面 | **沿 @@\\mathbf n^*@@ 堆叠**（`--gap-nm`） |
+| 量具 | 内嵌 | **`_bk_measure.measure_state`**（16 条对照已验证） |
+| 记账 | 无 sha | **meta.json 记引擎 sha + 全部参数 + 臂定义** |
+| 落盘 | snap | snap（全量 φ+region）+ series.csv + meta.json，**目录带时间戳不覆盖** |
+
+## 臂（`--arm`）
+
+| 臂 | 含义 |
+|---|---|
+| `dry` | F3 面能 = @@\\gamma_{\\rm RS}(\\theta)@@（**C-1/C-3 的物理结论**，主臂） |
+| `wet` | F3 面能 = @@\\gamma_f@@（规定值；= 用户要的"Gibbs 面薄膜"） |
+| `gpos` | **量具正对照**：@@\\gamma_\\Sigma@@=100 J/m²（界面必须明显移动） |
+| `gneg` | **量具负对照**：所有板条播进**同一个场**（F3 必须恒为 0） |
+| `g0` | **极限对照**：@@\\gamma_\\Sigma@@=0（界面无面能） |
+
+## 用法
+
+    python3 _bk_exp.py --dry-run                       # 只构造+播种+初始测量
+    python3 _bk_exp.py --arm dry --steps 400 --N 192 --dx-nm 62.5
+"""
+import argparse
+import csv
+import json
+import os
+import sys
+import time
+
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+import numpy as np                                              # noqa: E402
+import windowB_surface as W                                     # noqa: E402
+import windowB_lath as WL                                       # noqa: E402
+import _bk_measure as BM                                        # noqa: E402
+from T16_verify_rve import C, EPS0, NPF, DF, MOB                # noqa: E402
+
+COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
+        'nslab_n', 'nf3_col', 'runs', 'ncomp_min', 'ncomp_max',
+        'nf3', 'f3_area_m2', 'f3_area_stair', 'f3_pos_m', 'f3_pos_dx',
+        'f3_std_m', 'n_lath', 'w_lath', 'a_lath', 'box_touch', 'finite']
+assert len(COLS) == len(set(COLS))
+
+
+def sha256(p):
+    import hashlib
+    h = hashlib.sha256()
+    with open(p, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''):
+            h.update(b)
+    return h.hexdigest()
+
+
+def build_table(laths, omega_max_deg, omega_mode, a_ax=None, gamma0=0.15):
+    """按 `--laths` 建板条表。`a_ax` 给出时把倾转轴定为板条长轴。"""
+    M = len(laths)
+    om = WL.default_omega(M, omega_max_deg, axis=a_ax, mode=omega_mode)
+    return WL.LathTable(laths, omegas=om, eps0_var=EPS0, npref_var=NPF,
+                        gamma0=gamma0)
+
+
+def run(a):
+    N, L = a.N, a.dx_nm * 1e-9 * a.N
+    dx = L / N
+    tag = a.tag or time.strftime('%m%d_%H%M%S')
+    outdir = os.path.join(a.out, '%s_%s' % (a.arm, tag))
+    os.makedirs(outdir, exist_ok=True)
+    P = lambda s: print(s, flush=True)
+    P('=' * 104)
+    P('_bk_exp  臂=%s  N=%d  Δx=%.2f nm  L=%.3f µm  steps=%d  tag=%s'
+      % (a.arm, N, dx * 1e9, L * 1e6, a.steps, tag))
+    P('=' * 104)
+
+    # ---------------- 臂定义 ----------------
+    laths = [int(x) for x in a.laths.split(',') if x.strip()]
+    M = len(laths)
+    single_field = (a.arm == 'gneg')
+    if single_field:
+        laths_eff = [laths[0]]
+        P('★ 负对照 gneg：**%d 根板条全部播进同一个场 φ_%d** ⇒ F3 应恒为 0'
+          % (M, laths[0]))
+    else:
+        laths_eff = laths
+
+    n_hab = np.asarray(NPF[laths[0]], float); n_hab /= np.linalg.norm(n_hab)
+    # 先建一个临时对象拿 a/w 轴（三轴由引擎 rank-1 分解给出，**不另建一份**）
+    _e0 = [np.asarray(EPS0[v - 1], float).copy() for v in laths_eff]
+    _p0 = {i + 1: np.asarray(NPF[v], float) for i, v in enumerate(laths_eff)}
+    _g0 = W.LevelSetMulti(24, 2.4e-6, C=C, eps0=_e0, gamma=0.15, Mob=MOB,
+                          df=[0.0] + [DF] * len(laths_eff), workers=1)
+    w_ax = np.asarray(_g0.wtab[1], float); w_ax /= np.linalg.norm(w_ax)
+    a_ax = np.asarray(_g0.atab[1], float); a_ax /= np.linalg.norm(a_ax)
+    del _g0
+
+    lt = build_table(laths_eff, a.omega_max_deg, a.omega_mode, a_ax=a_ax)
+    P(lt.summary())
+    gmax, g2ab, wets = lt.wetting_report()
+    P('润湿判据（(4.6)）：γ_RS 最大 %.4f  vs  2γ_αβ = %.4f  ⇒ %s'
+      % (gmax, g2ab, '**润湿**' if wets else '不润湿（C-1）'))
+    if a.arm == 'wet':
+        P('★ 臂 wet：F3 面能被**规定**为 γ_f=%.4f J/m²（人为亚稳膜）' % a.gamma_film)
+        lt.gtab[np.isfinite(lt.gtab)] = float(a.gamma_film)
+    elif a.arm == 'gpos':
+        lt.gtab[np.isfinite(lt.gtab)] = 100.0
+    elif a.arm == 'g0':
+        lt.gtab[np.isfinite(lt.gtab)] = 0.0
+
+    eps0 = [np.asarray(EPS0[v - 1], float).copy() for v in laths_eff]
+    npref = {i + 1: np.asarray(NPF[v], float) for i, v in enumerate(laths_eff)}
+    nv = len(laths_eff)
+
+    t0 = time.time()
+    g = W.LevelSetMulti(N, L, C=C, eps0=eps0, gamma=0.15, Mob=MOB,
+                        df=[0.0] + [DF] * nv, workers=a.nthreads,
+                        reinit_every=0, reinit_dt=6.0e-7,
+                        reinit_band_cells=a.reinit_band)
+    g.lath = lt
+    P('构造 %.1f s（%d 个场；`lath` 已挂上 ⇒ F3 走 γ_RS）' % (time.time() - t0, g.nreg))
+    P('   n*=%s  w=%s  a=%s  (n*·a=%.4f)'
+      % (np.array2string(n_hab, precision=4), np.array2string(w_ax, precision=4),
+         np.array2string(a_ax, precision=4), float(n_hab @ a_ax)))
+
+    # ---------------- 播种：沿 n* 堆叠 M 片 ----------------
+    c0 = np.array([L / 2] * 3)
+    T, gap = a.plate_T * 1e-9, a.gap_nm * 1e-9
+    span = (M - 1) * (T + gap)
+    P('播种 %d 片（%s nm）沿 n* 堆叠：厚 %.0f nm、间隔 %.0f nm、跨度 %.2f µm；'
+      '沿 a 长 %.0f nm、沿 w 宽 %.0f nm'
+      % (len(laths_eff), laths_eff, a.plate_T, a.gap_nm, (span + T) * 1e6,
+         a.plate_L, a.plate_W))
+    if len(laths_eff) == 1 and M > 1:
+        for i in range(M):
+            off = (i - (M - 1) / 2.0) * (T + gap)
+            g.seed_plate(1, c0 + off * n_hab, n_hab, a.plate_W * 0.5e-9, T,
+                         elong=a.plate_L / a.plate_W, along=a_ax, flat_end=True)
+    else:
+        for i in range(M):
+            off = (i - (M - 1) / 2.0) * (T + gap)
+            g.seed_plate(i + 1, c0 + off * n_hab, n_hab, a.plate_W * 0.5e-9, T,
+                         elong=a.plate_L / a.plate_W, along=a_ax, flat_end=True)
+    g.init_parent()
+    margin = 0.5 * L - 0.5 * (span + T) - 0.5 * a.plate_L * 1e-9
+    P('   沿 n* 到盒壁余量 %.2f µm；沿 a 余量 %.2f µm（**700 步长跑会撞壁，见 §4.1**）'
+      % ((0.5 * L - 0.5 * (span + T)) * 1e6, margin * 1e6))
+    if margin < 0.5e-6:
+        P('   ⚠⚠ 沿 a 余量 < 0.5 µm ⇒ **本算例会在中期撞盒壁**（`box_touch` 会置 1）')
+    if span + T > L:
+        raise SystemExit('✗ 堆叠跨度 %.2f µm > 盒 %.2f µm —— 播不下'
+                         % ((span + T) * 1e6, L * 1e6))
+
+    vmap = {i + 1: laths_eff[i] for i in range(nv)}
+    np.savez_compressed(
+        os.path.join(outdir, 'seeds.npz'), phi=g.phi.astype(np.float32),
+        region=g.region(), n_hab=n_hab, w_ax=w_ax, a_ax=a_ax,
+        vmap_keys=np.array(sorted(vmap)), vmap_vals=np.array([vmap[k] for k in sorted(vmap)]),
+        N=N, L=L, arm=a.arm, laths=np.array(laths_eff))
+
+    kw = dict(aniso=0.4, npref=npref, band_cells=20, mob_beta=a.beta_h,
+              mob_beta_w=a.beta_w, adv_grad=a.adv, norm_smooth=a.norm_smooth,
+              facet_lam=a.facet_lam, facet_eps=a.facet_eps)
+    dt = 0.15 * dx / (MOB * DF)
+    P('dt=%.4e s（标称 %.2f nm/步）；%d 步 ⇒ t_sim=%.3e s；norm_smooth=%d'
+      % (dt, 0.15 * dx * 1e9, a.steps, a.steps * dt, a.norm_smooth))
+    P('-' * 104)
+
+    if a.dry_run:
+        mm = BM.measure_state(g.region(), dx, n_hab, w_ax, a_ax, vmap)
+        P('--dry-run：初始测量 ' + json.dumps(
+            {k: (round(v, 6) if isinstance(v, float) else v)
+             for k, v in mm.items()}, ensure_ascii=False))
+        return 0
+
+    csvf = open(os.path.join(outdir, 'series.csv'), 'w', newline='')
+    cw = csv.writer(csvf); cw.writerow(COLS)
+    with open(os.path.join(outdir, 'meta.json'), 'w', encoding='utf-8') as f:
+        json.dump(dict(arm=a.arm, tag=tag, N=N, L=L, dx_nm=dx * 1e9, steps=a.steps,
+                       laths=laths_eff, nv=nv, vmap=vmap,
+                       omega_max_deg=a.omega_max_deg, omega_mode=a.omega_mode,
+                       theta_deg={('%d-%d' % (i + 1, j + 1)):
+                                  float(np.degrees(lt.theta[i + 1, j + 1]))
+                                  for i in range(nv) for j in range(i + 1, nv)},
+                       gamma_RS={('%d-%d' % (i + 1, j + 1)):
+                                 (float(lt.gtab[i + 1, j + 1])
+                                  if np.isfinite(lt.gtab[i + 1, j + 1]) else None)
+                                 for i in range(nv) for j in range(i + 1, nv)},
+                       plate=dict(L=a.plate_L, W=a.plate_W, T=a.plate_T),
+                       gap_nm=a.gap_nm, norm_smooth=a.norm_smooth,
+                       beta_h=a.beta_h, beta_w=a.beta_w, adv=a.adv,
+                       reinit_band=a.reinit_band, nthreads=a.nthreads,
+                       gamma0=0.15, DF=DF, Mob=MOB, dt=dt, t_sim=a.steps * dt,
+                       n_hab=n_hab.tolist(), w_ax=w_ax.tolist(), a_ax=a_ax.tolist(),
+                       sha_windowB_surface=sha256(os.path.join(_HERE, 'windowB_surface.py')),
+                       sha_windowB_lath=sha256(os.path.join(_HERE, 'windowB_lath.py')),
+                       sha_windowB_par=sha256(os.path.join(_HERE, 'windowB_par.py')),
+                       sha_exp=sha256(os.path.abspath(__file__)),
+                       sha_measure=sha256(os.path.join(_HERE, '_bk_measure.py')),
+                       git=subprocess_out(['git', '-C', os.path.dirname(
+                           os.path.dirname(_HERE)), 'rev-parse', 'HEAD'])),
+                  f, ensure_ascii=False, indent=1)
+
+    P0, t_sim, wall0, tstep = None, 0.0, time.time(), []
+    nfail = 0
+    for it in range(0, a.steps + 1):
+        if it > 0:
+            tw = time.time()
+            g.advance(dt, **kw)
+            tstep.append(time.time() - tw)
+            t_sim += dt
+            if not np.all(np.isfinite(g.phi)):
+                P('✗✗ `phi` 非有限 @ step %d —— 立即中止并**保留现场**' % it)
+                np.savez_compressed(os.path.join(outdir, 'CRASH_phi.npz'),
+                                    phi=g.phi, step=it)
+                nfail = 4
+                break
+        if (it % a.every) and (it != a.steps):
+            continue
+        reg = g.region()
+        mm = BM.measure_state(reg, dx, n_hab, w_ax, a_ax, vmap)
+        pm = mm['f3_pos_n']
+        if P0 is None and np.isfinite(pm):
+            P0 = pm
+        nc = [mm['ncomp_%d' % k] for k in range(1, nv + 1)]
+        row = dict(
+            step=it, t_s=round(t_sim, 12), wall_s=round(time.time() - wall0, 2),
+            dt=dt, V0=mm['vol_0'], Vt=sum(mm['vol_%d' % k] for k in range(1, nv + 1)),
+            M=M, nreg_used=mm['nreg_used'], nslab_n=mm['nslab_n'],
+            nf3_col=mm['nf3_col'], runs=mm['runs'].replace(',', '/'),
+            ncomp_min=int(np.min(nc)), ncomp_max=int(np.max(nc)),
+            nf3=mm['f3_faces'], f3_area_m2=mm['f3_area'],
+            f3_area_stair=mm['f3_area_stair'], f3_pos_m=pm,
+            f3_pos_dx=((pm - P0) / dx if (np.isfinite(pm) and P0 is not None)
+                       else float('nan')),
+            f3_std_m=mm['f3_std_n'],
+            n_lath=float(np.median([mm['n_%d' % k] for k in range(1, nv + 1)])),
+            w_lath=float(np.median([mm['w_%d' % k] for k in range(1, nv + 1)])),
+            a_lath=float(np.median([mm['a_%d' % k] for k in range(1, nv + 1)])),
+            box_touch=int(mm['box_touch']),
+            finite=int(np.all(np.isfinite(g.phi))))
+        cw.writerow([row[c] for c in COLS]); csvf.flush()
+        if (it % a.snap_every == 0) or (it == a.steps):
+            np.savez_compressed(
+                os.path.join(outdir, 'snap_%05d.npz' % it),
+                phi=g.phi.astype(np.float32), region=reg, step=it,
+                n_hab=n_hab, w_ax=w_ax, a_ax=a_ax, N=N, L=L, arm=a.arm,
+                vmap_keys=np.array(sorted(vmap)),
+                vmap_vals=np.array([vmap[k] for k in sorted(vmap)]))
+        P('  [%4d] Vt=%.4f µm³ | **nslab=%d** nf3col=%d runs=%-13s | F3面=%-6d '
+          '面积=%.4f µm² | Δpos=%+7.3f dx std=%5.1f nm | nc=%d..%d | '
+          'n/w/a=%.0f/%.0f/%.0f nm | 壁=%d | %.2fs/步'
+          % (it, row['Vt'] * 1e18, mm['nslab_n'], mm['nf3_col'], row['runs'],
+             mm['f3_faces'], mm['f3_area'] * 1e12,
+             (row['f3_pos_dx'] if np.isfinite(row['f3_pos_dx']) else float('nan')),
+             (mm['f3_std_n'] * 1e9 if np.isfinite(mm['f3_std_n']) else float('nan')),
+             row['ncomp_min'], row['ncomp_max'], row['n_lath'] * 1e9,
+             row['w_lath'] * 1e9, row['a_lath'] * 1e9, row['box_touch'],
+             (np.mean(tstep[-a.every:]) if tstep else 0.0)))
+    csvf.close()
+
+    s = np.genfromtxt(os.path.join(outdir, 'series.csv'), delimiter=',',
+                      names=True, dtype=None, encoding='utf-8')
+    P('-' * 104)
+    P('判决 臂=%-5s  M=%d  nslab_n %d→%d（应 == M=%d）  nf3_col %d→%d  '
+      'F3 面积 %.4f→%.4f µm²  Δpos %s dx  nc_max %d→%d'
+      % (a.arm, M, s['nslab_n'][0], s['nslab_n'][-1], M, s['nf3_col'][0],
+         s['nf3_col'][-1], s['f3_area_m2'][0] * 1e12, s['f3_area_m2'][-1] * 1e12,
+         ('%+.3f' % s['f3_pos_dx'][-1]) if np.isfinite(s['f3_pos_dx'][-1]) else 'NaN',
+         s['ncomp_max'][0], s['ncomp_max'][-1]))
+    if a.arm == 'gneg':
+        P('  负对照判据：**nf3 必须恒为 0** ⇒ 实测 %d→%d  %s'
+          % (s['nf3'][0], s['nf3'][-1],
+             '✓' if (s['nf3'][0] == 0 and s['nf3'][-1] == 0) else '✗✗ 量具失效'))
+    else:
+        P('  主判据：**nslab_n == M** 且 **nf3_col == M-1**（低角晶界把每根都分开）'
+          ' ⇒ %s' % ('✓' if (s['nslab_n'][-1] == M and s['nf3_col'][-1] == M - 1)
+                     else '✗ 见逐步读数'))
+    return nfail
+
+
+def subprocess_out(cmd):
+    import subprocess
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
+    except Exception:
+        return ''
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--arm', default='dry',
+                    choices=['dry', 'wet', 'gpos', 'gneg', 'g0'])
+    ap.add_argument('--N', type=int, default=96)
+    ap.add_argument('--dx-nm', type=float, default=62.5)
+    ap.add_argument('--steps', type=int, default=400)
+    ap.add_argument('--every', type=int, default=10)
+    ap.add_argument('--snap-every', type=int, default=100)
+    ap.add_argument('--laths', default='1,1,1,1,1,1')
+    ap.add_argument('--omega-max-deg', type=float, default=5.0)
+    ap.add_argument('--omega-mode', default='ladder', choices=['ladder', 'random'])
+    ap.add_argument('--plate-L', type=float, default=2400.0)
+    ap.add_argument('--plate-W', type=float, default=640.0)
+    ap.add_argument('--plate-T', type=float, default=250.0)
+    ap.add_argument('--gap-nm', type=float, default=0.0)
+    ap.add_argument('--norm-smooth', type=int, default=0)
+    ap.add_argument('--beta-h', type=float, default=3.5)
+    ap.add_argument('--beta-w', type=float, default=2.3)
+    ap.add_argument('--facet-lam', type=float, default=0.0)
+    ap.add_argument('--facet-eps', type=float, default=0.05)
+    ap.add_argument('--adv', default='proj2')
+    ap.add_argument('--reinit-band', type=float, default=6.0)
+    ap.add_argument('--nthreads', type=int, default=4)
+    ap.add_argument('--gamma-film', type=float, default=0.6)
+    ap.add_argument('--out', default='_exp/_bk_block')
+    ap.add_argument('--tag', default='')
+    ap.add_argument('--dry-run', action='store_true')
+    a = ap.parse_args()
+    return run(a)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
