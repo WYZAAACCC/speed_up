@@ -376,9 +376,12 @@ def run(a):
         P('★★ 生长中的同变体邻位形核：t=0 只播第 %d 片（场 %d）；'
           '此后每 %d 步在外侧播下一片（同一变体、新场）⇒ 片间自动成 F3'
           '； 咬入旧片 %.1f nm（`--nuc-overlap-nm`；0=相切，实测 F3 覆盖率仅 0.62）'
-          '； 补厚度 %s（前 %d 片播 T+o，末片播 T+o/2）'
-          % (j0, j0, a.nuc_every, a.nuc_overlap_nm,
-             'ON' if a.nuc_compensate else 'OFF', max(nv - 1, 0)))
+          '； 播种厚 %.0f nm = 物理厚 %.0f + 咬入补偿 %.0f（末片再减 %.0f）'
+          % (j0, j0, a.nuc_every, a.nuc_overlap_nm, a.plate_T,
+             (a.plate_t_physical if a.plate_t_physical > 0 else a.plate_T),
+             a.plate_T - (a.plate_t_physical if a.plate_t_physical > 0
+                          else a.plate_T),
+             a.eng_t_last_reduce_nm))
     elif len(laths_eff) == 1 and M > 1:
         for i in range(M):
             off = (i - (M - 1) / 2.0) * (T + gap)
@@ -928,6 +931,17 @@ def main():
                     help='athermal 钟：有序比目标（Δt_grow/Δt_nuc），<1 才有安全余量')
     ap.add_argument('--T-start', type=float, default=0.0, help='0 = 用 M_s')
     ap.add_argument('--T-end', type=float, default=298.0)
+    # ★★★ R29：`--closed` —— **一条命令**拿到闭环配置（见 `_apply_closed`）。
+    ap.add_argument('--closed', action='store_true',
+                    help='由 windowB_closure.recommend() 推出并套用全部闭环参数')
+    ap.add_argument('--closed-force', action='store_true',
+                    help='允许闭式**覆盖**你显式传的冲突参数（默认硬失败）')
+    # `--closed` 的两个**文献输入**（其余都由闭式导出）
+    ap.add_argument('--closed-t-nm', type=float, default=None,
+                    help='物理板条厚 [nm]；None = windowB_closure.T_LATH_MAIN_NM'
+                         '（Shuai 2026 的 510）')
+    ap.add_argument('--closed-aspect', type=float, default=None,
+                    help='长:厚；None = windowB_closure.ASPECT_LT_WANG（9:1，Wang 2026）')
     # ★★ Round 10 实测更正：`--nuc-compensate` 用**名义** `o` 补，而**补过头了**。
     #   证据（同配置三点）：
     #     `gs4`（不补）   厚度 238/238/239/230/254/250（均值 241.5，−3.4%）Vt 2.1062
@@ -953,7 +967,101 @@ def main():
     ap.add_argument('--tag', default='')
     ap.add_argument('--dry-run', action='store_true')
     a = ap.parse_args()
+    _apply_closed(a, ap)
     return run(a)
+
+
+# ---------------------------------------------------------------------------
+# ★★★ R29：`--closed` —— 让**闭环配置**变成"一条命令"
+# ---------------------------------------------------------------------------
+# 用户 R29 的要求是「让**默认路径**用闭环参数跑通」。闭环配置由 12 个参数组成
+# （Δx/L/W/T/播种厚/物理厚/r_nuc/o/elong/β_h/laths/nuc_law），全部来自
+# `windowB_closure.recommend()` 的闭式。手打这 12 个不但易错，而且**看不出哪个是推出来的**
+# ⇒ 提供一个开关，它调用闭式并把结果**套用**上去。
+#
+# 口径（本仓库的硬规矩：不许静默改用户显式传的东西）：
+#   * 用户**没传**（等于 argparse 默认值）⇒ 直接套用推导值；
+#   * 用户**传了**且与推导值一致 ⇒ 套用（无冲突）；
+#   * 用户**传了**且与推导值冲突 ⇒ **硬失败**，除非同时给 `--closed-force`。
+def _apply_closed(a, ap):
+    if not getattr(a, 'closed', False):
+        return
+    t_phys = (float(a.closed_t_nm) if a.closed_t_nm
+              else float(CL.T_LATH_MAIN_NM))
+    aspect = (float(a.closed_aspect) if a.closed_aspect
+              else float(CL.ASPECT_LT_WANG))
+    rec = CL.recommend(N=a.N, t_lath_nm=t_phys, aspect=aspect,
+                       alpha_KM=a.alpha_km, T_f=a.T_end)
+    if not rec.get('ok'):
+        raise SystemExit('✗ --closed：windowB_closure.recommend() 未通过（%s）'
+                         % rec.get('blocked', '?'))
+    t_seed = t_phys + rec['overlap_nm']
+    targets = dict(
+        dx_nm=rec['dx_nm'],
+        plate_L=rec['L_lath'] * 1e9,
+        plate_W=rec['W_lath'] * 1e9,
+        plate_T=t_seed,
+        plate_t_physical=t_phys,
+        eng_r_nm=rec['r_nuc_nm'],
+        eng_t_nm=t_seed,
+        eng_elong=rec['elong'],
+        nuc_overlap_nm=rec['overlap_nm'],
+        eng_t_last_reduce_nm=0.5 * rec['overlap_nm'],
+        beta_h=rec['beta_h_use'],
+        laths=','.join(['1'] * rec['n_lath']),
+        nuc_law='athermal',
+        grow_stack=True,
+        nuc_every=0,
+        steps=rec['steps'],
+    )
+    conflicts, applied = [], []
+    for k, v in targets.items():
+        cur = getattr(a, k, None)
+        dflt = ap.get_default(k)
+        if isinstance(v, float) and isinstance(cur, float):
+            same = abs(cur - v) <= 1e-9 * max(1.0, abs(v))
+        else:
+            same = (cur == v)
+        if same:
+            applied.append((k, v, '推导值'))
+        elif cur == dflt:
+            applied.append((k, v, '套用（你未指定）'))
+            setattr(a, k, v)
+        else:
+            conflicts.append((k, cur, v))
+    # ⚠ `P()` 定义在 `run()` 里 ⇒ 本函数在它之前跑，这里只能用 `print`
+    #   （本函数在 `run()` 打标题**之前**执行）。
+    print('=' * 104)
+    print('★★★ `--closed`：由 `windowB_closure.recommend()` **推出**的闭环配置')
+    print('    n = floor(α_KM·(M_s−T_end)) = **%d**；q=%.4e K/s；steps=%d；'
+          'T_start=T_1=%.2f K' % (rec['n_lath'], rec['q'], rec['steps'],
+                                  rec['T_start']))
+    print('    t_phys=%.0f nm（Shuai）⇒ 播种厚 %.0f = t_phys + 咬入 %.0f；末片再减 %.0f'
+          % (t_phys, t_seed, rec['overlap_nm'], 0.5 * rec['overlap_nm']))
+    for k, v, why in applied:
+        print('    %-22s = %-16s %s'
+              % (k, ('%.4g' % v) if isinstance(v, float) else v, why))
+    print('=' * 104)
+    if conflicts:
+        for k, cur, v in conflicts:
+            print('   ✗ 冲突：`%s` 你传了 %s，而闭式给 %s' % (k, cur, v))
+        if not getattr(a, 'closed_force', False):
+            raise SystemExit('✗ `--closed` 与你显式传的参数冲突 ⇒ 拒绝运行。'
+                             '要去掉那些参数，或加 `--closed-force` 让闭式覆盖它们。')
+        print('   ⚠ `--closed-force` 已给 ⇒ **闭式覆盖你显式传的值**（上面逐条列出）')
+        for k, cur, v in conflicts:
+            setattr(a, k, v)
+    if abs(a.steps - rec['steps']) > 0:
+        print('   ⚠ `--steps` = %d ≠ 闭式的 %d ⇒ **C-3 的有序性判据要按实际步数重算**'
+              % (a.steps, rec['steps']))
+    # γ_F1 是**借来的文献值**，不是闭式能推的 ⇒ 这里只提醒，不擅自改。
+    if abs(a.gamma0 - CL.GAMMA_F1_MAIN) > 1e-9:
+        print('   ⚠ `--gamma0` = %.3f，而闭环主情景是 **%.2f**'
+              '（Murzinova 2017 的 975 °C 带 %s 内取整值）'
+              % (a.gamma0, CL.GAMMA_F1_MAIN, CL.GAMMA_F1_BAND))
+        print('     ⇒ 复现闭环主配置请显式加 `--gamma0 %.2f`（本条**不自动改**：'
+              '它是文献选择，不是推导量）' % CL.GAMMA_F1_MAIN)
+    a.nuc_law = 'athermal'
 
 
 if __name__ == '__main__':
