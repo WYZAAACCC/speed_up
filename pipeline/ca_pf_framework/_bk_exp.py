@@ -64,6 +64,11 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         #   但**总量**看不出是**哪几对**被吃 ⇒ 必须逐对、且**每个测点**都记。
         #   `--pair-every 0`（默认）⇒ 不记 ⇒ 与改动前逐位相同（列会是空串）。
         'f3_pairs',
+        # ★ R29（Round 18）：**逐对界面位置**（沿 n*，单位 Δx）。
+        #   加它的理由见 `_pairpos_str` 的记账：`f3_pos_dx` 是汇总量，
+        #   在各对面积不等且在变时会让 `V-3g` 给出假 FAIL。
+        #   ⚠ 只落数据；对应的逐对判据**未实现未验证**。
+        'f3_pairs_pos',
         'nf3', 'f3_area_m2', 'f3_area_stair', 'f3_pos_m', 'f3_pos_dx',
         'f3_std_m', 'n_lath', 'w_lath', 'a_lath', 'box_touch', 'finite',
         'psi_mean',
@@ -647,6 +652,41 @@ def run(a):
                         out_.append('%d-%d:%.6g' % (_i, _j, _A * 1e12))
             return '/'.join(out_)
 
+        def _pairpos_str(reg_):
+            """★★★ R29（Round 18）：**逐对界面位置**（沿 `n*`，单位 **Δx**）。
+
+            为什么必须有这一列（而不是继续用汇总的 `f3_pos_dx`）：
+              `f3_pos_dx` 是**所有 F3 胞**在 `n*` 上的平均位置 —— 一个**汇总量**。
+              块里有 k 张界面时，它的漂移有两个来源：
+                (a) 某张界面真的在迁移；
+                (b) **各张界面之间的权重变了**（某一对面积涨、另一对掉）。
+              ⇒ `V-3g`（用它下判）在"各对面积悬殊且在变"时会给出**假 FAIL**。
+              实测（`dry_cl1b`）：逐对面积 `5.29/5.34 → 3.81/3.36`（权重变 ~30%），
+              而**逐对粗糙度没变**（0.071 × 板条厚，见 `_bk_f3flat.py`）；
+              归档 `eng12` 的各对面积齐平（1.50–1.60，±3%）⇒ 它的 `V-3g` 才稳。
+              ⇒ 要判"界面有没有迁移"，必须**逐对**看。
+            ⚠ **本列只做数据落盘**：对应的"逐对 V-3g"判据**尚未实现、尚未验证**
+              （本轮已在同一问题上错三次 ⇒ **不再交付未验证的判据**）。
+            ⚠ 只在 `--pair-every` 命中时算（默认 0 ⇒ 不算、列是空串 ⇒ 归档逐位不变）。
+            """
+            out_ = []
+            for _ii, _i in enumerate(_occ):
+                for _j in _occ[_ii + 1:]:
+                    if vmap[_i] != vmap[_j]:
+                        continue
+                    _mi = (reg_ == _i)
+                    _mj = (reg_ == _j)
+                    _adj = np.zeros_like(_mi)
+                    for _ax in (0, 1, 2):
+                        for _sh in (1, -1):
+                            _adj |= _mi & np.roll(_mj, _sh, axis=_ax)
+                    if not bool(_adj.any()):
+                        continue
+                    _idx = np.argwhere(_adj).astype(float) + 0.5
+                    _p = float((_idx.mean(0) @ n_hab) * dx / dx)      # 单位 Δx
+                    out_.append('%d-%d:%.5g' % (_i, _j, _p))
+            return '/'.join(out_)
+
         row = dict(
             step=it, t_s=round(t_sim, 12), wall_s=round(time.time() - wall0, 2),
             dt=dt, V0=mm['vol_0'], Vt=sum(mm['vol_%d' % k] for k in range(1, nv + 1)),
@@ -664,6 +704,7 @@ def run(a):
             # ★ R18：逐对 F3 面积。只在 `--pair-every` 命中时算（它要按对做
             #   6 次 `np.roll`，N=96 时约 2–3 s ⇒ 不能每步都算）。
             f3_pairs=('' if not _pair_now else _pair_str(reg, mm)),
+            f3_pairs_pos=('' if not _pair_now else _pairpos_str(reg)),
             nf3=mm['f3_faces'], f3_area_m2=mm['f3_area'],
             f3_area_stair=mm['f3_area_stair'], f3_pos_m=pm,
             f3_pos_dx=((pm - P0) / dx if (np.isfinite(pm) and P0 is not None)
