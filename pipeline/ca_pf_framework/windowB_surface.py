@@ -1232,7 +1232,7 @@ class LevelSetMulti(object):
                 var_rule='ed', use_fcrit=False,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
                 elong=1.0, along=None, prefer_end=True, nfsv_strict=True,
-                block_edge=True, align_inplane=True):
+                block_edge=True, align_inplane=True, alt_side=True):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
         （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
         `WINDOWB_AUDIT_REGISTER.md` D4/A7。三种处置任选其一，**但必须显式**：
@@ -1359,6 +1359,9 @@ class LevelSetMulti(object):
                          # ★ R18：新片的**面内中心**对齐到"整块的面内中心"
                          #   （而不是源板条自己的质心）。只在 `attach=True` 时读到。
                          align_inplane=bool(align_inplane),
+                         # ★ R21：`attach` 下**交替选端**（对齐驱动层 `_seed_next` 的
+                         #   `side = +1 if j%2==0 else -1`）。只在 `attach=True` 时读到。
+                         alt_side=bool(alt_side),
                          rng=np.random.default_rng(seed))
         # ★★ 记账（Round 63 接线；**Round 84 更正依据**——`ReferenceAudit` #14）：
         #   `p_auto` **已接线并使用**（见下面 sympathetic 分支的 `_gain`）。
@@ -1765,7 +1768,20 @@ class LevelSetMulti(object):
                         else:
                             _e_hi, _e_lo = float(_pn.max()), float(_pn.min())
                         done = False                 # ★ 必须先初始化：下面 `if done`
-                        for _side in (1.0, -1.0):    #   在"一个都没放成"时也要能求值
+                        # ★★★ R21：**交替选端**（`alt_side`，默认开；只在 `attach` 下）。
+                        #   依据（R20 逐条对齐后的**唯一剩余差别**）：
+                        #     板条几何 / 法向 / 面内中心 / 沿 n* 的落位公式 **全部等价**，
+                        #     只剩选端方式：驱动层 `_seed_next` **严格交替**
+                        #     （`side = +1 if j%2==0 else -1`），而这里**总是先试 `+1`**
+                        #     ⇒ 成功就**一直在同一端**加片。
+                        #   ⚠ **本条只有排除法支撑，没有机理** ——
+                        #     "单端堆叠为什么会造成过接触(2.2)/非链拓扑"我讲不出来。
+                        #     故预登记里写明：**若不改变结果，则差别在别处**，不得在此打转。
+                        #   ⚠ `alt_side=False` 或 `attach=False` ⇒ 原路径 ⇒ 逐位不变。
+                        _sides = ((1.0, -1.0) if not c.get('alt_side', True)
+                                  else ((1.0, -1.0) if (_dbg.get('ok', 0) % 2 == 0)
+                                        else (-1.0, 1.0)))
+                        for _side in _sides:         #   在"一个都没放成"时也要能求值
                             if done:
                                 break
                             _edge = _e_hi if _side > 0 else _e_lo
