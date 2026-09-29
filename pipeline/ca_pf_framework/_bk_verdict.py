@@ -360,12 +360,33 @@ def main():
                        % (last.get('runs'), nrun, M, present)))
             _band = [k for k in present if th and k <= len(th)
                      and 0.8 * 250.0 <= th[k - 1] <= 1.3 * 250.0]
-            ck.append(('V-8b 末态厚度保真（在位片 ∈ [200,325] nm）',
-                       (len(_band) == len(present)) if present else None,
-                       '厚度=%s nm（T=250；**场 1 的读数会被 1–2 体素孤儿污染**，'
-                       '精确值看 `_bk_pair.py`）'
-                       % '/'.join('%.0f' % th[k - 1] for k in present
-                                  if k <= len(th))))
+            # ★★ R24：**V-8b 必须用"剔孤儿"的厚度**。
+            #   `ths` 列读的是 `_bk_measure` 的原始 `n_%d`（**包围尺寸**），而它会被
+            #   1–2 体素的孤立碎点污染 —— 本文件已两次栽在同一类"读数口径"上
+            #   （V-2 的基准、V-6 的基准），这是第三次。
+            #   实测（`eng12`）：`ths` 给 252/**332**/304/306/303/285（332 掉出 [200,325]），
+            #   而**剔掉 <32 体素分量后取 0.5%/99.5% 分位**给
+            #   236/325/261/263/271/282 —— **全部在带内**。
+            #   ⇒ 判据改用 `_bk_cmp.robust_thickness`（读**最后一个快照**），
+            #     同时把原始 `ths` 读数**一并打印**（不隐藏）。
+            _snaps = sorted(glob.glob(os.path.join(r['dir'], 'snap_*.npz')))
+            if _snaps and present:
+                import _bk_cmp as _CMP
+                _z = np.load(_snaps[-1])
+                _reg = _z['region']
+                _dx = float(_z['L']) / _reg.shape[0]
+                _nh = np.asarray(_z['n_hab'], float)
+                _rth = {k: _CMP.robust_thickness(_reg, _dx, _nh, k)
+                        for k in present}
+                _inb = [k for k in present
+                        if 0.8 * 250.0 <= _rth[k] * 1e9 <= 1.3 * 250.0]
+                ck.append(('V-8b 末态厚度保真（**剔孤儿**后 ∈ [200,325] nm）',
+                           len(_inb) == len(present),
+                           '剔孤儿后=%s nm（**判据用这个**）；原始 `ths`=%s nm'
+                           '（含孤儿，仅供参考）'
+                           % ('/'.join('%.0f' % (_rth[k] * 1e9) for k in present),
+                              '/'.join('%.0f' % th[k - 1] for k in present
+                                       if k <= len(th)))))
         for t, ok, det in ck:
             print('   %-52s %s  %s'
                   % (t, 'PASS' if ok else ('—' if ok is None else '**FAIL**'), det))
