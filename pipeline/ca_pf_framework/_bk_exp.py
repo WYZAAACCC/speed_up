@@ -1009,6 +1009,7 @@ def main():
     ap.add_argument('--dry-run', action='store_true')
     a = ap.parse_args()
     _apply_closed(a, ap)
+    _warn_archived_path(a)
     return run(a)
 
 
@@ -1112,6 +1113,53 @@ def _apply_closed(a, ap):
         print('     ⇒ 复现闭环主配置请显式加 `--gamma0 %.2f`（本条**不自动改**：'
               '它是文献选择，不是推导量）' % CL.GAMMA_F1_MAIN)
     a.nuc_law = 'athermal'
+
+
+def _warn_archived_path(a):
+    """★★★ R29（用户要求）：**"你正在跑没有速率律的归档路径"这条提示**。
+
+    背景：`--nuc-law` 默认是 `cadence` —— **形核节奏由 `--eng-cadence` 规定**
+    （「每 N 步插一根」），它是**纯人为节拍**，与温度、驱动力、材料无关。
+    而 `BLOCK_RESULT.md §3.1` 那条"最简命令"里**没有** `--nuc-law` ⇒
+    照着敲的人会拿到这个模型，却**看不出来它没有速率律**。
+
+    ⚠ **为什么不是"改默认"**（用户问过）：
+      `--nuc-law` 只管**一条规则**；闭环配置是**12 个参数**
+      （`Δx`/板条尺寸/`γ0`/`β_h`/播种厚/`α_KM`/`T_end`/`laths`/`steps`…）。
+      只改默认 ⇒ 得到「闭环的形核律 + 归档的几何与能量」这种**从未验证过的第三种配置**。
+      实测估算：归档几何（`L=2400 nm`）+ athermal 律，`q≈4.6e6 K/s`、200 步只降到 ~725 K
+      ⇒ `n(T)=1.6` ⇒ **跑完 200 步只有 1 根板条**，看起来像坏了。
+      ⇒ 所以**不改默认，只加提示**（零破坏）。
+
+    触发口径（**两边都要测**：该响的时候响、不该响的时候不响）：
+      * 用户**显式**传了 `--nuc-law` 或 `--closed` ⇒ **不提示**（他知道自己在做什么）；
+      * 否则且**确实会走形核**（`--grow-stack` / `--arm eng` / `--nuc-every > 0`）
+        ⇒ **提示**；
+      * 预摆算例（不生长、不形核）⇒ 不提示（那条路径没有这个问题）。
+    """
+    argv = sys.argv[1:]
+    explicit = any(x == '--nuc-law' or x.startswith('--nuc-law=') for x in argv)
+    explicit = explicit or any(x == '--closed' or x.startswith('--closed=')
+                               for x in argv)
+    explicit = explicit or getattr(a, 'closed', False)
+    if explicit:
+        return
+    if not (bool(getattr(a, 'grow_stack', False)) or a.arm == 'eng'
+            or int(getattr(a, 'nuc_every', 0)) > 0):
+        return
+    print('=' * 104)
+    print('⚠⚠ **你正在跑归档路径：模型里没有形核速率律。**')
+    print('   当前 `--nuc-law` = `cadence`（默认）⇒ 形核节奏由 `--eng-cadence %d` '
+          '**人为规定**（"每 %d 步插一根"），' % (a.eng_cadence, a.eng_cadence))
+    print('   它与温度、驱动力、材料无关。**这条路径的结论必须写成'
+          '"在给定的形核节奏下"。**')
+    print('   ★ 要用**物理闭环**模型（板条数 `n = floor(α_KM(M_s−T_end))`、'
+          '逐根温度 `T_k = M_s − k/α_KM`）请加：')
+    print('       --closed --gamma0 0.25 --steps 2853')
+    print('     （见 `BLOCK_PARAM_CLOSURE.md`；"一条命令"与长命令行等价已由 '
+          '`_bk_closedcheck.py` 核过：20 项 0 不一致）')
+    print('   若你**有意**走归档路径，请显式写 `--nuc-law cadence` 以消除本提示。')
+    print('=' * 104)
 
 
 if __name__ == '__main__':
