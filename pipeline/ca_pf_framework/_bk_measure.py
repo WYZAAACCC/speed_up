@@ -606,6 +606,48 @@ def _selftest():
     ck('C15c 反向对照：真把一层切断 ⇒ ncompbig ≥ 2',
        _ncomp_big(cut) >= 2, '%d' % _ncomp_big(cut))
 
+    # ---- C16/C17 ★ `snapshot_coverage`（V-7/V-7b 的唯一实现）的**正/负对照** ----
+    # ★ 项目教训 #19：**新探针必须先拿一个"已知答案"跑通**，再相信它对未知答案的
+    #   判定。`snapshot_coverage` 现在同时供 `_bk_pair.py` 与 `_bk_verdict.py` 用，
+    #   而它比 C7 多两样 C7 没控过的东西：(i) 分母 `ΣV/t`，(ii) β 夹层计数。
+    #   ⇒ 两条对照都补上。
+    def _z(reg):
+        return dict(region=reg, L=N * dx, n_hab=n_hab, w_ax=w_ax, a_ax=a_ax,
+                    vmap_keys=np.arange(1, 7), vmap_vals=np.ones(6, int))
+    cv = snapshot_coverage(_z(reg6))
+    ck('C16 对齐 6 层：覆盖率 ≥ 0.90（**正对照**）', cv['cov'] >= 0.90,
+       'cov=%.3f（应占 %.4f，实测 %.4f µm²）'
+       % (cv['cov'], cv['exp_int'] * 1e12, cv['f3_area'] * 1e12))
+    ck('C16b 对齐 6 层：每一对的 β 占比 ≤ 0.25（**正对照**）',
+       bool(cv['beta_frac']) and max(cv['beta_frac'].values()) <= 0.25,
+       '各对: %s' % '  '.join('%d|%d:%.2f' % (ij[0], ij[1], f)
+                              for ij, f in sorted(cv['beta_frac'].items())))
+    # 负对照：在**第 3 与第 4 层之间**塞一层 1 胞厚的母相 β（精确复刻 `dry_gs2`
+    # 的缺陷形态），判据必须只在 (3,4) 这一对上报警，其余对不受影响。
+    # ★ 索引算术（第一版在这里错了，膜落到了 1|2 之间）：`_stack_reg` 里第 i 层
+    #   （0 基）的中心是 `(i − (M−1)/2)·T` ⇒ **第 i 与 i+1 层的界面**在
+    #   `((i − (M−1)/2) + 0.5)·T`。要 3|4 界面 ⇒ i=2 ⇒ `(2 − 2.5 + 0.5)·T = 0`。
+    reg_film = reg6.copy()
+    _T = 2 * T
+    _i0 = 2                                              # 第 3 层（0 基）
+    _mid = c0 + ((_i0 - (6 - 1) / 2.0 + 0.5) * _T) * n_hab
+    _filmcell = _synth_slab(N, dx, _mid, dict(n=0.5 * dx, w=W, a=AL), am)
+    _before = int(reg_film[_filmcell].min())
+    reg_film[_filmcell] = 0
+    cvf = snapshot_coverage(_z(reg_film))
+    _bf = cvf['beta_frac']
+    ck('C17 插入 1 胞 β 膜（第 3|4 层间）：该对的 β 占比必须 > 0.25（**负对照**）',
+       _bf.get((3, 4), 0.0) > 0.25,
+       '3|4:%.2f  其余各对 max=%.2f  （膜覆盖处原本是场 %d，应 == 3）'
+       % (_bf.get((3, 4), 0.0),
+          max([v for k, v in _bf.items() if k != (3, 4)] + [0.0]), _before))
+    ck('C17b 插入 β 膜后**其余对**仍 ≤ 0.25（判据有分辨力，不是一锅端）',
+       max([v for k, v in _bf.items() if k != (3, 4)] + [0.0]) <= 0.25,
+       '其余 max=%.2f' % max([v for k, v in _bf.items() if k != (3, 4)] + [0.0]))
+    ck('C17c 插入 β 膜后总覆盖率必须**掉下来**（vs C16）',
+       cvf['cov'] < cv['cov'] - 0.02,
+       '带膜 %.3f  vs  对齐 %.3f' % (cvf['cov'], cv['cov']))
+
     print('-' * 100)
     print('FAIL = %d %s' % (len(F), F if F else ''))
     print('=' * 100)
