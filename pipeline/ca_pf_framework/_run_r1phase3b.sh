@@ -23,8 +23,21 @@ case "$1" in
   # 实验 7b：6 个核，**全部 12 变体**随机分配（seed=7 ⇒ 6 个唯一变体）
   e7b)   run e7b_selfac12 --case mid --nseed 6 --layout line_w --line-gap-nm 1500 \
              --variants "1,2,3,4,5,6,7,8,9,10,11,12" --shuffle-variants 7 ;;
-  *) echo "用法: bash _run_r1phase3b.sh {equi1|e7|e7b}" ;;
+  # ★★ 第 23 轮新增：实验 7 的**负对照**臂 —— 用 packet-3 的 {V5,V6}
+  #   依据 `_r1_pairrank.py`：V5–V6 的 rank-1 残余 **1.5811**（排名 43/66，**差对**），
+  #   而 e7 用的 V1–V2 是 **0.7071**（排名 15，**好对**）。
+  #   判据：若模型真会自协调 ⇒ **好对应过 S-1、差对应不过**（天然正/负对照）。
+  e7c)   run e7c_badpair --case mid --nseed 6 --layout line_w --line-gap-nm 1500 \
+             --variants "5,6" --shuffle-variants 1 ;;
+             # ↑ 与 `e7` **同一个 shuffle 种子**（都 seed=1 ⇒ 各 3 个）⇒
+             #   两臂只差"变体对"，是最干净的配对对照（`R23`：同规格、同口径）。
+  *) echo "用法: bash _run_r1phase3b.sh {equi1|e7|e7b|e7c}" ;;
 esac
 sleep 5
 ps -eo pid,etimes,rss,args | grep _r1_exp | grep -v grep | cut -c1-100
 free -g | head -2
+
+# ★★ 第 23 轮新增：实验 7 的**负对照**臂 —— 用 packet-3 的 {V5,V6}
+#   依据 _r1_pairrank.py：V5–V6 的 rank-1 残余 1.5811（排名 43/66，差对），
+#   而 e7 用的 V1–V2 是 0.7071（排名 15，好对）。
+#   判据：若模型真会自协调 ⇒ **好对应过 S-1、差对应不过**。
