@@ -293,6 +293,7 @@ M(n̂) = M0·e^{−β_h}  ⇒  N_steps 步累积法向位移 ≤ cfl·N_steps·�
 | `_bk_measure.py`（量具） | 19 | 0 | `python3 _bk_measure.py --selftest` |
 | `_bk_nuc_identity.py`（引擎恒等性 U-1..U-4） | 7 | 0 | `python3 _bk_nuc_identity.py` |
 | **`_bk_docnum.py`（本文档里手打的数字 vs 代码重算）** | — | **0 处不一致** | `python3 _bk_docnum.py` |
+| **`_bk_closedcheck.py`（"一条命令" == 长命令行）** | **20 项** | **0 处不一致** | `python3 _bk_closedcheck.py` |
 
 > ★ `_bk_docnum.py` 是**为这份文档专门写的**：本仓库最贵的一课就是
 > 「**文档里的数字会悄悄过期**」（`kappa_c` 只改了一半、T7 的判读被自己的文档说服）。
@@ -346,6 +347,19 @@ M(n̂) = M0·e^{−β_h}  ⇒  N_steps 步累积法向位移 ≤ cfl·N_steps·�
 > 已写 `_bk_killall.sh`（按 PID + 残留核查）以免再犯。
 
 ### 5.4 闭环配置的实际运行
+
+**一条命令**（R29 新增 `--closed`，见 `_apply_closed`）：
+`_bk_exp.py --closed` 调 `windowB_closure.recommend()`，把 12 个导出参数**套用**上去，
+并**逐条打印来源**（"推导值" / "套用（你未指定）"）；**与你显式传的冲突时硬失败**
+（除非 `--closed-force`）。`--gamma0` **不自动改** —— 它是借来的文献值，不是推导量。
+
+```bash
+python3 _bk_exp.py --closed --gamma0 0.25 --steps 2853 --tag cl1b --out _exp/_bk_closed
+```
+
+★ **"一条命令"是可核的**：`_bk_closedcheck.py` 把 `--closed` 的机器可读输出
+（`CLOSED_ARGS {json}`）与 `_bk_closed.py` 生成的长命令行逐项比对
+⇒ **20 项参数全部一致（0 处不一致）**。
 
 由 `_bk_closed.py` 生成命令行（**不是手写**）：
 见 `_exp/_bk_closed/launch_*.json` 与 `_exp/_bk_closed/README.md`（标签对照表）。

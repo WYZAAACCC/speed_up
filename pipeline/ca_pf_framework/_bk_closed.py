@@ -120,10 +120,16 @@ def main():
         print('  ⚠⚠ --cool-rate 由用户给定；ordered_ok=%s' % (CL.ordered_ok(
             a.cool_rate, 1e-9, a.alpha_km, rec['L_lath'])[0],))
 
+    # ⚠ 数值一律用 `%.6f`（不是 `%.2f`）：`_bk_closedcheck.py` 要求
+    #   「`--closed` 一条命令」与「这里生成的长命令行」推出**同一套参数**；
+    #   用 `%.2f` 会把 `W = 1224.1531` 截成 `1224.15` ⇒ 两条路径差 3e-3 nm，
+    #   物理上无关紧要，但"同一条命令"这句话就不成立了。
     cmd = [PY, '-u', '_bk_exp.py',
            '--arm', a.arm,
-           '--N', str(a.N), '--dx-nm', '%.4f' % rec['dx_nm'],
-           '--laths', (a.laths if a.laths else ','.join(['1'] * rec['n_lath'])),           '--steps', str(steps),
+           '--N', str(a.N),
+           '--dx-nm', '%.6f' % rec['dx_nm'],
+           '--laths', (a.laths if a.laths else ','.join(['1'] * rec['n_lath'])),
+           '--steps', str(steps),
            '--every', str(a.every), '--snap-every', '1000',
            '--pair-every', str(a.every),
            '--norm-smooth', '0', '--nthreads', str(a.nthreads),
@@ -131,19 +137,19 @@ def main():
            '--grow-stack', '--nuc-every', '0',
            '--nuc-law', 'athermal',
            '--alpha-km', '%.6g' % a.alpha_km,
-           '--cool-ratio', '%.4f' % a.cool_ratio,
-           '--T-end', '%.2f' % a.T_end,
-           '--gamma0', '%.4f' % a.gamma,
-           '--plate-L', '%.2f' % (rec['L_lath'] * 1e9),
-           '--plate-W', '%.2f' % (rec['W_lath'] * 1e9),
-           '--plate-T', '%.2f' % t_seed_nm,
-           '--plate-t-physical', '%.2f' % a.t_lath_nm,
-           '--eng-r-nm', '%.3f' % rec['r_nuc_nm'],
-           '--eng-t-nm', '%.2f' % t_seed_nm,
-           '--eng-elong', '%.4f' % rec['elong'],
-           '--eng-t-last-reduce-nm', '%.3f' % (0.5 * rec['overlap_nm']),
-           '--nuc-overlap-nm', '%.3f' % rec['overlap_nm'],
-           '--beta-h', '%.4f' % beta_h,
+           '--cool-ratio', '%.6f' % a.cool_ratio,
+           '--T-end', '%.6f' % a.T_end,
+           '--gamma0', '%.6f' % a.gamma,
+           '--plate-L', '%.6f' % (rec['L_lath'] * 1e9),
+           '--plate-W', '%.6f' % (rec['W_lath'] * 1e9),
+           '--plate-T', '%.6f' % t_seed_nm,
+           '--plate-t-physical', '%.6f' % a.t_lath_nm,
+           '--eng-r-nm', '%.6f' % rec['r_nuc_nm'],
+           '--eng-t-nm', '%.6f' % t_seed_nm,
+           '--eng-elong', '%.6f' % rec['elong'],
+           '--eng-t-last-reduce-nm', '%.6f' % (0.5 * rec['overlap_nm']),
+           '--nuc-overlap-nm', '%.6f' % rec['overlap_nm'],
+           '--beta-h', '%.6f' % beta_h,
            '--eng-seed', str(a.seed),
            '--tag', a.tag, '--out', a.out]
     if a.cool_rate > 0:

@@ -1054,6 +1054,15 @@ def _apply_closed(a, ap):
     if abs(a.steps - rec['steps']) > 0:
         print('   ⚠ `--steps` = %d ≠ 闭式的 %d ⇒ **C-3 的有序性判据要按实际步数重算**'
               % (a.steps, rec['steps']))
+    # ★ 机器可读的一行：`_bk_closedcheck.py` 用它核"一条命令 == 长命令行"。
+    #   为什么不从上面那张人读的表里正则抽：那张表是给人看的，格式会变
+    #   （本仓库已多次栽在"从格式不稳定的文本里抠数"上）。
+    print('CLOSED_ARGS ' + json.dumps(
+        dict({k: getattr(a, k) for k in targets},
+             **{'N': a.N, 'alpha_km': a.alpha_km,
+                'cool_ratio': a.cool_ratio, 'T_end': a.T_end,
+                'gamma0': a.gamma0}),
+        ensure_ascii=False, sort_keys=True))
     # γ_F1 是**借来的文献值**，不是闭式能推的 ⇒ 这里只提醒，不擅自改。
     if abs(a.gamma0 - CL.GAMMA_F1_MAIN) > 1e-9:
         print('   ⚠ `--gamma0` = %.3f，而闭环主情景是 **%.2f**'
