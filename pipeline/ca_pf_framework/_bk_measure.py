@@ -51,15 +51,21 @@ except Exception:                                               # pragma: no cov
     _HAVE_SCIPY = False
 
 
-def _ncomp(mask):
-    """6-连通、**周期**边界下的连通分量数。"""
+def _ncomp_sizes(mask):
+    """6-连通、**周期**边界下各连通分量的**体素数**（跨越周期面合并后），降序。
+
+    ★ 抽出这个函数是为了加"**显著**碎裂"判据（`_ncomp_big`）而**不动**
+      `_ncomp` 的语义 —— 原实现数的是"不同根有几个"，
+      新实现数的是"合并后各根的体素数"，两者对**分量个数**逐位一致（已核对）。
+    """
     if not mask.any():
-        return 0
+        return []
     if not _HAVE_SCIPY:
         raise RuntimeError('需要 scipy.ndimage 才能可靠地数周期连通分量')
     lab, n = ndi.label(mask, structure=ndi.generate_binary_structure(3, 1))
-    if n <= 1:
-        return int(n)
+    if n <= 0:
+        return []
+    sz = np.bincount(lab.ravel(), minlength=n + 1)
     N = mask.shape[0]
     parent = list(range(n + 1))
 
@@ -77,7 +83,148 @@ def _ncomp(mask):
             ru, rv = find(u), find(v)
             if ru != rv:
                 parent[ru] = rv
-    return len({find(i) for i in range(1, n + 1)})
+    agg = {}
+    for i in range(1, n + 1):
+        r = find(i)
+        agg[r] = agg.get(r, 0) + int(sz[i])
+    return sorted(agg.values(), reverse=True)
+
+
+# ★ 「显著碎裂」的体素阈值。依据（`dry_gs2` 末态实测）：α′ 场里的孤立孤儿是
+#   **1–2 体素**（63–125 nm，即 1 个或 1 对格点），而一根板条是 1600–2000 体素。
+#   两者之间空了三个数量级 ⇒ 阈值取 **32 体素**（≈3×3×3 格 ≈ 188 nm 立方），
+#   远高于离散噪声、又只有一根板条的 ~1.8%。
+#   ⚠ 不要用 0/1 体素当阈值（那正是旧 `ncomp` 的行为，会把噪声当碎裂）；
+#     也不要拿它当"物理碎片"判据 —— 它只回答"**有没有大于离散尺度的裂块**"。
+MIN_SIG_VOX = 32
+
+
+def _ncomp_big(mask, min_vox=MIN_SIG_VOX):
+    """**显著**分量数：只数体素数 ≥ `min_vox` 的连通分量。"""
+    return int(sum(1 for s in _ncomp_sizes(mask) if s >= min_vox))
+
+
+def _ncomp(mask):
+    """6-连通、**周期**边界下的连通分量数（含 1 体素孤儿，**语义不变**）。"""
+    return len(_ncomp_sizes(mask))
+
+
+def _faces_between(mi, mj):
+    """沿 3 轴 × 两符号的跨界面**格面数**（每张面只数一次）。"""
+    f = np.zeros(3, np.int64)
+    for axx in (0, 1, 2):
+        for sh in (1, -1):
+            f[axx] += int((mi & np.roll(mj, sh, axis=axx)).sum())
+    return f
+
+
+def _area_from_faces(f, n_hab, dx):
+    r"""Cauchy 无偏面积：`A = Δx² · Σ_α f_α |n_α|`。
+
+    自检：法向 n 的平面跨 `f_α = A|n_α|/Δx²` 张 α 向格面
+    ⇒ `Σ f_α|n_α| = A/Δx²` ✔（`_selftest` 的 C7/C12 就是这条）。
+    """
+    return float((f * np.abs(np.asarray(n_hab, float))).sum()) * dx ** 2
+
+
+def snapshot_coverage(z):
+    """**界面完整性**（V-7 / V-7b）—— 单一实现，`_bk_pair.py` 与 `_bk_verdict.py` 共用。
+
+    输入是 `_bk_exp.py` 的落盘快照（`np.load` 出来的对象），
+    返回 dict：
+
+    | 键 | 含义 |
+    |---|---|
+    | `cov` | `Σ F3 面积 / [Σ单根宽面面积 · (M−1)/M]` |
+    | `f3_area` / `exp_int` | 分子 / 分母（µm²） |
+    | `beta_cells` | `{(i,j): 夹层 β 体素数}` |
+    | `beta_frac` | `{(i,j): β当量/(F3+β)}` |
+    | `worst` | β 占比最大的那一对 |
+
+    ## 为什么必须有这条判据
+
+    `nf3_col == M−1` **不能证明相邻**（中间夹一层 β 时照样给 M−1），
+    `f3_faces > 0` 也只要求"有一点点接触"。`dry_gs2` 就是靠这两条 PASS 的，
+    实际每张 +n* 侧界面只有 1/3 贴合（其余是 1 胞厚 β 膜）。
+
+    ## 阈值（**由对照校准，不是拍脑袋**）
+
+    同一盒子/同一 Δx/同一 n* 的**预装**臂 `dry_pa`（`T=250 nm = 4Δx` 格点严格对齐）
+    实测 `cov` = 0.955(t=0) / 0.884(50 步) / 0.851(100 步)，
+    每对的 β 占比 0.14–0.16 ⇒ 本倾角+分辨率下的天花板是 0.85–0.96，
+    β 底噪是 ~0.15。故取 `cov ≥ 0.85` 且 `β占比 ≤ 0.25`。
+    ⚠ **不要**为了让预装臂过线把阈值抬到 0.90 —— 那是拿数据拟合判据。
+
+    ## 记账（必须随结论一起报）
+
+    - `Σ单根宽面 = Σ_k V_k / t_k`，`t_k` 用 `_linear_extent` 沿 n* 的**子盒精确**厚度；
+      它把板条当**矩形平板**，所以对阶梯边缘带会**高估**应占面积
+      ⇒ `cov` 是被系统性低估的（这也是对照只有 0.955 而不是 1.0 的原因之一）。
+    - β 当量面积用 `体素数 × Δx²`，对 1 胞厚膜是**一阶**估计；膜厚 >1 胞时会高估。
+    """
+    reg = z['region']
+    dx = float(z['L']) / reg.shape[0]
+    n_hab = np.asarray(z['n_hab'], float)
+    vmap = {int(k): int(v) for k, v in zip(z['vmap_keys'], z['vmap_vals'])}
+    laths = sorted(vmap)
+    masks = {k: (reg == k) for k in laths}
+    parent = (reg == 0)
+
+    tot_broad = 0.0
+    n_occ = 0
+    for k in laths:
+        nvox = int(masks[k].sum())
+        if nvox == 0:
+            continue
+        t = _linear_extent(masks[k], n_hab, dx)[0]
+        if t <= 0:
+            continue
+        tot_broad += (nvox * dx ** 3) / t
+        n_occ += 1
+    exp_int = tot_broad * (n_occ - 1) / n_occ if n_occ else 0.0
+
+    tot_f3 = 0.0
+    f3_of = {}
+    for ii, i in enumerate(laths):
+        for j in laths[ii + 1:]:
+            if vmap[i] != vmap[j]:
+                continue
+            if not masks[i].any() or not masks[j].any():
+                continue
+            A = _area_from_faces(_faces_between(masks[i], masks[j]), n_hab, dx)
+            tot_f3 += A
+            f3_of[(i, j)] = A
+
+    # β 夹层：**6 邻域里同时挨着 i 和 j** 的场 0 体素。
+    # ⚠ 第一版写成 `parent & roll(gi,sh) & roll(gj,sh)` —— 同一个 sh 要求两侧
+    #   **同向**，漏掉真正的夹心构型（i 在 c+ê、j 在 c−ê）⇒ 15 对全部假阴性。
+    nbi = {}
+    for k in laths:
+        if not masks[k].any():
+            continue
+        t = np.zeros(reg.shape, bool)
+        for axx in (0, 1, 2):
+            for sh in (1, -1):
+                t |= np.roll(masks[k], sh, axis=axx)
+        nbi[k] = t
+    beta_cells, beta_frac = {}, {}
+    for ii, i in enumerate(laths):
+        for j in laths[ii + 1:]:
+            if vmap[i] != vmap[j] or i not in nbi or j not in nbi:
+                continue
+            n = int((parent & nbi[i] & nbi[j]).sum())
+            if n <= 0:
+                continue
+            key = (i, j)
+            beta_cells[key] = n
+            a_f3 = f3_of.get(key, 0.0)
+            a_b = n * dx ** 2
+            beta_frac[key] = a_b / (a_f3 + a_b) if (a_f3 + a_b) > 0 else 0.0
+    return dict(cov=(tot_f3 / exp_int if exp_int > 0 else float('nan')),
+                f3_area=tot_f3, exp_int=exp_int, tot_broad=tot_broad,
+                n_occ=n_occ, beta_cells=beta_cells, beta_frac=beta_frac,
+                worst=(max(beta_frac, key=lambda k: beta_frac[k])
+                       if beta_frac else None))
 
 
 def _bbox_of(mask, pad=0):
@@ -220,6 +367,11 @@ def measure_state(region, dx, n_hab, w_ax, a_ax, vmap, r_col=300e-9):
         m = (region == k)
         out['vol_%d' % k] = float(m.sum()) * dx ** 3
         out['ncomp_%d' % k] = _ncomp(m)
+        # ★ 显著分量数（≥32 体素）：判"**有没有大于离散尺度的裂块**"。
+        #   保留原始 `ncomp_k` 不动 —— 两者一起报，任何人都能自己重判，
+        #   而不是被一个阈值悄悄改掉结论（`dry_gs2` 的 ncomp_max=4 就是这么来的：
+        #   1 根 2022 体素的完整板条 + 3 个 1–2 体素孤儿）。
+        out['ncompbig_%d' % k] = _ncomp_big(m)
         if k in allowed:
             for nm in ('n', 'w', 'a'):
                 e, eb = _linear_extent(m, axes[nm], dx)
@@ -422,6 +574,37 @@ def _selftest():
     ck('C14c 删掉第 4 层：vol_4 == 0 且 nreg_used == 5',
        r9['vol_4'] == 0.0 and r9['nreg_used'] == 5,
        'vol_4=%.1f nreg_used=%d' % (r9['vol_4'], r9['nreg_used']))
+
+    # ---- C15 ★ 「显著碎裂」判据的**正对照** -------------------------------
+    # 复刻 `dry_gs2` 末态的**真实现象**：一根完整板条 + 3 个 1–2 体素孤儿。
+    # 必须同时满足：原始 `ncomp` 数得出 4（与实跑读数一致），
+    # 而 `ncompbig`（≥32 体素）只数出 1。
+    # ★ 这正是项目教训 #19：新探针**先拿一个已知答案跑通**再用于未知答案。
+    #   没有这条对照，"ncompbig=1"可能只是因为函数恒返回 1（静默失效）。
+    g15 = reg6.copy()
+    st = [(3, 3, 3), (10, 20, 30), (60, 60, 60)]        # 三个孤立体素（彼此远离）
+    for (i, j, k_) in st:
+        g15[i, j, k_] = 1 if g15[i, j, k_] == 0 else g15[i, j, k_]
+    m1 = (g15 == 1)
+    n_raw = _ncomp(m1)
+    n_big = _ncomp_big(m1)
+    # 反查：单个孤立体素本身必须是"非显著"的（阈值确实在起作用）
+    iso = np.zeros_like(g15, bool)
+    for (i, j, k_) in st:
+        iso[i, j, k_] = True
+    ck('C15 显著碎裂判据：1 根板条 + 3 个 1 体素孤儿 ⇒ ncomp=4 但 ncompbig=1',
+       n_raw == 4 and n_big == 1,
+       'ncomp=%d（应为 4）  ncompbig=%d（应为 1）' % (n_raw, n_big))
+    ck('C15b 判据在噪声上真的为 0（孤立 3 体素 ⇒ ncompbig=0）',
+       _ncomp_big(iso) == 0, '%d' % _ncomp_big(iso))
+    # 反向：把一根板条**真**切成两半（各 ≥32 体素）⇒ 必须数出 2
+    cut = (g15 == 1).copy()
+    cidx = np.argwhere(cut)
+    if cidx.size:
+        ax = int(np.argmax(cut.shape))
+        cut[cidx[len(cidx) // 2, 0], :, :] = False
+    ck('C15c 反向对照：真把一层切断 ⇒ ncompbig ≥ 2',
+       _ncomp_big(cut) >= 2, '%d' % _ncomp_big(cut))
 
     print('-' * 100)
     print('FAIL = %d %s' % (len(F), F if F else ''))

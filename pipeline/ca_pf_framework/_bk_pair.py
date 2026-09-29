@@ -259,38 +259,24 @@ def main():
                     print('    %d | %d: 无 β 夹层' % (i, j))
 
         # ---------- V-7 / V-7b：界面完整性（**预登记**，阈值由对照校准）------
-        # ★ 为什么必须有这一条：`nf3_col == M-1` **不能证明相邻**
-        #   （中间夹一层 β 时照样给 M-1），`f3_faces > 0` 也只要求"有一点接触"。
-        #   `dry_gs2` 就是靠这两条 PASS 的，但实测每张 +侧界面只有 1/3 贴合。
-        # ★ 阈值怎么来的（**不是拍脑袋，是拿对照校准的**）：
-        #   同一盒子 / 同一 Δx / 同一 n* 的**预装**臂 `dry_pa`（格点严格对齐，
-        #   250 nm = 4Δx）实测：t=0 覆盖率 0.955、50 步 0.884。
-        #   ⇒ 这个倾斜角 + 分辨率下的**离散天花板是 0.88~0.96**
-        #     （阶梯的"边缘带"注定吃掉几个百分点）。
-        #   ⇒ 阈值取 **0.85**（比对照最差值再低 3%），同时把 0.616 判死。
-        #     ⚠ 不要为了"让预装臂 PASS"把阈值抬到 0.90 —— 那是拿数据拟合判据。
-        # ★ V-7b（更锐利）：**多余的 β 夹层**。对照臂每一对都有 ~60 体素的 β
-        #   底噪（阶梯必然留下几个孤立 β 格，与配对方式无关）⇒ 用"β 当量面积 /
-        #   该对界面足迹"做**相对**判据：对照实测 0.155；`dry_gs2` 的 +侧对
-        #   是 0.67，而 −侧对 0.17（与对照同级）⇒ 阈值 0.25 把两者干净分开。
-        if exp_int > 0:
-            cov = tot_f3 / exp_int
+        # ★ 计算全部走 `_bk_measure.snapshot_coverage`（**单一实现**），这里只打印。
+        #   今天已经在"两份实现悄悄分叉"上栽过两次（β 夹层判据假阴性、
+        #   `pair_ab` 键序不一致），不再复制第二份判据实现。
+        cv = BM.snapshot_coverage(z)
+        if cv['exp_int'] > 0:
             print('     V-7  界面完整性（F3 覆盖率 ≥ 0.85）  %s  覆盖率=%.3f '
                   '（应占 %.4f，实测 %.4f µm²）'
-                  % ('PASS' if cov >= 0.85 else '**FAIL**', cov,
-                     exp_int * 1e12, tot_f3 * 1e12))
-            if pair_ab:
-                frac = {ij: (b / (a + b) if (a + b) > 0 else 0.0)
-                        for ij, a, b in pair_ab}
-                worst = max(frac, key=lambda k: frac[k])
-                wf = frac[worst]
+                  % ('PASS' if cv['cov'] >= 0.85 else '**FAIL**', cv['cov'],
+                     cv['exp_int'] * 1e12, cv['f3_area'] * 1e12))
+            if cv['beta_frac']:
+                w = cv['worst']
                 print('     V-7b 无多余 β 夹层（每对 β 占该对界面 ≤ 0.25）  %s  '
                       '最差对 %d|%d 的 β 占比=%.3f   各对: %s'
-                      % ('PASS' if wf <= 0.25 else '**FAIL**', worst[0],
-                         worst[1], wf,
-                         '  '.join('%d|%d:%.2f' % (ij[0], ij[1], frac[ij])
-                                   for ij, _a, _b in
-                                   sorted(pair_ab, key=lambda t: -frac[t[0]]))))
+                      % ('PASS' if cv['beta_frac'][w] <= 0.25 else '**FAIL**',
+                         w[0], w[1], cv['beta_frac'][w],
+                         '  '.join('%d|%d:%.2f' % (ij[0], ij[1], f)
+                                   for ij, f in sorted(cv['beta_frac'].items(),
+                                                       key=lambda t: -t[1]))))
             else:
                 print('     V-7b 无多余 β 夹层  —  本快照没有任何 β 夹层')
     return 0

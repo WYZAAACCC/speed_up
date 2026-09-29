@@ -46,7 +46,7 @@ import _bk_measure as BM                                        # noqa: E402
 from T16_verify_rve import C, EPS0, NPF, DF, MOB                # noqa: E402
 
 COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
-        'nslab_n', 'nf3_col', 'runs', 'ncomp_min', 'ncomp_max',
+        'nslab_n', 'nf3_col', 'runs', 'ncomp_min', 'ncomp_max', 'ncompbig_max',
         'nf3', 'f3_area_m2', 'f3_area_stair', 'f3_pos_m', 'f3_pos_dx',
         'f3_std_m', 'n_lath', 'w_lath', 'a_lath', 'box_touch', 'finite',
         'psi_mean']
@@ -377,12 +377,17 @@ def run(a):
         if P0 is None and np.isfinite(pm):
             P0 = pm
         nc = [mm['ncomp_%d' % k] for k in range(1, nv + 1)]
+        ncb = [mm['ncompbig_%d' % k] for k in range(1, nv + 1)]
         row = dict(
             step=it, t_s=round(t_sim, 12), wall_s=round(time.time() - wall0, 2),
             dt=dt, V0=mm['vol_0'], Vt=sum(mm['vol_%d' % k] for k in range(1, nv + 1)),
             M=M, nreg_used=mm['nreg_used'], nslab_n=mm['nslab_n'],
             nf3_col=mm['nf3_col'], runs=mm['runs'].replace(',', '/'),
             ncomp_min=int(np.min(nc)), ncomp_max=int(np.max(nc)),
+            # ★ 显著分量数（≥32 体素）：`ncomp_max` 会把 1–2 体素的离散孤儿算成
+            #   "碎裂"（`dry_gs2` 实测 ncomp_max=4，实际是 1 根完整板条 + 3 个孤儿）。
+            #   两个口径**都存**，判决用新的、原始值留档，任何人都能自己重判。
+            ncompbig_max=int(np.max(ncb)),
             nf3=mm['f3_faces'], f3_area_m2=mm['f3_area'],
             f3_area_stair=mm['f3_area_stair'], f3_pos_m=pm,
             f3_pos_dx=((pm - P0) / dx if (np.isfinite(pm) and P0 is not None)
@@ -397,6 +402,12 @@ def run(a):
                 lt.gtab[np.clip(karr_m, 0, g.nreg - 1),
                         np.clip(larr_m, 0, g.nreg - 1)])].mean())
                 if (g.psi is not None) else float('nan')))
+        # ★ 防御：`cw.writerow([row[c] for c in COLS])` 里少一个键就是 KeyError，
+        #   而它出现在**第 0 步写第一行**时 —— 那时构造已经花掉 60 s，
+        #   且发生在长跑开头而不是起跑前。这里提前硬失败，把话说明白。
+        _miss = [c for c in COLS if c not in row]
+        if _miss:
+            raise KeyError('series.csv 的 COLS 与 row 不一致，row 里缺: %s' % _miss)
         cw.writerow([row[c] for c in COLS]); csvf.flush()
         if (it % a.snap_every == 0) or (it == a.steps):
             # ★★ 落盘策略（用户要求"全过程数据留 F 盘，量具有 bug 也能事后重测"）：
@@ -415,25 +426,28 @@ def run(a):
                 d['phi'] = g.phi.astype(np.float32)
             np.savez_compressed(os.path.join(outdir, 'snap_%05d.npz' % it), **d)
         P('  [%4d] Vt=%.4f µm³ | **nslab=%d** nf3col=%d runs=%-13s | F3面=%-6d '
-          '面积=%.4f µm² | Δpos=%+7.3f dx std=%5.1f nm | nc=%d..%d | '
+          '面积=%.4f µm² | Δpos=%+7.3f dx std=%5.1f nm | nc=%d..%d(显著%d) | '
           'n/w/a=%.0f/%.0f/%.0f nm | 壁=%d | %.2fs/步'
           % (it, row['Vt'] * 1e18, mm['nslab_n'], mm['nf3_col'], row['runs'],
              mm['f3_faces'], mm['f3_area'] * 1e12,
              (row['f3_pos_dx'] if np.isfinite(row['f3_pos_dx']) else float('nan')),
              (mm['f3_std_n'] * 1e9 if np.isfinite(mm['f3_std_n']) else float('nan')),
-             row['ncomp_min'], row['ncomp_max'], row['n_lath'] * 1e9,
-             row['w_lath'] * 1e9, row['a_lath'] * 1e9, row['box_touch'],
+             row['ncomp_min'], row['ncomp_max'], row['ncompbig_max'],
+             row['n_lath'] * 1e9, row['w_lath'] * 1e9, row['a_lath'] * 1e9,
+             row['box_touch'],
              (np.mean(tstep[-a.every:]) if tstep else 0.0)))
     csvf.close()
 
     s = read_series(os.path.join(outdir, 'series.csv'))
     P('-' * 104)
     P('判决 臂=%-5s  M=%d  nslab_n %d→%d（应 == M=%d）  nf3_col %d→%d  '
-      'F3 面积 %.4f→%.4f µm²  Δpos %s dx  nc_max %d→%d'
+      'F3 面积 %.4f→%.4f µm²  Δpos %s dx  nc_max %d→%d（显著 %s）'
       % (a.arm, M, s['nslab_n'][0], s['nslab_n'][-1], M, s['nf3_col'][0],
          s['nf3_col'][-1], s['f3_area_m2'][0] * 1e12, s['f3_area_m2'][-1] * 1e12,
          ('%+.3f' % s['f3_pos_dx'][-1]) if np.isfinite(s['f3_pos_dx'][-1]) else 'NaN',
-         s['ncomp_max'][0], s['ncomp_max'][-1]))
+         s['ncomp_max'][0], s['ncomp_max'][-1],
+         ('%d→%d' % (s['ncompbig_max'][0], s['ncompbig_max'][-1]))
+         if 'ncompbig_max' in s else '本臂无此列（旧版跑的数据）'))
     if a.arm == 'gneg':
         P('  负对照判据：**nf3 必须恒为 0** ⇒ 实测 %d→%d  %s'
           % (s['nf3'][0], s['nf3'][-1],
