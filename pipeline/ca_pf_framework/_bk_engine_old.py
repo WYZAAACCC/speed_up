@@ -955,14 +955,6 @@ class LevelSetMulti(object):
         #   （`facet_nref`：变体-母相 ⇒ `npref[k]`；变体-变体 ⇒ `ncmp[k,l]`）。
         #   `False` ⇒ 退回 T9 之前"只用 winner 的 `npref[k]`"的行为（供对照）。
         self.facet_id_gamma = True
-        # ★★★ R-block（2026-09-29，`BLOCK_DERIVATION.md`）：**板条身份层**
-        #   （`windowB_lath.py` 的 `LathTable`）。
-        #   `None`（**默认**）⇒ 整条新路径关闭 ⇒ F1/F2/F3 全走标量 `gamma0`
-        #     ⇒ 与改动前**逐位相同**（由 `_bk_engine_identity.py` 的逐位判据把关）。
-        #   挂上 `LathTable` 后：**F3（同变体低角晶界）** 的界面刚度按
-        #     Read–Shockley @@\gamma_{\rm RS}(\theta_{kl})@@ 逐胞替换；
-        #     **F1/F2 仍然用标量** ⇒ 单变量改动。
-        self.lath = None
         # ★★ T10：保存建对象时的 C / eps0 引用，供 `gel_facet` 在**自己的小盒**里
         #   量相干界面弹性能（不复用本对象的大盒 —— 那会白烧机时）。
         self._C_ref = C
@@ -1158,30 +1150,12 @@ class LevelSetMulti(object):
         tab = np.full((nv + 1, nv + 1, 3), np.nan)
         E = [np.asarray(e, float) for e in eps0]
         cons = np.full((nv + 1, nv + 1), np.nan)
-        n_zero = 0
         for k in range(1, nv + 1):
             for l in range(k + 1, nv + 1):
                 de = E[k - 1] - E[l - 1]
-                # ★★★ R-block（2026-09-29）：**零应变差 ⇒ 该表项保持 NaN**。
-                #   为什么必须守卫：板条身份层（`windowB_lath.py`）让**同变体**的
-                #   两根板条各占一个场 ⇒ `eps0[k] == eps0[l]`（逐位相同）⇒ `de = 0`
-                #   ⇒ `argmin_normal(C, 0)` 的泛函**恒等于 0**，任意法向都是最小值
-                #   ⇒ 返回值**没有物理意义**。
-                #   实测（`_bk_smoke_f3.py` 探针 B4）：**不崩**，返回
-                #     `n=[0.010, 0, 0.99995]`、`E=0`、`cons=0` —— 一个随机方向。
-                #   保持 NaN ⇒ `facet_nref` 回退到 `npref[k]` = **惯习面法向**；
-                #   而"同变体板条面对面堆叠"的界面**正好就是惯习面**
-                #   ⇒ **回退分支就是正确的那一支**（`BLOCK_DERIVATION.md` §2.3）。
-                if not np.any(np.abs(de) > 1e-30):
-                    n_zero += 1
-                    continue
                 n_p, v_p, c_p = _argmin_normal(C, de)
                 tab[k, l] = tab[l, k] = n_p
                 cons[k, l] = cons[l, k] = c_p
-        if n_zero:
-            print('[WindowB] ncmp：%d 对**零应变差**（同变体板条在场层面的复制）'
-                  '⇒ 保持 NaN，`facet_nref` 回退 `npref`（惯习面）' % n_zero,
-                  flush=True)
         return tab
 
     def region(self):
@@ -2127,26 +2101,6 @@ class LevelSetMulti(object):
                 out = np.where(good[..., None], cand, out)
         return out
 
-    def facet_gamma_sub(self, k, lsub, gamma0):
-        """★★★ R-block（2026-09-29）：按**面片身份** @@(k,l)@@ 逐胞给基础面能
-        @@\\gamma_\\Sigma@@（`BLOCK_DERIVATION.md` §2.3/§3.1）。
-
-        * `self.lath is None`（**默认**）⇒ 直接返回**标量** `gamma0`
-          ⇒ 与改动前**逐位相同**。
-        * 挂了 `windowB_lath.LathTable` ⇒ **F3（同变体低角晶界）** 的胞返回
-          @@\\gamma_{\\rm RS}(\\theta_{kl})@@，其余胞仍填 `gamma0`。
-
-        ★ 为什么可以**把数组当 `gamma0` 传**：`_stiff_of` 的三条分支
-          （`herring_stiffness_cusp` / `herring_stiffness` / 无分支）
-          **对 `gamma0` 全部严格线性**（`:293-328`；`_bk_verify.py` S-4 逐位核过）
-          ⇒ 传数组不改变任何几何/迎风/Herring 代码。
-        ★ 纯函数（只读 `self.lath.gtab`）⇒ 在 `ParCtx.for_each` 的线程里安全。
-        """
-        lt = getattr(self, 'lath', None)
-        if lt is None:
-            return gamma0
-        return lt.facet_gamma_sub(k, lsub, gamma0)
-
     def gel_facet(self, k, l, N=32, dx=2.5e-8):
         """★★ T10：面片身份 `(k,l)` 的**相干界面弹性能** `γ_el` [J/m²]（带缓存）。
 
@@ -2568,10 +2522,8 @@ class LevelSetMulti(object):
             # ★★ T9：刚度按**面片身份** (k, larr) 逐胞查表（`facet_id_gamma=False` 时退回旧行为）
             _nref_sub = (self.facet_nref(k, larr[bb], npref)
                          if getattr(self, 'facet_id_gamma', True) else None)
-            stksub = self._stiff_of(k, gsub, gnsub, npref, aniso,
-                                    self.facet_gamma_sub(k, larr[bb], gamma0),
-                                    herring, facet_lam, facet_eps,
-                                    nref_cell=_nref_sub)
+            stksub = self._stiff_of(k, gsub, gnsub, npref, aniso, gamma0, herring,
+                                    facet_lam, facet_eps, nref_cell=_nref_sub)
             # ★★ T10：把**相干界面弹性能** `γ_el` 按面片身份加到界面上
             #   （`stk` 是"γ + γ_tt"，量纲 J/m² ⇒ 与 `γ_el` 可直接相加）。
             #   `lambda_el=0`（默认）⇒ **整段跳过** ⇒ 与 T10 之前逐位相同。

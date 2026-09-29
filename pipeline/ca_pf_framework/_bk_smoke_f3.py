@@ -51,6 +51,8 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'V1', 'V2', 'Vt',
         'nf3', 'f3_area_m2', 'f3_area_stair', 'f3_pos_m', 'f3_pos_dx',
         'f3_std_m', 'nslab_n', 'nf3_col', 'runs', 'ncomp_1', 'ncomp_2',
         'n_1', 'w_1', 'a_1', 'n_2', 'w_2', 'a_2', 'box_touch', 'finite']
+assert len(COLS) == 27
+assert len(set(COLS)) == 27
 
 
 def argmin_normal_zero_strain_probe(do=True):
@@ -179,7 +181,7 @@ def run_arm(name, a, gamma, nv, dup, plate, outroot):
                 f3_pos_dx=((pm - P0) / dx if (np.isfinite(pm) and P0 is not None)
                            else float('nan')),
                 f3_std_m=mm['f3_std_n'], nslab_n=mm['nslab_n'],
-                nf3_col=mm['nf3_col'], runs=mm['runs'],
+                nf3_col=mm['nf3_col'], runs=mm['runs'].replace(',', '/'),
                 ncomp_1=mm['ncomp_1'], ncomp_2=mm.get('ncomp_2', -1),
                 n_1=mm['n_1'], w_1=mm['w_1'], a_1=mm['a_1'],
                 n_2=mm.get('n_2', float('nan')), w_2=mm.get('w_2', float('nan')),
