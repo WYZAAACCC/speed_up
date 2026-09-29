@@ -1,0 +1,35 @@
+Round 11：引擎侧形核通道接线（nfsv/attach）+ 7 条判据 0 FAIL + gs6 负结果
+
+## 引擎改动（windowB_surface.py，全部默认关闭）
+nuc_cfg() 新增 vgroup/nfsv/attach/attach_overlap；nucleate() 的 stack 通道多两条守卫分支。
+- nfsv：同变体形核播进一个新的空场 —— 这是「块」能被表示的前提（A-5：
+  原实现 seed_plate(k,...) 用同一个场 ⇒ 同变体 sympathetic 只会加厚第一片）。
+- attach：新核与源板条共用一张界面（C-1 干晶界 regime）。守卫按 regime 放宽为
+  「母相 0 或源板条 k」，绝不允许别的场（否则 seed_plate 会抹掉别的板条，A2 同型）。
+
+## 一个必须先说清的文献对撞
+stack 通道「中间留一层残余母相」是有文献锚的：Chen 1979（LBL）：新核
+spatially separate from the pre-existing plate、留一层残余奥氏体。⚠ 那是 Fe-Ni。
+本体系 Ti-64 的 C-1（Cahn 润湿）给 gamma_RS <= 0.277 < 2*gamma_ab ~ 0.30 ⇒ 不润湿 ⇒ 干晶界。
+⇒ 两条结论都对，但对不同体系。故引擎改动不是「修 bug」，是「按 C-1 选 regime」，须显式记账。
+且不影响 Round 9/10 的判定：那里的 1 胞 beta 膜是 gap=0 下阶梯错位产生的**斑块状**膜，
+不是引擎这条有意的、已解析的 2 胞残余层。
+
+## 验收 _bk_nuc_identity.py（改动前引擎存为 _bk_engine_prenuc.py）7 条 0 FAIL
+U-1  两开关全关 ⇒ 新旧 phi 逐位相同（sha 82971613 两侧一致，各 12 事件）
+U-2  全关时 dbg 无 attach_ok/nfsv_ok；U-2b 事件模式只有 stack/fresh
+U-3  attach=True 结果必须不同（正对照）；U-3b attach_ok=12 且模式全为 attach
+U-3c 放宽守卫没有把别的场种上（其它场=空集）
+U-4  nfsv 时空场数 1->0（nfsv_ok=1）
+
+## dry_gs6（frac=0.25）负结果：厚度与体积不能同时匹配
+     frac  中位厚度  a_lath   Vt        vs 预摆
+pa    —      262     2724   2.6606     —
+gs4   0      257     2641   2.1062   -20.8%
+gs6   0.25   271     2648   2.2405   -15.8%
+gs5   1.0    312     2693   2.6897    +1.1%
+⇒ 原预测「frac~0.18 同时匹配厚度与体积」**错了**，关系不单调：补偿调小让厚度
+  靠近预摆，但体积反掉到 -15.8%。推测（未证）：补偿不足 ⇒ 片子起点偏薄，而内层片
+  无体驱动力（5.1 节），F3 面积最小化继续削它 ⇒ 亏损放大。
+⇒ 该匹配的量是总体积/界面面积/beta 占比/拓扑，不是逐片厚度。frac=1.0（gs5）为当前
+  推荐配置；逐片厚度 +5..+26% 作为已知残余偏差记账。
