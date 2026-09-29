@@ -37,6 +37,8 @@ LOG=_w2_bk_closed_verdict.log
   done
   echo
   echo "################ C. CFL 实际用量（R29 新列）"
+  echo "  ⚠ 读法：被测臂应在 0.15–0.25 之间（实测 ~0.20 ✓）；"
+  echo "     **正对照 gpos（γ_F3=100）会超 CFL 10 倍以上 ⇒ 它不是有效的 V-6 对照**"
   "$PY" -u _bk_cfl.py _exp/_bk_closed/gpos_$CTRL _exp/_bk_closed/dry_$TAG \
       _exp/_bk_closed/dry_cl1 2>&1
   echo
