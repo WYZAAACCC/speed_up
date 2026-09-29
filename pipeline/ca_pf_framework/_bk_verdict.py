@@ -358,8 +358,14 @@ def main():
                        nrun == M if M else None,
                        'runs=%s ⇒ %d 个不同场（应为 %d）；在位的场=%s'
                        % (last.get('runs'), nrun, M, present)))
+            # ★★★ R29：厚度判据的窗口**必须随 `plate.T` 缩放**。
+            #   原先硬编码 [0.8×250, 1.3×250]——那是**归档配置（t=250 nm）**的窗口，
+            #   而闭环配置的 `t = 510 nm`（Shuai 2026 文献板条厚）⇒ 硬编码窗口会
+            #   把正确的算例判成 FAIL。判据的**内容**（"末态厚度保真到 ±30%"）
+            #   没有变，变的只是它作用的那个长度尺度。
+            _t0 = float((r['meta'].get('plate') or {}).get('T', 250.0))
             _band = [k for k in present if th and k <= len(th)
-                     and 0.8 * 250.0 <= th[k - 1] <= 1.3 * 250.0]
+                     and 0.8 * _t0 <= th[k - 1] <= 1.3 * _t0]
             # ★★ R24：**V-8b 必须用"剔孤儿"的厚度**。
             #   `ths` 列读的是 `_bk_measure` 的原始 `n_%d`（**包围尺寸**），而它会被
             #   1–2 体素的孤立碎点污染 —— 本文件已两次栽在同一类"读数口径"上
@@ -379,8 +385,9 @@ def main():
                 _rth = {k: _CMP.robust_thickness(_reg, _dx, _nh, k)
                         for k in present}
                 _inb = [k for k in present
-                        if 0.8 * 250.0 <= _rth[k] * 1e9 <= 1.3 * 250.0]
-                ck.append(('V-8b 末态厚度保真（**剔孤儿**后 ∈ [200,325] nm）',
+                        if 0.8 * _t0 <= _rth[k] * 1e9 <= 1.3 * _t0]
+                ck.append(('V-8b 末态厚度保真（**剔孤儿**后 ∈ [%.0f,%.0f] nm）'
+                           % (0.8 * _t0, 1.3 * _t0),
                            len(_inb) == len(present),
                            '剔孤儿后=%s nm（**判据用这个**）；原始 `ths`=%s nm'
                            '（含孤儿，仅供参考）'

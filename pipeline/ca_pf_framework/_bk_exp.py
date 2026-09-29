@@ -43,7 +43,11 @@ import numpy as np                                              # noqa: E402
 import windowB_surface as W                                     # noqa: E402
 import windowB_lath as WL                                       # noqa: E402
 import _bk_measure as BM                                        # noqa: E402
+import windowB_km as KM                                         # noqa: E402
+import windowB_closure as CL                                    # noqa: E402
 from T16_verify_rve import C, EPS0, NPF, DF, MOB                # noqa: E402
+from windowB_km import (ALPHA_KM_REF, M_S_TI64, T0_TI64, DS_REF,
+                        DG_CRIT_REF)                            # noqa: E402
 
 COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         'nslab_n', 'nf3_col', 'runs', 'ncomp_min', 'ncomp_max', 'ncompbig_max',
@@ -159,7 +163,8 @@ def run(a):
     w_ax = np.asarray(_R0[2], float); w_ax /= np.linalg.norm(w_ax)
     a_ax = np.asarray(_R0[1], float); a_ax /= np.linalg.norm(a_ax)
 
-    lt = build_table(laths_eff, a.omega_max_deg, a.omega_mode, a_ax=a_ax)
+    lt = build_table(laths_eff, a.omega_max_deg, a.omega_mode, a_ax=a_ax,
+                     gamma0=a.gamma0)
     P(lt.summary())
     gmax, g2ab, wets = lt.wetting_report()
     P('润湿判据（(4.6)）：γ_RS 最大 %.4f  vs  2γ_αβ = %.4f  ⇒ %s'
@@ -181,11 +186,76 @@ def run(a):
     npref = {i + 1: np.asarray(NPF[v], float) for i, v in enumerate(laths_eff)}
     nv = len(laths_eff)
 
+    # ================= ★★★ R29：athermal 形核律的**钟**（T → 驱动力 → 事件）=========
+    #   用户要求：「能否使用类似形核率等等的方式让模型在现有物理公式与框架的基础上
+    #   合理运转」。本块把 `windowB_closure` 的 C-2/C-3 闭式接进引擎：
+    #     ① 温度钟 `T(t) = T_start − q·t`（`windowB_km.linear_cool`）；
+    #     ② 驱动力 `df(T) = drive_of_T(T; T0, DS)` —— 引擎 T6 已有 `set_T` 入口；
+    #     ③ 板条数 `n(T) = α_KM·(M_s − T)` —— **`n` 从规定值变成导出量**；
+    #     ④ 步长 `dt = cfl·dx/(MOB·ΔG_v(T))` —— 随降温自动变小（速度变大）。
+    #   ⚠ 全部 gated 在 `--nuc-law athermal` 上 ⇒ 默认 `cadence` 路径**逐位不变**。
+    _athermal = (a.nuc_law == 'athermal')
+    _alpha = float(a.alpha_km)
+    # ★ 时钟起点默认 = C-2 的 **T_1**（预摆的第 1 片就是第 1 根，见
+    #   `windowB_closure.T_start_of_clock`）。从 `M_s` 起会让事件序列整体错位一根。
+    _Tstart = (float(a.T_start) if float(a.T_start) > 0
+               else CL.T_start_of_clock(_alpha))
+    _Tend = float(a.T_end)
+    _L_lath = float(a.plate_L) * 1e-9
+    _q_source = 'user'
+    if _athermal:
+        _dG_start = float(KM.drive_of_T(_Tstart, T0_TI64, DS_REF))
+        if _dG_start <= 0:
+            raise SystemExit('✗ athermal：T_start=%.2f K 必须 < T0=%.1f K'
+                             % (_Tstart, T0_TI64))
+        _v_worst = CL.v_of_MOB(MOB, _dG_start)
+        _q_cap = CL.q_max_ordered(_v_worst, _alpha, _L_lath)
+        if float(a.cool_rate) > 0.0:
+            _q = float(a.cool_rate)
+        else:
+            _q = _q_cap * float(a.cool_ratio)
+            _q_source = 'C-3 有序性上界 × %.2f' % float(a.cool_ratio)
+        _ok_o, _ratio_o, _ = CL.ordered_ok(_q, MOB, _alpha, _L_lath,
+                                           dG_worst=_dG_start)
+        _n_law = CL.n_lath_int(_Tend, _alpha)
+        _T_of_t = KM.linear_cool(_Tstart, _Tend, (_Tstart - _Tend) / _q)
+        _dG_of_T = (lambda T: KM.drive_of_T(T, T0_TI64, DS_REF))
+        _df_start = float(_dG_of_T(_Tstart))
+        P('★★★ R29 athermal 形核律：α_KM=%.4e /K  冷速 q=%.4e K/s（%s）'
+          % (_alpha, _q, _q_source))
+        P('   时钟起点 T_start = T_1 = M_s − 1/α_KM = %.2f K（**不是 M_s**：'
+          'n(M_s)=0 ⇒ t=0 预摆的那片就是第 1 根）' % _Tstart)
+        P('   T: %.1f → %.1f K，t_sim=%.4e s；df: %.4e → %.4e J/m³'
+          % (_Tstart, _Tend, _T_of_t.t_cool, _df_start, float(_dG_of_T(_Tend))))
+        P('   导出板条数 n = floor(α_KM·(M_s − T_end)) = **%d**（当前 nv=%d）'
+          % (_n_law, nv))
+        P('   形核温度 T_k = M_s − k/α_KM: %s'
+          % ' '.join('T%d=%.1f' % (k, CL.T_of_k(k, _alpha)) for k in range(1, _n_law)))
+        P('   C-3 有序性：Δt_grow/Δt_nuc = **%.3f**（判据 ≤1）%s'
+          % (_ratio_o, '' if _ok_o else '  ⚠ **违反 ⇒ 本次运行处于 burst regime，必须记账**'))
+        P('   C-3 步数下界 = %.0f（从 T_1 起）；C-5 β_h 下界 = %.3f（当前 --beta-h %.2f）'
+          % (CL.steps_min_ordered(_alpha, _L_lath, dx, 0.15, _Tend, _Tstart),
+             CL.beta_h_min(a.steps, dx, a.plate_T * 1e-9), a.beta_h))
+        if nv < _n_law:
+            P('   ⚠⚠ **表示上限不足**：nv=%d < 导出的 n=%d ⇒ 块会被截断在 nv 根'
+              % (nv, _n_law))
+        _beta_floor = CL.beta_h_min(a.steps, dx, a.plate_T * 1e-9)
+        if _beta_floor > a.beta_h:
+            P('   ⚠⚠ **C-5 不满足**：%d 步 / Δx=%.1f nm / t=%.0f nm 需要 β_h ≥ %.3f，'
+              '而当前 %.2f ⇒ 板条会增厚 ≈ e^{%.2f}× ⇒ 厚度判据 V-8b 不适用'
+              % (a.steps, dx * 1e9, a.plate_T, _beta_floor, a.beta_h,
+                 _beta_floor - a.beta_h))
+    else:
+        _q = float('nan'); _n_law = -1; _T_of_t = None; _dG_of_T = None
+        _df_start = float(DF)
+
     t0 = time.time()
-    g = W.LevelSetMulti(N, L, C=C, eps0=eps0, gamma=0.15, Mob=MOB,
-                        df=[0.0] + [DF] * nv, workers=a.nthreads,
+    g = W.LevelSetMulti(N, L, C=C, eps0=eps0, gamma=a.gamma0, Mob=MOB,
+                        df=[0.0] + [_df_start] * nv, workers=a.nthreads,
                         reinit_every=0, reinit_dt=a.reinit_dt,
-                        reinit_band_cells=a.reinit_band)
+                        reinit_band_cells=a.reinit_band,
+                        dG_of_T=_dG_of_T, T_of_t=_T_of_t,
+                        T=(_Tstart if _athermal else None))
     g.lath = lt
     # ★★★ R12：`--arm eng` —— **引擎侧自发形核**的接线。
     #   `vgroup` 告诉引擎哪些场同变体（本臂 6 个场全是变体 1）；
@@ -336,7 +406,7 @@ def run(a):
         _t_nuc = a.eng_t_nm * 1e-9
         if use_engine and a.eng_t_nm <= 250.0 and a.nuc_overlap_nm > 0:
             _t_nuc = (250.0 + a.nuc_overlap_nm) * 1e-9
-        g.nuc_cfg(a.eng_r_nm * 1e-9, _t_nuc, gamma=0.15, n_init=0,
+        g.nuc_cfg(a.eng_r_nm * 1e-9, _t_nuc, gamma=a.gamma0, n_init=0,
                   p_auto=0.0, harden_f=1.0, sym_gap_cells=0, max_per_step=1,
                   seed=a.eng_seed, var_rule='ed',
                   vgroup=vmap, nfsv=True, attach=True,
@@ -356,8 +426,13 @@ def run(a):
           % (a.eng_r_nm, _t_nuc * 1e9, a.nuc_overlap_nm,
              ('每步' if a.eng_cadence == 0 else '每 %d 步' % a.eng_cadence),
              a.eng_seed))
-        P('   ⚠ 记账：**速率仍由驱动层的节奏规定** —— 引擎的 sympathetic 通道'
-          '目前**没有速率律**（`use_fcrit` 只覆盖 `fresh`）。')
+        P('   %s'
+          % ('✅ **速率由 athermal 律给出**（`--nuc-law athermal`）：'
+             '`n(T) = α_KM(M_s − T)` ⇒ 事件温度 `T_k` 由 `α_KM` 与冷却给出，'
+             '**不再是驱动层的节奏**。'
+             if _athermal else
+             '⚠ 记账：**速率仍由驱动层的节奏规定** —— 引擎的 sympathetic 通道'
+             '在没有 `--nuc-law athermal` 时**没有速率律**（`use_fcrit` 只覆盖 `fresh`）。'))
         P('   核形状：%s'
           % ('**长条** elong=%.2f 沿 a 轴（与驱动层一致）' % a.eng_elong
              if a.eng_elong > 1.0 else
@@ -373,8 +448,16 @@ def run(a):
               mob_beta_w=a.beta_w, adv_grad=a.adv, norm_smooth=a.norm_smooth,
               facet_lam=a.facet_lam, facet_eps=a.facet_eps)
     dt = 0.15 * dx / (MOB * DF)
-    P('dt=%.4e s（标称 %.2f nm/步）；%d 步 ⇒ t_sim=%.3e s；norm_smooth=%d'
-      % (dt, 0.15 * dx * 1e9, a.steps, a.steps * dt, a.norm_smooth))
+    if _athermal:
+        # ★ athermal 路径**逐步**按当前 ΔG_v 定 dt（见主循环）⇒ 这里打的是**首步**值。
+        #   原先无条件打 `dt = 0.15·dx/(MOB·DF)`（DF=3.5e8 的常数），
+        #   对 athermal 是**误导**（真实首步 dt = 0.15·dx/(MOB·ΔG_v(T_1))）。
+        dt = 0.15 * dx / (MOB * max(_df_start, 1e-300))
+        P('dt **首步** = %.4e s（%d 步 ⇒ 名义 t_sim=%.3e s，实际随 ΔG_v(T) 逐步缩小）；'
+          'norm_smooth=%d' % (dt, a.steps, a.steps * dt, a.norm_smooth))
+    else:
+        P('dt=%.4e s（标称 %.2f nm/步）；%d 步 ⇒ t_sim=%.3e s；norm_smooth=%d'
+          % (dt, 0.15 * dx * 1e9, a.steps, a.steps * dt, a.norm_smooth))
     P('-' * 104)
 
     if a.dry_run:
@@ -415,7 +498,9 @@ def run(a):
                        nuc_compensate=bool(a.nuc_compensate),
                        snap_every=a.snap_every, every=a.every,
                        out_root=a.out, exp_args=vars(a),
-                       gamma0=0.15, DF=DF, Mob=MOB, dt=dt, t_sim=a.steps * dt,
+                       gamma0=a.gamma0, DF=DF, Mob=MOB, dt=dt, t_sim=a.steps * dt,
+                       df_const=(None if _athermal else float(DF)),
+                       df_start=(float(_df_start) if _athermal else None),
                        n_hab=n_hab.tolist(), w_ax=w_ax.tolist(), a_ax=a_ax.tolist(),
                        sha_windowB_surface=sha256(os.path.join(_HERE, 'windowB_surface.py')),
                        sha_windowB_lath=sha256(os.path.join(_HERE, 'windowB_lath.py')),
@@ -428,9 +513,24 @@ def run(a):
 
     P0, t_sim, wall0, tstep = None, 0.0, time.time(), []
     nfail = 0
+    # ★★★ R29：athermal 钟的逐步状态（`--nuc-law cadence` 下**全部不参与**）
+    n_ath_ev = 0                 # 由 athermal 律触发的形核次数
+    n_ath_tgt = 0                # 当前的累计目标根数（不含预摆的第 1 片）
+    T_hist = []                  # 每次事件时的 (step, t, T, df)
+    if _athermal:
+        # 预摆的第 1 片视为"在 M_s 处形核" ⇒ 累计计数从 1 起算
+        n_ath_tgt = 1
     for it in range(0, a.steps + 1):
         if it > 0:
             tw = time.time()
+            if _athermal:
+                # ★ 钟：先走时间、再把 T 换成驱动力，然后才推进几何。
+                #   （语义与 `LevelSetMulti.advance_T` 一致；这里显式写开是为了
+                #     让 `dt` 能按**当前** ΔG_v 自适应 —— 降温 ⇒ ΔG_v 涨 ⇒ dt 变小。）
+                g.t += dt
+                g.set_T(g.T_of_t(g.t))
+                _df_now = float(g.df[1])
+                dt = 0.15 * dx / (MOB * max(_df_now, 1e-300))
             g.advance(dt, **kw)
             tstep.append(time.time() - tw)
             t_sim += dt
@@ -452,7 +552,7 @@ def run(a):
         #   驱动层只保留**节奏**（`--eng-cadence`；0 = 每步都问一次）。
         #   ⇒ 记账：**速率仍然是被规定的** —— 引擎的 sympathetic 通道目前
         #     **没有速率律**（`use_fcrit` 只覆盖 `fresh` 通道）。这一点不得含糊。
-        if use_engine and it > 0 and a.eng_cadence >= 0:
+        if use_engine and it > 0 and a.eng_cadence >= 0 and not _athermal:
             if a.eng_cadence == 0 or (it % a.eng_cadence == 0):
                 _reg_e = g.region()
                 _fnow = 1.0 - float((_reg_e == 0).sum()) / g.N ** 3
@@ -464,6 +564,34 @@ def run(a):
                     _kk = _ev[0][0]
                     P('   ★★ **引擎形核** @ step %d：场 %d，模式 %s（累计 %d 次）'
                       % (it, _kk, _ev[0][1], n_eng_ev))
+        # ★★★ R29：**athermal 律触发的形核**（`--nuc-law athermal`）。
+        #   判据不是"第几步"，而是**累计核数**：
+        #       `n_target(T) = floor(α_KM·(M_s − T))`，`T = T_of_t(t)`。
+        #   ⇒ 事件出现在 `T_k = M_s − k/α_KM`，与步数无关 ⇒ **速率由物理给出**。
+        #   ⚠ 与 `cadence` 路径**互斥**（上面那条已加 `not _athermal`）⇒ 默认逐位不变。
+        if _athermal and use_engine and it > 0:
+            _Tnow = float(g.T)
+            _tgt = min(int(np.floor(CL.alpha_km_n_lath(_Tnow, _alpha) + 1e-12)), nv)
+            while n_ath_tgt < _tgt and n_ath_tgt < nv:
+                _reg_e = g.region()
+                _fnow = 1.0 - float((_reg_e == 0).sum()) / g.N ** 3
+                _ev = g.nucleate(_ed_dummy if _ed_dummy is not None
+                                 else g.elastic_driving(),
+                                 f_now=_fnow, n_fresh=0, n_stack=1)
+                n_ath_tgt += 1
+                if _ev:
+                    n_eng_ev += len(_ev)
+                    n_ath_ev += 1
+                    T_hist.append(dict(step=it, t=float(g.t), T=_Tnow,
+                                       df=float(g.df[1]), field=int(_ev[0][0]),
+                                       n_target=int(_tgt), k=int(n_ath_tgt)))
+                    P('   ★★ **athermal 形核** @ step %d：T=%.1f K（T_%d 理论=%.1f K）'
+                      '，df=%.4e，场 %d（累计 %d/%d）'
+                      % (it, _Tnow, n_ath_tgt, CL.T_of_k(n_ath_tgt, _alpha),
+                         float(g.df[1]), _ev[0][0], n_ath_tgt, _n_law))
+                else:
+                    P('   ⚠ athermal 事件 #%d 被引擎拒（无可用空场/落位失败）@ step %d'
+                      % (n_ath_tgt, it))
         if (it % a.every) and (it != a.steps):
             continue
         reg = g.region()
@@ -582,6 +710,10 @@ def run(a):
             with open(os.path.join(outdir, 'nuc_dbg.json'), 'w',
                       encoding='utf-8') as f:
                 json.dump(dict(n_eng_ev=n_eng_ev,
+                               nuc_law=a.nuc_law,
+                               n_athermal_ev=n_ath_ev,
+                               n_target_final=n_ath_tgt,
+                               T_events=T_hist,
                                n_events_by_mode={
                                    m: sum(1 for _k, mm in g._nuc_events if mm == m)
                                    for m in sorted(set(mm for _k, mm
@@ -597,6 +729,54 @@ def run(a):
               % (n_eng_ev, g._nuc.get('dbg', {})))
         except Exception as exc:                                # pragma: no cover
             P('⚠ nuc_dbg.json 落盘失败（不影响仿真结果）: %s' % exc)
+
+    # ★★★ R29：把**这一次到底用了哪些闭环参数**整份落盘（`closure.json`）。
+    #   用户的硬要求是"全过程数据留盘、量具/判据有 bug 也能事后重测"。
+    #   `--nuc-law cadence`（默认）时只写 `nuc_law` 一个字段，**不改任何归档产物**。
+    try:
+        _rec = CL.recommend(N=N, t_lath_nm=float(a.plate_T),
+                            aspect=float(a.plate_L) / float(a.plate_T),
+                            alpha_KM=_alpha, T_f=_Tend, MOB=MOB, cfl=0.15,
+                            ratio_target=float(a.cool_ratio))
+        _cl = dict(nuc_law=a.nuc_law,
+                   alpha_KM=_alpha,
+                   Ms=float(M_S_TI64), T0=float(T0_TI64), DS=float(DS_REF),
+                   dG_crit=float(DG_CRIT_REF),
+                   T_start=_Tstart, T_end=_Tend,
+                   T_start_kind=('T_1 = M_s − 1/α_KM（预摆片 = 第 1 根）'
+                                 if float(a.T_start) <= 0 else 'user'),
+                   q=(None if not _athermal else float(_q)),
+                   q_source=_q_source,
+                   q_cap=(None if not _athermal else float(_q_cap)),
+                   n_law_float=CL.alpha_km_n_lath(_Tend, _alpha),
+                   n_law=int(_n_law),
+                   T_k=[float(CL.T_of_k(k, _alpha)) for k in range(1, max(_n_law, 1) + 1)],
+                   steps_min_ordered=CL.steps_min_ordered(_alpha, _L_lath, dx, 0.15,
+                                                          _Tend, _Tstart),
+                   beta_h_floor=CL.beta_h_min(a.steps, dx, a.plate_T * 1e-9),
+                   beta_h_T=CL.beta_h_of_T(0.5 * (float(M_S_TI64) + _Tend)),
+                   beta_h_used=float(a.beta_h),
+                   geometry=dict(N=N, dx_nm=dx * 1e9, L_box=dx * N,
+                                 plate_L_nm=a.plate_L, plate_W_nm=a.plate_W,
+                                 plate_T_nm=a.plate_T,
+                                 t_over_dx=float(a.plate_T) * 1e-9 / dx),
+                   params=CL.params())
+        _cl['n_lath_derived'] = dict(L_lath_um=_rec.get('L_lath', 0) * 1e6,
+                                     W_lath_um=_rec.get('W_lath', 0) * 1e6,
+                                     dx_nm_rec=_rec.get('dx_nm'),
+                                     q_rec=_rec.get('q'),
+                                     steps_rec=_rec.get('steps'),
+                                     beta_h_rec=_rec.get('beta_h_use'),
+                                     n_geo_cap=_rec.get('n_geo_cap'),
+                                     ordered_ratio=_rec.get('ordered_ratio'),
+                                     ok=_rec.get('ok'))
+        with open(os.path.join(outdir, 'closure.json'), 'w', encoding='utf-8') as f:
+            json.dump(_cl, f, ensure_ascii=False, indent=1)
+        P('★ 闭环参数已落盘: closure.json（nuc_law=%s, α_KM=%.4e, q=%s, n=%d）'
+          % (a.nuc_law, _alpha,
+             ('%.4e' % _q) if _athermal else 'n/a', _n_law))
+    except Exception as exc:                                    # pragma: no cover
+        P('⚠ closure.json 落盘失败（不影响仿真结果）: %s' % exc)
 
     s = read_series(os.path.join(outdir, 'series.csv'))
     P('-' * 104)
@@ -690,6 +870,34 @@ def main():
     #   传 `--eng-elong 3.75` 即恢复 `L/W = 2400/640` 的长条（沿 `a` 轴）。
     ap.add_argument('--eng-elong', type=float, default=0.0,
                     help='0 = 圆盘（引擎原行为）；>1 = 长条核（沿用 a 轴）')
+    # ★★★ R29：**F1/F2 的标量面能**（原先硬编码 0.15）。加这个开关的理由：
+    #   闭环要求把 `γ_α′β` 从 [占位] 0.15 换成文献值（Murzinova 2017 给
+    #   0.201–0.337 @975 °C、0.298–0.429 @600 °C）⇒ 必须能**单变量**地扫它。
+    #   默认 0.15 ⇒ **全部归档读数逐位不变**。
+    ap.add_argument('--gamma0', type=float, default=0.15,
+                    help='F1/F2 标量面能 [J/m²]；F3 仍走 Read–Shockley γ_RS(θ)')
+    # ★★★ R29（2026-10-01）：**形核律**。用户要求"用形核率之类的方式让模型合理运转"。
+    #   `cadence`（默认）：`--eng-cadence` 规定的节奏 ⇒ **与全部归档读数逐位相同**。
+    #   `athermal`：由 `windowB_closure` 的 C-2/C-3 闭式驱动 ——
+    #       ① 钟：`T(t) = M_s − q·t`（`windowB_km.linear_cool`），
+    #          驱动力 `df(T) = drive_of_T(T; T0, DS)`（引擎的 `set_T`，T6 已接线）；
+    #       ② 板条数：`n(T) = α_KM·(M_s − T)`（C-2，位置饱和律；`A_0 ≡ A_f` 由
+    #          引擎几何本身给出）⇒ **`n` 从"规定的 6"变成导出量**；
+    #          第 k 根在 `T_k = M_s − k/α_KM` 出现；
+    #       ③ 步长：`dt = cfl·dx/(MOB·ΔG_v(T))` ⇒ 随降温自动变小；
+    #       ④ 停止：`n` 达到 `floor(α_KM·(M_s − T_end))` 或步数用尽。
+    #   ⚠ 记账：`q` 由 C-3 的**有序性上界** `q ≤ MOB·ΔG_crit/(α_KM·L_lath)` 乘安全系数定，
+    #     不是自由参数；`--cool-rate` 给了就显式检查它是否越界。
+    ap.add_argument('--nuc-law', default='cadence',
+                    choices=['cadence', 'athermal'])
+    ap.add_argument('--alpha-km', type=float, default=ALPHA_KM_REF,
+                    help='athermal 位置饱和律的系数 [1/K]（唯一待标定常数）')
+    ap.add_argument('--cool-rate', type=float, default=0.0,
+                    help='athermal 钟的冷速 [K/s]；0 = 由 C-3 的有序性上界自动定')
+    ap.add_argument('--cool-ratio', type=float, default=0.8,
+                    help='athermal 钟：有序比目标（Δt_grow/Δt_nuc），<1 才有安全余量')
+    ap.add_argument('--T-start', type=float, default=0.0, help='0 = 用 M_s')
+    ap.add_argument('--T-end', type=float, default=298.0)
     # ★★ Round 10 实测更正：`--nuc-compensate` 用**名义** `o` 补，而**补过头了**。
     #   证据（同配置三点）：
     #     `gs4`（不补）   厚度 238/238/239/230/254/250（均值 241.5，−3.4%）Vt 2.1062
