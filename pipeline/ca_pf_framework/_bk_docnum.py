@@ -17,11 +17,18 @@ sys.path.insert(0, _HERE)
 import windowB_closure as CL                                    # noqa: E402
 
 DOC = os.path.join(_HERE, 'BLOCK_PARAM_CLOSURE.md')
+# ★ Round 19：把核对范围扩到**另外两份**结论文档 —— 它们的数字也是手打的，
+#   而 `_bk_docnum` 原先只看闭环文档。`(路径, 是否查"过时写法")`。
+DOCS = [(DOC, True),
+        (os.path.join(_HERE, 'BLOCK_STATUS.md'), False),
+        (os.path.join(_HERE, 'BLOCK_RESULT.md'), False)]
 
 
 def main():
     rec = CL.recommend()
     txt = open(DOC, encoding='utf-8').read()
+    all_txt = '\n'.join(open(p, encoding='utf-8').read()
+                        for p, _ in DOCS if os.path.exists(p))
     # (文档里期望出现的字符串, 由代码算出的期望值, 说明)
     exp = []
 
@@ -45,16 +52,26 @@ def main():
     add('%.4f' % CL.wetting_check(0.25, 5.0)['flip_gamma'], 'C-6 翻转阈值')
     add('%.1f' % CL.fcrit_ratio(0.25, 510e-9, CL.DG_CRIT_REF)[1], 'C-7 ΔG_v/f_crit')
     add('%.0f' % CL.barrier_ratio(0.25, CL.DG_CRIT_REF, CL.M_S_TI64), 'C-1a 势垒比')
+    # ★ Round 19：C-1a 的三个数（全矩形上下端 / 倍数 / 数量级）
+    _br = CL.barrier_ratio_range()
+    add('%.0f' % _br['ratio_max'], 'C-1a ΔG*/kT 上端')
+    add('%.1f' % _br['factor_max'], 'C-1a 倍数上端')
+    add('%.0f' % _br['decades_max'], 'C-1a 数量级上端')
 
-    print('=' * 96)
-    print('闭环文档里手打的数字 vs 代码重算（文档 = %s）' % os.path.basename(DOC))
-    print('=' * 96)
+    print('=' * 100)
+    print('文档里手打的数字 vs 代码重算')
+    print('  闭环文档 = %s（另外两份只查"数字在不在"，不查过时写法）'
+          % os.path.basename(DOC))
+    print('=' * 100)
     bad = 0
     for s, why in exp:
-        ok = s in txt
-        if not ok:
+        in_doc = s in txt
+        in_any = s in all_txt
+        if not in_any:
             bad += 1
-        print('  %-14s %-8s %s' % (s, '在文档里' if ok else '**找不到**', why))
+        print('  %-14s %-22s %s'
+              % (s, ('闭环文档' if in_doc else ('其它文档' if in_any
+                                                else '**三份里都没有**')), why))
 
     # 另外几条：文档里的"扫描情景"数字必须与代码一致
     for a in (0.005, 0.011, 0.02):
