@@ -376,14 +376,14 @@ r(G)\;=\;\min_{f\in\Delta}\ \big\lVert\textstyle\sum_{i\in G} f_i\,\mathrm{dev}\
 
 | # | 内容 | 类型 | 最小改动点 |
 |---|---|---|---|
-| **J-1** | **块表量具** `_bk_measure.blocks(reg, vmap, …)` | 量具 | `_bk_measure.py` 新增函数；`_bk_exp.py` 的 `COLS` 加列 |
-| **J-2** | **`r_obs` / `f_i` / 惯习面种类数** 落盘 | 量具 | 同上 |
-| **J-3** | **`E_el` 时间序列**（`g.pf.E_el()`） | 量具 | `_bk_exp.py` 的 `emit()` |
+| **J-1** | **块表量具** `_bk_measure.blocks(region, dx, vmap, eps0_var, npf_var)` | 量具 | ✅ **已实现**（含 `_label_periodic`：周期盒 6-连通**带标签**分量）。**6 条对照全过**（`_r30_block_smoke.py`：单块 `nblk_sig=1/blk_laths=6`；两块 `2` 与 `3/2`；**插一层母相 ⇒ 真裂报裂 = 6**；`r_selfac` 与独立重算**逐位相同**；同惯习面 ⇒ `n_habit=1`、不同 ⇒ `2`；单变体 ⇒ `r≡1`）。⚠ **尚未接进 `_bk_exp.py` 的 `COLS`** —— 它是纯函数、只吃 `region`+`vmap`，**在快照上离线调用即可**（符合"量具可事后重测"的路线） |
+| **J-2** | **`r_obs` / `f_var` / `n_habit`** 落盘 | 量具 | ✅ 随 J-1 一起实现（`r_selfac`/`f_var`/`n_habit`/`n_var_sig`/`blk_laths`/`blk_vars`）；⏳ 待接驱动列 |
+| **J-3** | **`E_el` 时间序列**（`g.pf.E_el()`） | 量具 | ⏳ 待做 |
 | **J-4** | **多块播种**：`--blocks "变体:板条数, …"` + 各块取向独立 | 驱动 | `_bk_exp.py` 的播种段 |
 | **J-5** | **`--var-rule`** 暴露到驱动（`ed`/`random`/`doublet`） | 驱动 | `_bk_exp.py` 的 `nuc_cfg` 调用 |
 | **J-6** | **`--k0-mode`** 暴露并落盘 `meta` | 驱动 | `_bk_exp.py` 构造 `LevelSetMulti` 处 |
 | **J-7** | **`M_LAGB` 冻结开关**（F3 界面迁移率独立于 `M(n)`） | **引擎** | `advance` 的 `Mfac` 段（`windowB_surface.py:3262`） |
-| **J-8** | **全量状态落盘**：带内稀疏 `phi` + `psi` + 块表 → F 盘（`BLOCK_DERIVATION §10 I-6`，标称"必做"） | 落盘 | `_bk_exp.py:743` 的快照字典（现在**只存 `region`**） |
+| **J-8** | **全量状态落盘**：带内稀疏 `phi` + `psi` + 块表 → F 盘（`BLOCK_DERIVATION §10 I-6`，标称"必做"） | 落盘 | ✅ **已实现带内稀疏 φ**（`band_idx/band_val/band_fld/band_cells`，默认每个快照都存，代价实测 **6.8%** 整场 φ；`_r30_bandchk.py` **5 条对照全过**，并定出可用域：带宽 `bc` 胞 ⇒ 一阶导在 `(bc−1)Δx`、二阶导在 `(bc−2)Δx` 内层**逐位**可重算）+ `P0` 基准 `f3_pos_p0_m` + `psi` + `t_s`；⏳ 仍缺 `E_el` 与 reinit 记账列 |
 
 > ⚠ **J-8 是用户明确要求、而当前没有做到的**：`dry_cl1b` 的 `snap_*.npz`
 > **只含 `region`（int8）+ 轴元数据**（实测，`_r30_peeksnap.py`），

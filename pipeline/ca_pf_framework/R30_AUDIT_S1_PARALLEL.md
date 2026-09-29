@@ -13,7 +13,7 @@
 
 | # | 结论 | 判据强度 |
 |---|---|---|
-| **C1** | **并行确实生效、也确实"逐位相同"**：`workers=1/2/4` 的 `phi`（与开 ψ 时的 `phi`+`psi`）**逐位相同**（max\|Δ\| = 0.000e+00），且并行路径**确实被走到**（8 个 tag 的 `nth_max` ≥2） | 【实测】`_r30_identity.py`，5 项判据 + 2 项对照全 PASS |
+| **C1** | **并行确实生效、也确实"逐位相同"**：`workers=1/2/4` 的 `phi`（与开 ψ 时的 `phi`+`psi`）**逐位相同**（max\|Δ\| = 0.000e+00），且并行路径**确实被走到**（8 个 tag 的 `nth_max` ≥2） | 【实测】`_r30_identity.py`：8 项判据 + 2 项对照全 PASS（含 1 ULP / dt·(1+1e-12) 分辨力对照） |
 | **C2** | **加速比只有 ×1.9–2.3 @4 线程**（N=96 / 12 活跃场 / 5.66–6.27 s·步⁻¹ 单线程）。有效并行度 CPU/wall = **2.72–2.74**（两次独立测量几乎完全一致） | 【实测】`_r30_speedup.py` ×2 次 |
 | **C3** | 上限由**两件事**共同锁死：① **串行残差 1.22 s/步（单线程步时的 18.6%）**，到 w=4 时它占该步的 **38–49%**；② 并行段自身反推只到 **×2.5–3.6**（DRAM 天花板：本机 triad 实测 **×1.99** @4 线程） | 【实测】+【推理】 |
 | **C4** | ⚠ **`ParCtx.upwind_flux_vec` 的 slab 并行在生产路径上是"死代码"** —— `advance` 里它唯一的调用点（`:3426`）位于 `_step_k` 内，而 `_step_k` 跑在 `par.for_each` 的 worker 里 ⇒ 死锁守卫（`windowB_par.py:124-127`）**强制 `_segments()` 返回 1** ⇒ 每次都走单线程回退。**实测 12/12 次调用 `nth=1`** | 【实测】`_r30_pathprobe.py` |
@@ -22,7 +22,7 @@
 | **C7** | **`--nthreads` 确实生效**（构造时进 `ParCtx`，实测 `--nthreads 2 ⇒ g.par.n=2`）。`_bk_exp.py` 默认 **4**、`_bk_closed.py` 默认 **2**、正在跑的生产任务用的是 **2**。但旧探针 `_probe_workers.py` 改的是 `g.workers`/`g.pf.workers` ⇒ **对 `advance` 无效**，它的"advance 恒为单线程"结论是 **R1 之前的**、且**量错了旋钮** | 【实测】`_r30_wire.py` |
 | **C8** | 一次 `reinitialize(force=True)`（N=96、21 配对、`reinit_iters=100`）= **413.5 s @w1 / 323.5 s @w4（只 ×1.28）**。它是 `advance` 收尾段的**量级跳变源**，不是每步成本 | 【实测】`_r30_reinit.py` |
 
-**一句话**：并行层写得**对**（逐位相同，5 项判据 + 2 项对照全过），但**没吃满**：
+**一句话**：并行层写得**对**（逐位相同，8 项判据 + 2 项对照全过），但**没吃满**：
 `advance` 里真正被并行覆盖的是 **81.4% 的步时**，而并行段自己撞 DRAM/分配天花板只到 **×2.5–3.6**；
 剩下 **18.6%（w=1）/ 38–49%（w=4）是串行**，且**最贵的一处（`upwind_flux_vec` 的 slab 实现）
 在生产里一次都没被用上**。
@@ -54,7 +54,7 @@
 | `_r30_table.py` | 把逐行数据聚成**算子表** | §3 的 A/B/C/D/E 表 |
 | `_r30_speedup.py` | workers=1/2/4 的 `advance` wall/CPU + `par.report()` 自证 | `_r30_speedup_N96.log`（第 1 次）、`_r30_speedup_N96_rerun.log`（第 2 次） |
 | `_r30_microbench.py` | 21 个算子的独立标度 + triad 带宽天花板 | `_r30_microbench_N96.log` |
-| `_r30_identity.py` | 端到端逐位判据 + 正/负对照（5 项） | `_r30_identity_N64.log`、`_r30_identity_N64_film.log` |
+| `_r30_identity.py` | 端到端逐位判据 + 正/负对照（8 项判据 + 2 项对照） | `_r30_identity_N64.log`、`_r30_identity_N64_film.log` |
 | `_r30_pathprobe.py` | 给每个 ParCtx 算子装计数器，量**真实分段数** | `_r30_pathprobe.log` |
 | `_r30_wire.py` | `--nthreads` 接线核查 + 旧探针负对照 | `_r30_wire.log` |
 | `_r30_reinit.py` | 单次 `reinitialize(force=True)` 代价 | `_r30_reinit_N96.log` |
@@ -638,4 +638,32 @@ $PY -u _r30_reinit.py 96 1,4                       # → _r30_reinit_N96.log
 | `_r30_prof_line_N96_w1.{log,json}`、`_r30_speedup_N96{,_rerun}.log`、`_r30_speedup_N96.json`、`_r30_microbench_N96.log`、`_r30_identity_N64{,_film}.log`、`_r30_pathprobe.log`、`_r30_wire.log`、`_r30_reinit_N96.log` | 原始产物（报告里每个数字都指向其中之一） |
 
 > ⚠ 同目录下还有**另一个代理**的 `_r30_*.py` / `_r30_*.log`（如 `_r30_gk.py`、`_r30_psi.py`、
-> `_r30_selfac_struct.py`）。它们**不是**本审计的产物，本审计未读取、未修改。
+> `_r30_selfac_struct.py`、`_r30_identity.log`）。它们**不是**本审计的产物，本审计未读取、未修改。
+> 工作区是共享的 ⇒ 请用下面的指纹确认你读到的是不是本报告依据的那一份。
+
+### §10.1 证据指纹（SHA256，2026-09-30 06:2x 冻结）
+
+```
+36b3ec7acd60644b1e90db1c82ccbed6a31eee4593cf2b10869604cfd2b38361  _r30_prof_line.py
+cca51d0e7b3022d731587c04c72576fa8d94f2994d79f51a95bc60dcee06f5cb  _r30_table.py
+e7a59822240b8e82ed6dae6a6ba56973876dd12ccad3a62d5c127adead801bb4  _r30_speedup.py
+fbd74364c338c3fb893c356e02e9c027938854d8d44dde3b2dbbd765f3d9720b  _r30_microbench.py
+03b7d1061aff102888877d6325bfd244a790f3837800040a775874bebc3b4a4f  _r30_identity.py
+eba2dfbb77b821c40232634f0aa7665d80266f7fa048af1ef1ea7bdd189ce16a  _r30_pathprobe.py
+2259cc6cc82837548bc51d52c3d088ebaa8cb5f65671b0019e4da66605ae9f05  _r30_wire.py
+3a516f83e10389dd852cabcb18d163a36fc95d8378ff770af7c48db1b96a8f17  _r30_reinit.py
+b7931de7ff7e1fc9ce2ecb8e0fa3733969099ac7fe48976cc309a37126118a37  _r30_prof_line_N96_w1.log
+5678ef5784dafb07585fded638401957a0e79a18a3b56238fc127b63da552a66  _r30_prof_line_N96_w1.json
+d4058ad2fd21d4b2d9e362c84992a08c4b31eaaddbfe41a04716ddf987f6fcb5  _r30_speedup_N96.log
+0fd8766c62ec265f5f639116e667ae380e2597a59459a3096d41ac24ea469133  _r30_speedup_N96_rerun.log
+e96bcbf749419e1f022547df2a14694637372b2fdeaef18408b754ebfd5f2328  _r30_speedup_N96.json
+55a68868ae369b78918cd77337d0e83f17f0b6c2a8001f7b45427160af7cae61  _r30_microbench_N96.log
+c936902b6e9986e467d2b11bf09418248e3d8710d79dfbeb530725b39f431d93  _r30_identity_N64.log
+49034fc159aea5d54c7d95ca0436f8727dfe7c1140c0120e05350bc931899800  _r30_identity_N64_film.log
+bd85c8145761b2128a0c5a70cf0c0d97a409ba26585d52b88e4885936a10218c  _r30_pathprobe.log
+c855fec4aef1792bd9669f11642c103d2ba69310cfaec37bfd54f09c8872823f  _r30_wire.log
+e301b50ac5c8b2f6fd6581d2bd8dc3dd1bdd0249062a138293253f353c86d0cf  _r30_reinit_N96.log
+```
+
+验证：`sha256sum -c <(上面这段)`（或逐行比对）。
+❌ 若 `_r30_*.log` 的哈希对不上 ⇒ 有人重跑过，**报告里的数字仍以本表对应的那一版为准**。

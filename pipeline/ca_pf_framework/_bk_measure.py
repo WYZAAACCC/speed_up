@@ -99,6 +99,151 @@ def _ncomp_sizes(mask):
 MIN_SIG_VOX = 32
 
 
+def _label_periodic(mask):
+    """6-连通、**周期**边界下的**带标签**分量图（把跨周期面的分量合并成同一个 id）。
+
+    ★ R30 新增（目标第 (2) 项 J-1）：`_ncomp_sizes` 只回**体素数列表**（够判"碎没碎"），
+      而"块"需要一个**身份**（哪几根板条属于同一个块）⇒ 必须要有标签图。
+      合并规则与 `_ncomp_sizes` **逐字相同**（并查集 + 三轴首末面配对），
+      只是把 `agg` 从"体积"换成"标签映射"。
+    """
+    if not mask.any():
+        return None, 0
+    if not _HAVE_SCIPY:
+        raise RuntimeError('需要 scipy.ndimage 才能可靠地数周期连通分量')
+    lab, n = ndi.label(mask, structure=ndi.generate_binary_structure(3, 1))
+    if n <= 0:
+        return None, 0
+    N = mask.shape[0]
+    parent = list(range(n + 1))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for ax in (0, 1, 2):
+        lo = np.take(lab, 0, axis=ax).ravel()
+        hi = np.take(lab, N - 1, axis=ax).ravel()
+        m = (lo > 0) & (hi > 0)
+        for u, v in zip(lo[m].tolist(), hi[m].tolist()):
+            ru, rv = find(u), find(v)
+            if ru != rv:
+                parent[ru] = rv
+    remap = np.zeros(n + 1, np.int64)
+    nxt = 0
+    for i in range(1, n + 1):
+        r = find(i)
+        if remap[r] == 0:
+            nxt += 1
+            remap[r] = nxt
+        remap[i] = remap[r]
+    return remap[lab], nxt
+
+
+def blocks(region, dx, vmap, eps0_var=None, npf_var=None, min_vox=MIN_SIG_VOX):
+    """★★★ R30（`BLOCK_SELFAC.md` §2.2 的 **J-1**）：**块表量具**。
+
+    ## 定义（先写死）
+
+    一个**块** `b` = 同一个**变体** `v` 的、在 `region` 图上 **6-连通（周期）** 的
+    一块区域。块内的不同**场**就是不同的**板条**（`vmap[k] = v`）。
+
+    ⇒ 由此得到的量：
+      * `nblk`        块数（含 < min_vox 的小块）
+      * `nblk_sig`    **显著**块数（≥ `min_vox` 体素）
+      * `blk_laths`   每个显著块里的**板条根数**（该块覆盖了几个场）
+      * `blk_vars`    每个显著块的变体号
+      * `n_habit`     **实测用到的惯习面种类数**（需要 `npf_var`）——
+                      这是 `BLOCK_SELFAC.md §7.1 P-SA-3` 的判据量
+      * `f_var_<v>`   各变体在**已转变体积**里的分数
+      * `r_selfac`    **实测自协调残差**（§3.1 的 `r`，用**实测** `f_v` 算）
+      * `n_var_sig`   实测用到的变体数
+
+    ## 记账（必须随结论一起报）
+
+    * `r_selfac` 用的是**实测体积分数**，不是理论最优分数 ⇒ 它**不是** §3.2 的
+      `r(G)` 那种"最好情况"，而是**这个构型实际达到的值**。
+    * 归一化尺度 `scale` = 全部 12 个变体 `‖dev ε⁰‖_F` 的**均值**（与
+      `_r30_selfac_struct.py` **同一口径**；本文件在 `_r30_block_smoke.py` 里
+      有与它逐位比对的对照）。
+    * `n_habit` 用惯习面法向的 `|cos|` 判同（阈值 1e-6）—— 与
+      `_r30_selfac_struct.group_by` 同口径。
+    """
+    region = np.asarray(region)
+    N = region.shape[0]
+    laths = sorted(int(k) for k in vmap)
+    letters = sorted({int(v) for v in vmap.values()})
+    out = dict(nblk=0, nblk_sig=0, blk_laths='', blk_vars='', n_var_sig=0,
+               n_habit=0, r_selfac=float('nan'), f_var='')
+    if not laths:
+        return out
+
+    # ---- 每一块：按**变体**取掩模，再在周期盒里做 6-连通标注 ----
+    info = []                                   # (v, nvox, n_laths, field_ids)
+    for v in letters:
+        ks = [k for k in laths if int(vmap[k]) == v]
+        m = np.zeros((N, N, N), bool)
+        for k in ks:
+            m |= (region == k)
+        if not m.any():
+            continue
+        lab, nlab = _label_periodic(m)
+        if lab is None or nlab <= 0:
+            continue
+        for b in range(1, nlab + 1):
+            mb = (lab == b)
+            nvox = int(mb.sum())
+            ids = [k for k in ks if bool((mb & (region == k)).any())]
+            info.append((v, nvox, len(ids), ids))
+    out['nblk'] = len(info)
+    sig = [t for t in info if t[1] >= min_vox]
+    out['nblk_sig'] = len(sig)
+    sig.sort(key=lambda t: -t[1])
+    out['blk_laths'] = '/'.join(str(t[2]) for t in sig[:12])
+    out['blk_vars'] = '/'.join(str(t[0]) for t in sig[:12])
+
+    # ---- 变体体积分数（对**已转变**体积归一）----
+    vols = {v: float(sum(int((region == k).sum()) for k in laths
+                         if int(vmap[k]) == v)) for v in letters}
+    tot = float(sum(vols.values()))
+    out['f_var'] = '/'.join('%.6g' % (vols[v] / tot) for v in letters) if tot else ''
+    out['n_var_sig'] = int(sum(1 for v in letters if vols[v] / tot >= 0.01)) if tot else 0
+
+    # ---- 惯习面种类数 ----
+    if npf_var is not None and tot:
+        nrm = []
+        for v in letters:
+            if vols[v] / tot < 0.01:
+                continue
+            try:
+                nv = np.asarray(npf_var[v], float)
+            except (KeyError, IndexError, TypeError):
+                continue
+            nv = nv / (np.linalg.norm(nv) + 1e-300)
+            if not any(abs(abs(float(nv @ u)) - 1.0) < 1e-6 for u in nrm):
+                nrm.append(nv)
+        out['n_habit'] = len(nrm)
+
+    # ---- 实测自协调残差 ----
+    if eps0_var is not None and tot:
+        E = []
+        for i in range(len(eps0_var)):
+            A = np.asarray(eps0_var[i], float)
+            E.append(A - np.trace(A) / 3.0 * np.eye(3))
+        scale = float(np.mean([float(np.sqrt(np.sum(e ** 2))) for e in E]))
+        acc = np.zeros((3, 3))
+        for v in letters:
+            if vols[v] <= 0:
+                continue
+            acc = acc + (vols[v] / tot) * E[v - 1]
+        out['r_selfac'] = float(np.sqrt(np.sum(acc ** 2)) / (scale + 1e-300))
+    del dx
+    return out
+
+
+
 def _ncomp_big(mask, min_vox=MIN_SIG_VOX):
     """**显著**分量数：只数体素数 ≥ `min_vox` 的连通分量。"""
     return int(sum(1 for s in _ncomp_sizes(mask) if s >= min_vox))
