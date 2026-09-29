@@ -37,20 +37,27 @@ import windowB_closure as CL                                    # noqa: E402
 
 # ---------------------------------------------------------------------------
 def load(tag, root):
-    d = os.path.join(_HERE, root, tag)
-    out = {}
-    for name in ('closure.json', 'nuc_dbg.json', 'meta.json'):
-        p = os.path.join(d, name)
-        out[name.split('.')[0]] = (json.load(open(p, encoding='utf-8'))
-                                   if os.path.exists(p) else None)
-    p = os.path.join(d, 'series.csv')
-    if os.path.exists(p):
-        import csv
-        out['series'] = list(csv.DictReader(open(p)))
-    else:
-        out['series'] = None
-    out['dir'] = d
-    return out
+    """读一个算例目录。**`tag` 可以带也可以不带臂前缀**：
+    算例目录的真实名字是 `<arm>_<tag>`（如 `dry_cl1b`），而调用方很自然地只写 `cl1b`
+    ⇒ 第一版直接 `join(root, tag)` ⇒ 报"缺 closure.json / nuc_dbg.json / series.csv"，
+    看着像"算例没落盘"，其实是**路径拼错**。
+    （本仓库已多次栽在"报错指向错误方向"上 ⇒ 这里两种都试，并在都没找到时
+      把**试过的两个路径**打出来。）"""
+    cands = [tag] if '_' in tag else ['dry_%s' % tag, tag]
+    for c in cands:
+        d = os.path.join(_HERE, root, c)
+        if os.path.exists(os.path.join(d, 'series.csv')):
+            out = {'dir': d}
+            for name in ('closure.json', 'nuc_dbg.json', 'meta.json'):
+                p = os.path.join(d, name)
+                out[name.split('.')[0]] = (json.load(open(p, encoding='utf-8'))
+                                           if os.path.exists(p) else None)
+            import csv
+            out['series'] = list(csv.DictReader(
+                open(os.path.join(d, 'series.csv'))))
+            return out
+    raise SystemExit('✗ 找不到算例：试过 %s'
+                     % ', '.join(os.path.join(_HERE, root, c) for c in cands))
 
 
 def fnum(row, k, default=float('nan')):
@@ -89,21 +96,25 @@ def judge(tag, root, verbose=True):
                n_ev == n_law - 1, '事件数=%d，应为 %d' % (n_ev, n_law - 1)))
 
     # ---- A-3：事件温度 == T_k（时钟步内） --------------------------------
-    #   ★ 口径必须**双边**：事件在"第一步 T ≤ T_k"处触发 ⇒ 允许的超调是
-    #     `q·dt`（实测最大 ≈0.22 K），而**测早了**同样是违反律（例如事件次序错乱）。
-    #     第一版只查 `T_k − T_event > 0` 一侧 ⇒ 把"第 2 个事件发生在 T_1"
-    #     这种明显违反判成 PASS（`--selftest` 的 N-3 抓到）。
+    #   ★★ 下标口径（Round 5 修）：**第 i 次引擎事件造的是第 (i+1) 根板条** ——
+    #      第 1 根是 `t=0` 预摆的那片（它按 C-2 出现在 `T_1`）⇒ 事件 i 应落在
+    #      **`T_{i+1}`**。第一版写成 `T_i` ⇒ 对 `cln2` 报 `|Δ| = 200 K`，
+    #      看着像"律错了"，其实是**我的下标错了一格**（`cln2` 的 `α=5e-3`
+    #      ⇒ `T_1=673`、`T_2=473`，而实测事件在 472.8 K ⇒ 正是 `T_2`）。
+    #   ★ 口径必须**双边**：事件在"第一步 T ≤ T_k"处触发 ⇒ 允许的超调是 `q·dt`
+    #     （实测 ≲0.25 K），而**测早了**同样是违反律。
     worst = 0.0
     rows = []
     TOL_K = 1.0
     for i, e in enumerate(ev, start=1):
-        Tk = CL.T_of_k(i, alpha)
+        Tk = CL.T_of_k(i + 1, alpha)
         dev = abs(float(e['T']) - Tk)
         worst = max(worst, dev)
-        rows.append('k=%d T=%.2f T_k=%.2f |Δ|=%.2f K' % (i, e['T'], Tk, dev))
+        rows.append('事件%d→第%d根 T=%.2f T_k=%.2f |Δ|=%.2f K'
+                    % (i, i + 1, e['T'], Tk, dev))
     ok3 = bool(ev) and (worst < TOL_K)
-    ck.append(('A-3 每次事件的温度落在 T_k 的 %g K 内（**双边**）' % TOL_K,
-               ok3, '；'.join(rows) if rows else '无事件'))
+    ck.append(('A-3 每次事件的温度落在 T_k 的 %g K 内（**双边**，事件 i ↔ 第 i+1 根）'
+               % TOL_K, ok3, '；'.join(rows) if rows else '无事件'))
 
     # ---- A-4：实现出来的有序比 ------------------------------------------
     rs = []
@@ -162,7 +173,12 @@ def judge(tag, root, verbose=True):
                    or cl['geometry']['plate_T_nm'])
     geo = (M * float(cl['geometry']['plate_L_nm'])
            * float(cl['geometry']['plate_W_nm']) * geo_nm) * 1e-9   # nm³ → µm³
-    Vt = float(fnum(last, 'Vt'))
+    Vt = float(fnum(last, 'Vt')) * 1e18          # ★ m³ → µm³
+    #   ★★ 单位口径（Round 5 修）：`series.csv` 的 `Vt` 是 **m³**，而 `geo` 是 **µm³**
+    #      ⇒ 第一版直接相除，报出 `Vt=0.0000 µm³`、比值 0.00 的**假 FAIL**。
+    #      本仓库上一次同类错是 `_bk_cmp.robust_thickness` **返回米却被 `%.0f` 打印**
+    #      （也是"看着像没长"，其实是单位）⇒ 这是**第二次**，故此处显式写换算并加断言。
+    assert 1e-6 < Vt < 1e6, 'A-8: Vt=%.3e µm³ 不在合理量级 ⇒ 单位换算又错了' % Vt
     ck.append(('A-8 总体积 ≥ 0.8 × n·L·W·t_phys（单边量级检查）',
                Vt >= 0.8 * geo,
                'Vt=%.4f µm³ ≥ %.4f µm³（几何 %.4f，比 %.2f；'

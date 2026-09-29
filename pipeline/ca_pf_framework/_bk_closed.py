@@ -48,6 +48,16 @@ def main():
                     help='F1/F2 标量面能；0.15 = 归档值，0.25 = Murzinova 带中值')
     ap.add_argument('--beta-h', type=float, default=-1.0,
                     help='<0 = 用 C-5/β_h(T) 的较大者')
+    # ★★★ R29（Round 5 新增）：C-4b 的**补偿系数**。
+    #   闭式给的是 `t_seed = t_phys + 1×o`（假设两张界面各吃掉 o/2）。
+    #   实测（`dry_cln2`，n=2，1 张界面）：种子片**根本没被咬**（635→670.7），
+    #   末片保住了减薄后的厚度（572.5→566.2）⇒ 整块的等效厚度 618 nm/lath
+    #   比物理靶 510 厚 **21%** ⇒ **V-8b FAIL**。
+    #   而**不补偿**的 `dry_cl1`（n=6，2 张界面）种子片只有 391.8 nm（−23%）。
+    #   ⇒ **"被咬量"不是常数 `o/2`**，与配置有关 ⇒ 这是一个**尚未闭合**的量，
+    #     本开关用来扫它（1.0 = C-4b 原式；0 = 不补偿）。
+    ap.add_argument('--seed-comp-frac', type=float, default=1.0,
+                    help='t_seed = t_phys + frac×o；1.0 = C-4b，0 = 不补偿')
     ap.add_argument('--steps-factor', type=float, default=1.0,
                     help='<1 = 按比例缩短（**会使 C-3 有序性变差，必须记账**）')
     ap.add_argument('--seed', type=int, default=11)
@@ -109,10 +119,14 @@ def main():
     #   ⇒ 播种厚 = `t_phys + o`；`t_last_reduce = o/2` 把末片拨回去。
     #   ⚠ 同时必须把 `--plate-t-physical` 传下去：判据（V-8b / A-8）的靶是
     #     **物理厚**，不是播种厚 —— 否则"补对了"反而会被判 FAIL。
-    t_seed_nm = a.t_lath_nm + rec['overlap_nm']
-    print('  ★ 播种厚 = 物理厚 %.0f + 咬入 %.0f = **%.0f nm**'
-          '（末片再减 %.0f nm）' % (a.t_lath_nm, rec['overlap_nm'], t_seed_nm,
-                                    0.5 * rec['overlap_nm']))
+    t_seed_nm = a.t_lath_nm + a.seed_comp_frac * rec['overlap_nm']
+    print('  ★ 播种厚 = 物理厚 %.0f + **%.2f** × 咬入 %.0f = **%.0f nm**'
+          '（末片再减 %.0f nm）'
+          % (a.t_lath_nm, a.seed_comp_frac, rec['overlap_nm'], t_seed_nm,
+             0.5 * rec['overlap_nm']))
+    if abs(a.seed_comp_frac - 1.0) > 1e-9:
+        print('  ⚠ `--seed-comp-frac` = %.2f ≠ 1.0 ⇒ **偏离 C-4b 的取值**；'
+              '这次的厚度判据要按"扫描点"读，不能当"闭环配置"读' % a.seed_comp_frac)
     if a.steps_factor != 1.0:
         print('  ⚠⚠ --steps-factor=%.2f ⇒ steps=%d：**C-3 的有序性被破坏**，'
               '本次运行处于 burst regime，结论必须带这条记账' % (a.steps_factor, steps))
