@@ -21,6 +21,7 @@ import glob
 import json
 import os
 import sys
+import time
 
 os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -78,18 +79,48 @@ def arm_report(tagroot, arm):
     return out
 
 
+def newest_tag(root):
+    """`root` 下**最近被写过**的标签（按各臂 `series.csv` 的 mtime 最大值）。
+
+    ★ 为什么要有它：`--tag` 原默认写死 `'p2'`，于是"忘了传 `--tag`"会**静默**
+      去读一个早就被杀掉的旧臂，并把它当成当前结果报出来（本项目真踩过：
+      读的是被 kill 的 `p2`，报的是陈旧数字）。默认改成"最新"能挡住这类事故，
+      但**光靠默认值不够** —— 所以下面还会把**实际读到的绝对路径 + mtime + sha**
+      大声打出来，让"读错臂"不可能不被发现。
+    """
+    base = root if os.path.isabs(root) else os.path.join(_HERE, root)
+    best, best_t = None, -1.0
+    if not os.path.isdir(base):
+        return None
+    for name in sorted(os.listdir(base)):
+        p = os.path.join(base, name, 'series.csv')
+        if os.path.exists(p):
+            t = os.path.getmtime(p)
+            if t > best_t:
+                best, best_t = name.rsplit('_', 1)[-1], t
+    return best
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', default='_exp/_bk_block')
-    ap.add_argument('--tag', default='p2')
+    ap.add_argument('--tag', default='auto',
+                    help="'auto'（默认）= 读 root 下最近被写过的标签")
     ap.add_argument('--arms', default='dry,wet')
     ap.add_argument('--ctrl-root', default='_exp/_bk_ctrl')
     ap.add_argument('--ctrl-tag', default='ctrl')
     ap.add_argument('--ctrl-arm', default='gpos')
     a = ap.parse_args()
+    if a.tag == 'auto':
+        a.tag = newest_tag(a.root)
+        if a.tag is None:
+            print('✗ %s 下没有任何 series.csv ⇒ 无法自动选标签' % a.root)
+            return 1
 
     print('=' * 104)
     print('_bk_verdict —— 阶段 3 判决（判据**先登记**）')
+    print('  ★ 实际读取的根/标签: %s / **%s**（由 --tag 决定；auto=最新）'
+          % (a.root, a.tag))
     print('=' * 104)
     reps = {}
     for arm in [x for x in a.arms.split(',') if x]:
@@ -106,6 +137,12 @@ def main():
         rows = r['rows']
         print('-' * 104)
         print('臂 %s   M=%s   测点=%d   快照=%d' % (arm, M, len(rows), len(r['snaps'])))
+        # ★ 大声报出**实际读的是哪一个目录**（绝对路径 + series.csv 的 mtime）。
+        #   本项目出过一次"读错旧臂却当成当前结果"的事故 ⇒ 这条不是装饰。
+        print('     目录=%s' % r['dir'])
+        print('     series.csv mtime=%s  （若这不是你要的臂，说明 --tag 传错了）'
+              % (time.strftime('%m-%d %H:%M:%S', time.localtime(r['mtime']))
+                 if r.get('mtime') else '—'))
         if not rows:
             continue
         ns = [fnum(x, 'nslab_n') for x in rows]
@@ -235,6 +272,55 @@ def main():
                        (max(jj) < 0.12) if jj else None,
                        ('max=%.4f Δx（%d 个非形核测点）' % (max(jj), len(jj)))
                        if jj else '**无有效测点**'))
+        # ★ V-2g：**逐步**逐板条体积（来自 `vols` 列，Round 10 起才有）。
+        #   V-2 只能看快照（默认 50 步一个）⇒ 中间过程全丢。V-2g 用**每个测点**，
+        #   报每根板条"出生后相对最大值的最大跌幅"。
+        #   ⚠ **只报不判**：内层板条**允许**小幅回落 —— 它们两张宽面都是 F3、
+        #     `Δf = Δe_el ≡ 0`，没有体驱动力（§5.1），体积只受 F3 面积最小化支配。
+        #     阈值要等对照臂（`dry_pa`）的实测分布出来再定，**不得先拍一个数**。
+        if any('vols' in x for x in rows):
+            seq = {}
+            for x in rows:
+                vs = x.get('vols', '')
+                try:
+                    vv = [float(t) for t in vs.split('/')]
+                except ValueError:
+                    continue
+                for k, v in enumerate(vv, start=1):
+                    if v > 0:
+                        seq.setdefault(k, []).append(v)
+            drops = []
+            for k in sorted(seq):
+                pk = max(seq[k])
+                mn = min(seq[k])
+                drops.append((k, 100.0 * (mn / pk - 1.0), len(seq[k])))
+            if drops:
+                print('     V-2g 逐板条体积跌幅（**只报不判**，阈值待对照校准）: %s'
+                      % '  '.join('%d:%.1f%%(%d测点)' % t for t in drops))
+        # ★ V-8：**长出来的块**专用的"片数与厚度保真"—— 6 个场必须全部在位。
+        #   `gs3` 实测板条 1 被咬成 20 个碎片、从柱剖面里消失，而 `V-1g` 仍 PASS
+        #   （它只看阶梯的级数）⇒ 必须有这一条兜住"片还在不在"。
+        if grown and any('ths' in x for x in rows):
+            last = rows[-1]
+            try:
+                th = [float(t) for t in last.get('ths', '').split('/')]
+            except ValueError:
+                th = []
+            present = [k for k, v in enumerate(
+                [float(t) for t in last.get('vols', '').split('/')], start=1) if v > 0]
+            nrun = len(set(int(x) for x in last.get('runs', '').split('/') if x))
+            ck.append(('V-8 六片全在位（柱剖面里的场数 == M）',
+                       nrun == M if M else None,
+                       'runs=%s ⇒ %d 个不同场（应为 %d）；在位的场=%s'
+                       % (last.get('runs'), nrun, M, present)))
+            _band = [k for k in present if th and k <= len(th)
+                     and 0.8 * 250.0 <= th[k - 1] <= 1.3 * 250.0]
+            ck.append(('V-8b 末态厚度保真（在位片 ∈ [200,325] nm）',
+                       (len(_band) == len(present)) if present else None,
+                       '厚度=%s nm（T=250；**场 1 的读数会被 1–2 体素孤儿污染**，'
+                       '精确值看 `_bk_pair.py`）'
+                       % '/'.join('%.0f' % th[k - 1] for k in present
+                                  if k <= len(th))))
         for t, ok, det in ck:
             print('   %-52s %s  %s'
                   % (t, 'PASS' if ok else ('—' if ok is None else '**FAIL**'), det))

@@ -47,6 +47,13 @@ from T16_verify_rve import C, EPS0, NPF, DF, MOB                # noqa: E402
 
 COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         'nslab_n', 'nf3_col', 'runs', 'ncomp_min', 'ncomp_max', 'ncompbig_max',
+        # ★ Round 10：**逐板条的体积与厚度，每一步都存**。
+        #   为什么必须加：`Vt` 只有总量，而 V-2（"每根都在长"）与"咬入是否把
+        #   旧片削薄"都只能靠**快照**判 —— 而快照默认 50 步一个 ⇒ 中间过程全丢。
+        #   用户的要求是"全过程数据留盘、量具有 bug 也能事后重测"
+        #   ⇒ 这两列必须在**每个测点**上写。用 `'/'` 连接（与 `runs` 同格式），
+        #   这样 COLS 固定、M 可变。
+        'vols', 'ths',
         'nf3', 'f3_area_m2', 'f3_area_stair', 'f3_pos_m', 'f3_pos_dx',
         'f3_std_m', 'n_lath', 'w_lath', 'a_lath', 'box_touch', 'finite',
         'psi_mean']
@@ -209,6 +216,21 @@ def run(a):
         j = n_seeded + 1
         if j > nv:
             return None
+        # ★★ Round 10：**补厚度**（`--nuc-compensate`）。
+        #   张力（Round 9 实测）：界面要落在共享平面上 ⇒ 重叠 o 必须 ≥ 1 胞；
+        #   但界面落在重叠区**中面** ⇒ 每张被重叠的面被吃 `o/2`，
+        #   而**内层片两张宽面都是 F3、`Δf = Δe_el ≡ 0`，没有任何体驱动力**
+        #   去补回来（§5.1）⇒ 被削薄就只会继续缩、碎裂
+        #   （`gs3` 实测：板条 1 被撕成 20 个碎片，且碎片把 `f3_area` 刷到
+        #    7.95 µm²，比预摆对照的 6.77 还大 —— 那是**污染**不是成绩）。
+        #   ⇒ 出路不是调 o，而是**把会被咬掉的预先补上**：
+        #       片 1..M−1：内外两张面都会被咬 ⇒ 播 `T + o`
+        #       片 M     ：只有内面被咬       ⇒ 播 `T + o/2`
+        #     这样每片的**稳态厚度都回到 T**，块总厚仍是 M·T。
+        #   ⚠ 近端面必须仍在 `edge − o`（否则几何就变了）⇒ 中心相应移到
+        #     `edge − o + T_j/2`。多出来的厚度加在**外侧**。
+        o = a.nuc_overlap_nm * 1e-9
+        Tj = (T + (o if j < nv else 0.5 * o)) if (o > 0 and a.nuc_compensate) else T
         if j == 1:
             c = c0.copy()
         else:
@@ -242,10 +264,9 @@ def run(a):
                 #   零水平集，台阶对不上的地方就留 1 胞 β（阶梯错位伪影，非物理）。
                 #   ⇒ 用 `--nuc-overlap-nm` 让新片**咬进**旧片（物理上就是
                 #     "在界面上形核"，共用一张界面，不是隔缝相望）。
-                c = c0 + ((edge - cproj)
-                          + side * (T / 2 - a.nuc_overlap_nm * 1e-9)) * n_hab
+                c = c0 + ((edge - cproj) + side * (Tj / 2 - o)) * n_hab
                 c = c - L * np.floor(c / L)          # 周期折回
-        g.seed_plate(j, c, n_hab, a.plate_W * 0.5e-9, T,
+        g.seed_plate(j, c, n_hab, a.plate_W * 0.5e-9, Tj,
                      elong=a.plate_L / a.plate_W, along=a_ax, flat_end=True)
         n_seeded = j
         return j
@@ -256,7 +277,9 @@ def run(a):
         P('★★ 生长中的同变体邻位形核：t=0 只播第 %d 片（场 %d）；'
           '此后每 %d 步在外侧播下一片（同一变体、新场）⇒ 片间自动成 F3'
           '； 咬入旧片 %.1f nm（`--nuc-overlap-nm`；0=相切，实测 F3 覆盖率仅 0.62）'
-          % (j0, j0, a.nuc_every, a.nuc_overlap_nm))
+          '； 补厚度 %s（前 %d 片播 T+o，末片播 T+o/2）'
+          % (j0, j0, a.nuc_every, a.nuc_overlap_nm,
+             'ON' if a.nuc_compensate else 'OFF', max(nv - 1, 0)))
     elif len(laths_eff) == 1 and M > 1:
         for i in range(M):
             off = (i - (M - 1) / 2.0) * (T + gap)
@@ -330,6 +353,7 @@ def run(a):
                        grow_stack=bool(a.grow_stack), nuc_every=a.nuc_every,
                        nuc_gap_nm=a.nuc_gap_nm, phi_every=a.phi_every,
                        nuc_overlap_nm=a.nuc_overlap_nm,
+                       nuc_compensate=bool(a.nuc_compensate),
                        snap_every=a.snap_every, every=a.every,
                        out_root=a.out, exp_args=vars(a),
                        gamma0=0.15, DF=DF, Mob=MOB, dt=dt, t_sim=a.steps * dt,
@@ -378,6 +402,14 @@ def run(a):
             P0 = pm
         nc = [mm['ncomp_%d' % k] for k in range(1, nv + 1)]
         ncb = [mm['ncompbig_%d' % k] for k in range(1, nv + 1)]
+        # ★★ Round 10 修：中位数**必须只统计非空场**。
+        #   原写法对**所有** `k=1..nv` 取中位数，而生长臂早期大部分场是空的
+        #   （`n_k = 0`）⇒ 中位数被 0 绑架。实测 `dry_gs3` 在 step 0–50 打出
+        #   `n/w/a=0/0/0 nm`（那时明明有 1–2 根 250/619/2400 nm 的板条），
+        #   到 step 60 又跳成 124 —— 全是空场把中位数拉到 0 的假象。
+        #   ⇒ 只对 `vol_k > 0` 的场取中位数；全空则给 0（`vols` 列可辨）。
+        _occ = [k for k in range(1, nv + 1) if mm['vol_%d' % k] > 0]
+        _med = (lambda f: float(np.median([f(k) for k in _occ])) if _occ else 0.0)
         row = dict(
             step=it, t_s=round(t_sim, 12), wall_s=round(time.time() - wall0, 2),
             dt=dt, V0=mm['vol_0'], Vt=sum(mm['vol_%d' % k] for k in range(1, nv + 1)),
@@ -388,14 +420,19 @@ def run(a):
             #   "碎裂"（`dry_gs2` 实测 ncomp_max=4，实际是 1 根完整板条 + 3 个孤儿）。
             #   两个口径**都存**，判决用新的、原始值留档，任何人都能自己重判。
             ncompbig_max=int(np.max(ncb)),
+            vols='/'.join('%.6g' % (mm['vol_%d' % k] * 1e18)
+                          for k in range(1, nv + 1)),
+            ths='/'.join('%.6g' % (mm['n_%d' % k] * 1e9)
+                         for k in range(1, nv + 1)),
             nf3=mm['f3_faces'], f3_area_m2=mm['f3_area'],
             f3_area_stair=mm['f3_area_stair'], f3_pos_m=pm,
             f3_pos_dx=((pm - P0) / dx if (np.isfinite(pm) and P0 is not None)
                        else float('nan')),
             f3_std_m=mm['f3_std_n'],
-            n_lath=float(np.median([mm['n_%d' % k] for k in range(1, nv + 1)])),
-            w_lath=float(np.median([mm['w_%d' % k] for k in range(1, nv + 1)])),
-            a_lath=float(np.median([mm['a_%d' % k] for k in range(1, nv + 1)])),
+            # ★★ Round 10 修：中位数**必须只统计非空场**（见上面 `_occ` 的记账）。
+            n_lath=_med(lambda k: mm['n_%d' % k]),
+            w_lath=_med(lambda k: mm['w_%d' % k]),
+            a_lath=_med(lambda k: mm['a_%d' % k]),
             box_touch=int(mm['box_touch']),
             finite=int(np.all(np.isfinite(g.phi))),
             psi_mean=(float(g.psi[np.isfinite(
@@ -427,13 +464,15 @@ def run(a):
             np.savez_compressed(os.path.join(outdir, 'snap_%05d.npz' % it), **d)
         P('  [%4d] Vt=%.4f µm³ | **nslab=%d** nf3col=%d runs=%-13s | F3面=%-6d '
           '面积=%.4f µm² | Δpos=%+7.3f dx std=%5.1f nm | nc=%d..%d(显著%d) | '
-          'n/w/a=%.0f/%.0f/%.0f nm | 壁=%d | %.2fs/步'
+          '厚度(在位的场) %s nm | 壁=%d | %.2fs/步'
           % (it, row['Vt'] * 1e18, mm['nslab_n'], mm['nf3_col'], row['runs'],
              mm['f3_faces'], mm['f3_area'] * 1e12,
              (row['f3_pos_dx'] if np.isfinite(row['f3_pos_dx']) else float('nan')),
              (mm['f3_std_n'] * 1e9 if np.isfinite(mm['f3_std_n']) else float('nan')),
              row['ncomp_min'], row['ncomp_max'], row['ncompbig_max'],
-             row['n_lath'] * 1e9, row['w_lath'] * 1e9, row['a_lath'] * 1e9,
+             ' '.join('%d:%.0f' % (k, mm['n_%d' % k] * 1e9)
+                      for k in range(1, nv + 1) if mm['vol_%d' % k] > 0)
+             or '（无）',
              row['box_touch'],
              (np.mean(tstep[-a.every:]) if tstep else 0.0)))
     csvf.close()
@@ -495,6 +534,9 @@ def main():
     #   物理上"在界面上形核"就是共用一张界面 ⇒ 用一个正的重叠量。
     #   建议值 ≥ 1.5Δx（Δx=62.5 nm ⇒ 94 nm），保证中面离两侧零集都够远。
     ap.add_argument('--nuc-overlap-nm', type=float, default=0.0)
+    # ★ Round 10：把会被"咬"掉的厚度预先补上（见 `_seed_next` 的记账）。
+    #   只在 `--nuc-overlap-nm > 0` 时有意义。
+    ap.add_argument('--nuc-compensate', action='store_true')
     ap.add_argument('--norm-smooth', type=int, default=0)
     ap.add_argument('--beta-h', type=float, default=3.5)
     ap.add_argument('--beta-w', type=float, default=2.3)
