@@ -246,12 +246,21 @@ def run(a):
             finite=int(np.all(np.isfinite(g.phi))))
         cw.writerow([row[c] for c in COLS]); csvf.flush()
         if (it % a.snap_every == 0) or (it == a.steps):
-            np.savez_compressed(
-                os.path.join(outdir, 'snap_%05d.npz' % it),
-                phi=g.phi.astype(np.float32), region=reg, step=it,
-                n_hab=n_hab, w_ax=w_ax, a_ax=a_ax, N=N, L=L, arm=a.arm,
-                vmap_keys=np.array(sorted(vmap)),
-                vmap_vals=np.array([vmap[k] for k in sorted(vmap)]))
+            # ★★ 落盘策略（用户要求"全过程数据留 F 盘，量具有 bug 也能事后重测"）：
+            #   · **`region`（int8, 7 MB）每个快照都存** —— 这是
+            #     `_bk_measure.measure_state` 的**唯一输入**（体积/分量/nslab/nf3col/
+            #     三轴尺寸/面积/位置全都只吃它）⇒ **量具可完全事后重测**。
+            #   · **`phi`（7×28 MB float32）按 `--phi-every` 单独控制** ——
+            #     只有"曲率/界面形状"这类测量需要它，而 `savez_compressed` 压 198 MB
+            #     实测要 ~60 s（是单步耗时的可见一部分）。
+            #   · 默认 `--phi-every 0` = 与 `snap_every` 相同 ⇒ **行为与改动前一致**。
+            d = dict(region=reg, step=it, n_hab=n_hab, w_ax=w_ax, a_ax=a_ax,
+                     N=N, L=L, arm=a.arm,
+                     vmap_keys=np.array(sorted(vmap)),
+                     vmap_vals=np.array([vmap[k] for k in sorted(vmap)]))
+            if a.phi_every > 0 and (it % a.phi_every == 0 or it == a.steps):
+                d['phi'] = g.phi.astype(np.float32)
+            np.savez_compressed(os.path.join(outdir, 'snap_%05d.npz' % it), **d)
         P('  [%4d] Vt=%.4f µm³ | **nslab=%d** nf3col=%d runs=%-13s | F3面=%-6d '
           '面积=%.4f µm² | Δpos=%+7.3f dx std=%5.1f nm | nc=%d..%d | '
           'n/w/a=%.0f/%.0f/%.0f nm | 壁=%d | %.2fs/步'
@@ -301,6 +310,8 @@ def main():
     ap.add_argument('--steps', type=int, default=400)
     ap.add_argument('--every', type=int, default=10)
     ap.add_argument('--snap-every', type=int, default=100)
+    ap.add_argument('--phi-every', type=int, default=0,
+                    help='存 phi 的间隔；0 = 与 snap-every 相同（region 每次都存）')
     ap.add_argument('--laths', default='1,1,1,1,1,1')
     ap.add_argument('--omega-max-deg', type=float, default=5.0)
     ap.add_argument('--omega-mode', default='ladder', choices=['ladder', 'random'])

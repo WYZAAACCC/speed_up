@@ -220,11 +220,24 @@ nslab_n=6  nf3_col=5  runs=1,2,3,4,5,6  f3_area=7.6541 µm²  ncomp_max=1  ⇒ P
 4. **臂**：`dry`（@@\gamma_{\rm RS}@@）/ `wet`（规定 @@\gamma_f@@）/ `auto`（ψ 判决）
    + `γ=100` 量具正对照 + `nv=1` 量具负对照。
 
-### 4.3 每条 700/400 步算例必须留的东西
+### 4.3 每条算例必须留的东西 —— **已落实并交叉验证**
 
-* `series.csv`（量具全量，每步或每 N 步）
-* `snap_XXXXX.npz`（**全量 φ + region + 三轴 + vmap**）⇒ 量具有 bug 也能事后重测
-* `meta.json`（引擎 sha / 参数 / 臂定义）
+| 文件 | 内容 | 大小（N=192, 7 场） |
+|---|---|---|
+| `series.csv` | 量具全量（每 5 步一行，24 列） | 几 KB |
+| `snap_XXXXX.npz` | **`region`（int8, 7 MB）+ 三轴 + vmap**（量具所需的**全部**输入）；`phi` 由 `--phi-every` 单独控制 | 165 MB（含 φ）/ ~2 MB（仅 region） |
+| `seeds.npz` | t=0 的 φ + region | 165 MB |
+| `meta.json` | 引擎/板条层/量具的 **sha256** + 全部参数 + 臂定义 + θ/γ_RS 表 | 2 KB |
+
+> ★★ **"量具可事后重测"已**实测验证**（用户明确要求）**：
+> 用工位外的独立进程读落盘快照重测
+> ```
+> python3 _bk_measure.py --npz _exp/_bk_block/wet_p2/snap_00000.npz
+>   → nslab_n=6  runs=1,2,3,4,5,6  f3_area=7.1831 µm²  nreg_used=6
+> ```
+> **与运行中同一状态的在线读数逐位一致**（在线：`nslab=6 nf3col=5 面积=7.1831 µm²`）。
+> ⇒ **量具若将来出 bug，历史数据仍然可用**。
+> （这条路径本身在第一版里是坏的：快照存的是 `vmap_keys` 而脚本读 `nv` ⇒ `KeyError`。已修。）
 
 ---
 

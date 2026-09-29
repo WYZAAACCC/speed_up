@@ -438,12 +438,19 @@ def main():
         return _selftest()
     z = np.load(a.npz)
     reg = z['region']
-    nv = int(z['nv'])
-    vmap = {k: 1 for k in range(1, nv + 1)}
-    if 'vmap' in z.files:
+    # ★★ 兼容 `_bk_exp.py` 的快照格式：它存的是 **`vmap_keys`/`vmap_vals`**（不是 `nv`）。
+    #   这条路径就是用户要求的"量具有 bug 也能事后用修好的工具在完整数据上重测"
+    #   ⇒ 必须真的能跑通（本文件第一版这里会 KeyError('nv')）。
+    if 'vmap_keys' in z.files:
         vmap = {int(k): int(v) for k, v in zip(z['vmap_keys'], z['vmap_vals'])}
+    elif 'vmap' in z.files:
+        vmap = {int(k): int(v) for k, v in zip(z['vmap'][0], z['vmap'][1])}
+    else:
+        nv = int(z['nv']) if 'nv' in z.files else int(reg.max())
+        vmap = {k: 1 for k in range(1, nv + 1)}
     r = measure_state(reg, float(z['L']) / reg.shape[0], z['n_hab'], z['w_ax'],
                       z['a_ax'], vmap)
+    print('文件 %s   N=%d  板条场=%s' % (a.npz, reg.shape[0], sorted(vmap)))
     for k in sorted(r):
         print('  %-16s %s' % (k, r[k]))
     return 0
