@@ -1230,7 +1230,8 @@ class LevelSetMulti(object):
     def nuc_cfg(self, R_nuc, t_nuc, gamma=0.15, n_init=0, p_auto=0.0,
                 harden_f=1.0, sym_gap_cells=2, max_per_step=1, seed=11,
                 var_rule='ed', use_fcrit=False,
-                vgroup=None, nfsv=False, attach=False, attach_overlap=0.0):
+                vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
+                elong=1.0, along=None):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
         （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
         `WINDOWB_AUDIT_REGISTER.md` D4/A7。三种处置任选其一，**但必须显式**：
@@ -1321,6 +1322,24 @@ class LevelSetMulti(object):
                                  if vgroup is not None else None),
                          nfsv=bool(nfsv), attach=bool(attach),
                          attach_overlap=float(attach_overlap),
+                         # ★★★ R12：**核的形状**。原先两条通道都调
+                         #   `seed_plate(k, cc, nrm, R, t)` —— **不传 `elong`/`along`
+                         #   ⇒ 播的是圆盘**（面内足迹 `πR²`）。
+                         #   实测代价（`--arm eng`，R=320 nm，200 步）：
+                         #     第一次引擎事件的 F3 接触面 **0.3906 µm²**
+                         #     —— 正好是 `π·320² = 0.3217 µm²` 的量级，
+                         #     而驱动层 `_seed_next` 传了
+                         #     `elong=L/W=3.75, along=a_ax, flat_end=True`
+                         #     ⇒ 足迹 640×2400 = **1.536 µm²**，同一步给 **1.5174 µm²**。
+                         #   ⇒ 终态 `f3_area` 1.0687 vs 7.6448（**小 7 倍**）、
+                         #     `Vt` 1.1580 vs 2.6897、`nslab_n` 只到 5。
+                         #   机理与 `LR1` 的旧结论一致：**块被锁在种子形状上**
+                         #   （圆盘种子只能给出长/宽≈1 的等轴块）。
+                         #   `elong=1.0 + along=None` ⇒ `seed_plate` 走原分支
+                         #   ⇒ **与改动前逐位相同**（由 `_bk_nuc_identity.py` 的 U-1 保证）。
+                         elong=float(elong),
+                         along=(None if along is None
+                                else np.asarray(along, float).copy()),
                          rng=np.random.default_rng(seed))
         # ★★ 记账（Round 63 接线；**Round 84 更正依据**——`ReferenceAudit` #14）：
         #   `p_auto` **已接线并使用**（见下面 sympathetic 分支的 `_gain`）。
@@ -1635,7 +1654,10 @@ class LevelSetMulti(object):
                                 _dbg['cov'] += 1
                                 continue
                             try:
-                                self.seed_plate(k_new, cc, nrm, R, t)
+                                self.seed_plate(k_new, cc, nrm, R, t,
+                                                elong=c.get('elong', 1.0),
+                                                along=c.get('along'),
+                                                flat_end=True)
                                 out.append((k_new, 'attach'))
                                 _dbg['ok'] += 1
                                 _dbg['attach_ok'] = _dbg.get('attach_ok', 0) + 1
@@ -1691,7 +1713,10 @@ class LevelSetMulti(object):
                                 _dbg['cov'] += 1
                                 continue
                             try:
-                                self.seed_plate(k, cc, nrm, R, t)
+                                self.seed_plate(k, cc, nrm, R, t,
+                                                elong=c.get('elong', 1.0),
+                                                along=c.get('along'),
+                                                flat_end=True)
                                 out.append((k, 'stack'))
                                 _dbg['ok'] += 1
                                 done = True

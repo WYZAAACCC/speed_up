@@ -325,7 +325,9 @@ def run(a):
                   p_auto=0.0, harden_f=1.0, sym_gap_cells=0, max_per_step=1,
                   seed=a.eng_seed, var_rule='ed',
                   vgroup=vmap, nfsv=True, attach=True,
-                  attach_overlap=a.nuc_overlap_nm * 1e-9)
+                  attach_overlap=a.nuc_overlap_nm * 1e-9,
+                  elong=(a.eng_elong if a.eng_elong > 1.0 else 1.0),
+                  along=(a_ax if a.eng_elong > 1.0 else None))
         _ed_dummy = np.zeros((g.nreg, 1, 1, 1))
         P('★★★ 臂 eng：**形核交给引擎**（`nucleate` 的 stack 通道 + attach + nfsv）'
           '；R=%.0f nm t=%.0f nm，咬入 %.1f nm，节奏 %s，seed=%d'
@@ -334,6 +336,11 @@ def run(a):
              a.eng_seed))
         P('   ⚠ 记账：**速率仍由驱动层的节奏规定** —— 引擎的 sympathetic 通道'
           '目前**没有速率律**（`use_fcrit` 只覆盖 `fresh`）。')
+        P('   核形状：%s'
+          % ('**长条** elong=%.2f 沿 a 轴（与驱动层一致）' % a.eng_elong
+             if a.eng_elong > 1.0 else
+             '**圆盘**（引擎原行为）—— 实测足迹只有长条板的 1/5，'
+             'F3 面积会小 ~7 倍'))
     np.savez_compressed(
         os.path.join(outdir, 'seeds.npz'), phi=g.phi.astype(np.float32),
         region=g.region(), n_hab=n_hab, w_ax=w_ax, a_ax=a_ax,
@@ -591,6 +598,12 @@ def main():
     ap.add_argument('--eng-r-nm', type=float, default=320.0)
     ap.add_argument('--eng-t-nm', type=float, default=250.0)
     ap.add_argument('--eng-seed', type=int, default=11)
+    # ★★★ R12：**核的形状**。默认 0 ⇒ 圆盘（= 引擎原行为）。
+    #   实测（`--arm eng`，R=320、200 步）圆盘给出的第一次接触面只有 0.39 µm²，
+    #   而驱动层的长条板条给 1.5174 µm² ⇒ 终态 F3 面积差 **7 倍**。
+    #   传 `--eng-elong 3.75` 即恢复 `L/W = 2400/640` 的长条（沿 `a` 轴）。
+    ap.add_argument('--eng-elong', type=float, default=0.0,
+                    help='0 = 圆盘（引擎原行为）；>1 = 长条核（沿用 a 轴）')
     # ★★ Round 10 实测更正：`--nuc-compensate` 用**名义** `o` 补，而**补过头了**。
     #   证据（同配置三点）：
     #     `gs4`（不补）   厚度 238/238/239/230/254/250（均值 241.5，−3.4%）Vt 2.1062
