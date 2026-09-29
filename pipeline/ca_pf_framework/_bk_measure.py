@@ -80,11 +80,53 @@ def _ncomp(mask):
     return len({find(i) for i in range(1, n + 1)})
 
 
-def _extent(pos, mask, dx):
-    if not mask.any():
+def _bbox_of(mask, pad=0):
+    """`mask` 的**索引空间**包围盒（用可分离投影求，**零 N³ 临时**）。
+
+    ★ 为什么必须这样（本文件 v1 的内存问题）：v1 直接造三张 (N,N,N) float64
+      坐标网格（N=192 时 **3×56.6 = 170 MB**），再 `rel` 一份、`pa/pw/pn` 三份
+      ⇒ 单次测量 ~500 MB 瞬时分配。生产跑每 5 步测一次 ⇒ 把 WSL 推到
+      swap 8188/8192 = **99.9%**、一个进程卡在 **D 态**。
+      改成"先求包围盒，再只在小盒上算" ⇒ 瞬时分配降到 **KB 量级**。
+    """
+    N = mask.shape[0]
+    xs = np.flatnonzero(mask.any(axis=(1, 2)))
+    ys = np.flatnonzero(mask.any(axis=(0, 2)))
+    zs = np.flatnonzero(mask.any(axis=(0, 1)))
+    if xs.size == 0:
+        return None
+    return (slice(max(0, xs[0] - pad), min(N, xs[-1] + 1 + pad)),
+            slice(max(0, ys[0] - pad), min(N, ys[-1] + 1 + pad)),
+            slice(max(0, zs[0] - pad), min(N, zs[-1] + 1 + pad)))
+
+
+def _sub_coord(bb, dx):
+    return [np.arange(bb[t].start, bb[t].stop) * dx for t in range(3)]
+
+
+def _linear_extent(mask, u, dx, pad=0):
+    """沿方向 `u` 的尺寸（**精确**，只在小盒上算）。
+
+    线性泛函 @@u\\cdot x@@ 在集合上的极值必在集合内取到，
+    而索引包围盒**包含**集合 ⇒ 在包围盒内取极值**精确**。
+    """
+    bb = _bbox_of(mask, pad)
+    if bb is None:
         return 0.0, 0.0
-    v = pos[mask]
+    c = _sub_coord(bb, dx)
+    val = (u[0] * c[0][:, None, None] + u[1] * c[1][None, :, None]
+           + u[2] * c[2][None, None, :])
+    v = val[mask[bb]]
+    if v.size == 0:
+        return 0.0, 0.0
     return float(v.max() - v.min()), float(v.max() - v.min() + dx)
+
+
+def _extent(pos, mask, dx):
+    """保留旧签名（外部可能调用）：`pos` 此刻可以是 (u, dx) 元组或已弃用。"""
+    if isinstance(pos, tuple) and len(pos) == 2 and np.ndim(pos[0]) == 1:
+        return _linear_extent(mask, np.asarray(pos[0], float), pos[1])
+    raise TypeError('_extent 已改为 _linear_extent(mask, u, dx)；请勿再用全网格 pos')
 
 
 def _coord_grid(N, dx):
@@ -106,23 +148,41 @@ def column_profile(region, dx, n_hab, w_ax, a_ax, allowed, r_col=300e-9,
     m_all = np.isin(region, list(allowed))
     if not m_all.any():
         return None, []
-    X = _coord_grid(N, dx)
+    # ---- 质心：用**可分离投影**求，**不materialize 任何 N³ 临时** ----
+    ii = np.arange(N) * dx
     cnt = float(m_all.sum())
-    c = np.array([float((X[t] * m_all).sum()) / cnt for t in range(3)])
-    rel = [X[t] - c[t] for t in range(3)]
-    pa = a_ax[0] * rel[0] + a_ax[1] * rel[1] + a_ax[2] * rel[2]
-    pw = w_ax[0] * rel[0] + w_ax[1] * rel[1] + w_ax[2] * rel[2]
-    col = m_all & (pa ** 2 + pw ** 2 <= r_col ** 2)
+    s = [m_all.sum(axis=(1, 2)), m_all.sum(axis=(0, 2)), m_all.sum(axis=(0, 1))]
+    c = np.array([float((ii * s[t]).sum()) / cnt for t in range(3)])
+    rc = int(np.ceil(r_col / dx)) + 1
+    # ---- 柱的索引包围盒 ----
+    # ★★ 坑（本文件 v1.1 踩过）：柱是**沿 n* 的圆柱**，它在 n* 方向**贯穿整个堆叠**
+    #   ⇒ 索引空间的包围盒**不能**取"质心 ± rc 胞"（那会把两端的板条切掉，
+    #     实测 C13b 少了板条 1、C11 的 nslab 从 23 掉到 4）。
+    #   正确做法：取 **`m_all` 的包围盒**再外扩 `rc`（保证面内半径够用）。
+    #   对"紧凑的板条堆叠"这个盒子很小（生产臂 ~5.5×1×1.5 µm ⇒ 几万胞 vs 7e6）
+    #   ⇒ 内存收益仍在；对**随机噪声**（C11 的合成对照）它会退化成整盒，但那只在自检里。
+    bb = _bbox_of(m_all, pad=rc)
+    sub_m = m_all[bb]
+    if not sub_m.any():
+        return None, []
+    sub_r = region[bb]
+    cc = _sub_coord(bb, dx)
+    # ★ 三个轴必须各自 reshape 成 (n,1,1)/(1,n,1)/(1,1,n) 才会广播成 3D
+    r3 = [(cc[t] - c[t]) for t in range(3)]
+    r3 = [r3[0][:, None, None], r3[1][None, :, None], r3[2][None, None, :]]
+    pa = a_ax[0] * r3[0] + a_ax[1] * r3[1] + a_ax[2] * r3[2]
+    pw = w_ax[0] * r3[0] + w_ax[1] * r3[1] + w_ax[2] * r3[2]
+    pn = n_hab[0] * r3[0] + n_hab[1] * r3[1] + n_hab[2] * r3[2]
+    col = sub_m & (pa ** 2 + pw ** 2 <= r_col ** 2)
     if not col.any():
         return None, []
-    pn = n_hab[0] * rel[0] + n_hab[1] * rel[1] + n_hab[2] * rel[2]
     v = pn[col]
-    ids = region[col]
+    ids = sub_r[col]
     edges = np.arange(v.min() - 0.5 * dx, v.max() + 1.5 * dx, dx)
     prof = np.zeros(len(edges) - 1, np.int32)
-    idx = np.digitize(v, edges) - 1
+    idxb = np.digitize(v, edges) - 1
     for b in range(prof.size):
-        sel = (idx == b)
+        sel = (idxb == b)
         if not sel.any():
             continue
         prof[b] = int(np.bincount(ids[sel]).argmax())
@@ -133,7 +193,7 @@ def column_profile(region, dx, n_hab, w_ax, a_ax, allowed, r_col=300e-9,
             segs[-1][1] += 1
         else:
             segs.append([int(val), 1])
-    runs = [s[0] for s in segs if s[0] != 0 and s[1] >= min_run]
+    runs = [s0[0] for s0 in segs if s0[0] != 0 and s0[1] >= min_run]
     return prof, runs
 
 
@@ -155,9 +215,6 @@ def measure_state(region, dx, n_hab, w_ax, a_ax, vmap, r_col=300e-9):
     allowed = set(laths)
     axes = dict(n=np.asarray(n_hab, float), w=np.asarray(w_ax, float),
                 a=np.asarray(a_ax, float))
-    ii = np.arange(N)
-    pos = {nm: dx * (u[0] * ii[:, None, None] + u[1] * ii[None, :, None]
-                     + u[2] * ii[None, None, :]) for nm, u in axes.items()}
     out = {}
     for k in range(nreg):
         m = (region == k)
@@ -165,7 +222,7 @@ def measure_state(region, dx, n_hab, w_ax, a_ax, vmap, r_col=300e-9):
         out['ncomp_%d' % k] = _ncomp(m)
         if k in allowed:
             for nm in ('n', 'w', 'a'):
-                e, eb = _extent(pos[nm], m, dx)
+                e, eb = _linear_extent(m, axes[nm], dx)
                 out['%s_%d' % (nm, k)] = e
                 out['%sb_%d' % (nm, k)] = eb
     out['nreg_used'] = int(sum(1 for k in laths if out['vol_%d' % k] > 0))
@@ -197,7 +254,11 @@ def measure_state(region, dx, n_hab, w_ax, a_ax, vmap, r_col=300e-9):
     out['f3_area'] = float((fdir * np.abs(np.asarray(n_hab, float))).sum()) * dx ** 2
     out['f3_area_stair'] = float(fdir.sum()) * dx ** 2
     if f3_cells.any():
-        vv = pos['n'][f3_cells]
+        bb = _bbox_of(f3_cells)
+        cc = _sub_coord(bb, dx)
+        pn = (axes['n'][0] * cc[0][:, None, None] + axes['n'][1] * cc[1][None, :, None]
+              + axes['n'][2] * cc[2][None, None, :])
+        vv = pn[f3_cells[bb]]
         out['f3_pos_n'] = float(vv.mean())
         out['f3_std_n'] = float(vv.std())
     else:

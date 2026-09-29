@@ -2535,6 +2535,28 @@ class LevelSetMulti(object):
         karr, larr = self.par.argmin2(self.phi)
         karr = karr.astype(np.intp)
         larr = larr.astype(np.intp)
+        # ★★★ R-block（2026-09-29）：**F3 面能表 —— 主线程一次性向量化预计算**。
+        #
+        #   为什么必须这么写（两条，缺一不可）：
+        #   ① **并行适配**：`_geom_k(k)` 是在 `self.par.for_each(...)` 的**工作线程**里
+        #      跑的（见下面 `for_each` 那一行）。任何"在 worker 里做重分配"的写法
+        #      都会 (a) 放大内存峰值、(b) 把 GIL/内存带宽变成瓶颈。
+        #      ⇒ 正确分工：**主线程建表（只读）→ worker 只做零分配的 `[bb]` 切片**。
+        #      `_gc_full` 建好后**不再被写** ⇒ 无竞争、无共享可变状态。
+        #   ② **内存**：若在 `_geom_k` 里逐场调用 `facet_gamma_sub(k, larr[bb], gamma0)`，
+        #      每个活跃场要分配 3–4 份子盒大小的临时数组
+        #      （N=192 时 56 MB/份 ⇒ 7 个场 ≈ **1.2 GB/步**的瞬时分配）。
+        #      实测这条把 WSL 推到 **swap 8188/8192 = 99.9%**、并让一个进程卡在 D 态。
+        #      ⇒ 改成一次 N³ gather（≈226 MB，含临时），**降 5 倍以上**。
+        #   ③ **数值**：`_gc_full[bb]` 与逐场调用的结果**逐位相同**
+        #      （同一个 `gtab[k][clip(l)]`，同一个 `where(isfinite, ·, gamma0)`）。
+        #      ⇒ 不改变任何归约次序 ⇒ **线程数仍不是物理参数**（判据 `_bk_par_identity.py`）。
+        self._gc_full = None
+        if getattr(self, 'lath', None) is not None:
+            _g0 = self.gamma if gamma0 is None else float(gamma0)
+            _G = self.lath.gtab[np.clip(karr, 0, self.nreg - 1),
+                                np.clip(larr, 0, self.nreg - 1)]
+            self._gc_full = np.where(np.isfinite(_G), _G, _g0)
         if per_field:
             ed = self.elastic_driving()
             # ★★ 按**场**推进（2026-09-25 新增，方案 (a)）—— 见 `_advance_perfield` 的记账。
@@ -2569,7 +2591,8 @@ class LevelSetMulti(object):
             _nref_sub = (self.facet_nref(k, larr[bb], npref)
                          if getattr(self, 'facet_id_gamma', True) else None)
             stksub = self._stiff_of(k, gsub, gnsub, npref, aniso,
-                                    self.facet_gamma_sub(k, larr[bb], gamma0),
+                                    (self._gc_full[bb] if self._gc_full is not None
+                                     else gamma0),
                                     herring, facet_lam, facet_eps,
                                     nref_cell=_nref_sub)
             # ★★ T10：把**相干界面弹性能** `γ_el` 按面片身份加到界面上
@@ -2598,6 +2621,9 @@ class LevelSetMulti(object):
         #   `lambda_el=0` 默认时根本不会被调用）。
         self.par.for_each([(lambda k=int(k): _geom_k(int(k))) for k in act],
                           tag='advance.geom_k')
+        # ★ R-block：worker 已全部结束 ⇒ **立刻释放**这张 N³ 表，
+        #   不让它常驻（N=192 时 56 MB）。它只在 `_geom_k` 里被读。
+        self._gc_full = None
         # 每胞的配对速度（正 = winner 长大）
         # ★ T3：只算 winner/runner-up 两份（旧写法造 (nreg,N,N,N) 再 take_along_axis）
         edk, edl = self.elastic_driving_pair(karr, larr)
