@@ -138,6 +138,33 @@ def main():
        b4['n_habit'] == 1 and b5['n_habit'] == 2,
        '%d / %d' % (b4['n_habit'], b5['n_habit']))
 
+    print('\nK-7 ★ 逐块沿**该块自己的 n\\*** 数板条（多块配置的关键判据）')
+    # 块 A（变体 1）的 n* = +z；块 B（变体 3）的 n* 取一个**斜的**方向
+    nA = np.array([0.0, 0.0, 1.0])
+    nB = np.array([1.0, 0.0, 0.0])
+    axes_var = {1: (nA, AA, WA), 3: (nB, np.array([0.0, 1.0, 0.0]), WA)}
+    reg7 = np.zeros((N, N, N), np.int8)
+    # 块 A：沿 z 堆 3 根（在 a 方向偏 −1500 nm）
+    for j in range(3):
+        slab(reg7, j + 1, (j - 1) * 250e-9, -1500e-9, 125e-9)
+    # 块 B：沿 x 堆 2 根（在 a 方向偏 +1500 nm）⇒ 与块 A 的 n* 正交
+    ii = np.arange(N) * DX
+    rel = [ii[:, None, None] - L / 2, ii[None, :, None] - L / 2,
+           ii[None, None, :] - L / 2]
+    dx_ = rel[0] - 1500e-9
+    dnB = rel[2]
+    for j in range(2):
+        m = (np.abs(dx_ - (j - 0.5) * 250e-9) <= 125e-9) & (np.abs(dnB) <= 600e-9) \
+            & (np.abs(rel[1]) <= 600e-9)
+        reg7[m] = j + 4
+    vm7 = {1: 1, 2: 1, 3: 1, 4: 3, 5: 3}
+    b7 = BM.blocks(reg7, DX, vm7, eps0_var=EPS0, npf_var=NPF_EXACT, axes_var=axes_var)
+    print('   nblk_sig=%d blk_vars=%s blk_laths=%s  **blk_nlath=%s**  blk_span_nm=%s'
+          % (b7['nblk_sig'], b7['blk_vars'], b7['blk_laths'], b7['blk_nlath'],
+             b7['blk_span_nm']))
+    ck('K-7 逐块数板条 = 3/2（沿各自 n*；全局柱口径给不出这个数）',
+       b7['blk_nlath'] == '3/2', 'blk_nlath=%s' % b7['blk_nlath'])
+
     print('\n' + '=' * 80)
     print('R30 J-1（块表量具）自检：%s（FAIL=%d）'
           % ('全过 ✅' if not fails else '有 FAIL ❌', len(fails)))

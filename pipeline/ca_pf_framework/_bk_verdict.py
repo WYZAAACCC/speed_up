@@ -322,19 +322,73 @@ def main():
         #   `max=3.417 Δx` 并被判 FAIL，但**这不是界面迁移**。
         # ★ 判据改成：**剔除 `nslab_n` 发生变化的那些测点**之后，
         #   相邻测点的 |Δpos| 变化 < 0.12 Δx。只用 CSV 里已有的列，可证伪。
-        if grown:
+        # ---- V-3h ★★ R31：**逐对**界面位移（取代被面积稀释的汇总口径）---------
+        #   病灶（`R30_AUDIT_LEDGER.md` **P0-2**，S2 的合成对照实测）：
+        #     汇总 `f3_pos_dx` = `Σ_j (A_j/ΣA)·δ_j` ⇒ **单张界面动 1.000Δx 只读成
+        #     0.2227Δx**（低读 78%）；而且**任何一张界面的面积份额变化**都会让它动，
+        #     哪怕"界面本身"完全没动。
+        #   ⇒ 正确口径：**逐对**算位移，报"动得最多的那一对"。
+        #   数据来源：`f3_pairs_pos` 列（逐对界面位置，单位 Δx，R29 已落盘）。
+        #   ⚠ 记账：`f3_pairs_pos` 只在 `--pair-every` 命中时才有值；老归档里可能整列为空
+        #     ⇒ 那时本判据报"无法判定"，**不**回退到汇总口径（回退会掩盖缺陷）。
+        if grown and rows and 'f3_pairs_pos' in rows[0]:
+            _pp = []
+            for i, r_ in enumerate(rows):
+                raw = (r_.get('f3_pairs_pos') or '').strip()
+                if not raw:
+                    continue
+                d_ = {}
+                # 格式（`_bk_exp._pairpos_str`）：`i-j:%.5g` 用 **`/`** 连接
+                for tok in raw.replace(';', '/').split('/'):
+                    tok = tok.strip()
+                    if not tok or ':' not in tok:
+                        continue
+                    key, val = tok.rsplit(':', 1)
+                    try:
+                        d_[key.strip()] = float(val)
+                    except ValueError:
+                        pass
+                if d_:
+                    _pp.append((int(round(fnum(r_, 'step'))),
+                                int(round(fnum(r_, 'nslab_n1')
+                                             if 'nslab_n1' in r_ else
+                                             fnum(r_, 'nslab_n'))), d_))
             jj = []
-            for i in range(1, len(rows)):
-                if int(round(ns[i])) != int(round(ns[i - 1])):
+            for i in range(1, len(_pp)):
+                if _pp[i][1] != _pp[i - 1][1]:
                     continue                       # 形核步：跳过
-                a0 = fnum(rows[i - 1], 'f3_pos_dx')
-                a1 = fnum(rows[i], 'f3_pos_dx')
-                if np.isfinite(a0) and np.isfinite(a1):
-                    jj.append(abs(a1 - a0))
-            ck.append(('V-3g 界面不动（**剔除形核步**后 max|ΔΔpos| < 0.12 Δx）',
-                       (max(jj) < 0.12) if jj else None,
-                       ('max=%.4f Δx（%d 个非形核测点）' % (max(jj), len(jj)))
-                       if jj else '**无有效测点**'))
+                for key in _pp[i][2]:
+                    if key in _pp[i - 1][2]:
+                        jj.append((abs(_pp[i][2][key] - _pp[i - 1][2][key]),
+                                   key, _pp[i][0]))
+            if jj:
+                jj.sort(key=lambda t: -t[0])
+                mx, key, st = jj[0]
+                ck.append(('V-3h 逐对界面位移（剔除形核步后 max|Δpos_pair| < 0.12Δx）',
+                           mx < 0.12,
+                           '最差对 **%s** 在 step %d：%.4f Δx（共 %d 个逐对测点，'
+                           '涉及 %d 对）；汇总口径给 %.4f Δx'
+                           % (key, st, mx, len(jj),
+                              len({k for _v, k, _s in jj}), max(dp) if dp else float('nan'))))
+            else:
+                ck.append(('V-3h 逐对界面位移（剔除形核步后 max|Δpos_pair| < 0.12Δx）',
+                           None, '**无有效逐对测点**（`f3_pairs_pos` 为空或无相邻非形核行）'))
+        # V-3g 的**汇总口径**：保留但降级为"只报不判"（严格按 P0-2 的结论）。
+        # ⚠ 它**必须在这个 `if` 之外**：`f3_pairs_pos` 缺失时 V-3h 判不了，
+        #   但汇总口径仍然应该报出来（否则"这一臂没有逐对数据"会被读成"没问题"）。
+        if grown:
+            _jj = []
+            for _i in range(1, len(rows)):
+                if int(round(ns[_i])) != int(round(ns[_i - 1])):
+                    continue
+                _a0 = fnum(rows[_i - 1], 'f3_pos_dx')
+                _a1 = fnum(rows[_i], 'f3_pos_dx')
+                if np.isfinite(_a0) and np.isfinite(_a1):
+                    _jj.append(abs(_a1 - _a0))
+            ck.append(('V-3g 界面不动（**汇总口径，只报不判**；判决看 V-3h）', None,
+                       ('max|ΔΔpos|=%.4f Δx（%d 个非形核测点）—— **不得单独引用**：'
+                        '合成对照实测「一张界面动 1.000Δx 只读成 0.2227Δx」'
+                        % (max(_jj), len(_jj))) if _jj else '**无有效测点**'))
         # ★ V-2g：**逐步**逐板条体积（来自 `vols` 列，Round 10 起才有）。
         #   V-2 只能看快照（默认 50 步一个）⇒ 中间过程全丢。V-2g 用**每个测点**，
         #   报每根板条"出生后相对最大值的最大跌幅"。

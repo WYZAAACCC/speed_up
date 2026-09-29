@@ -70,6 +70,8 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         #   ⚠ 只落数据；对应的逐对判据**未实现未验证**。
         'f3_pairs_pos',
         'nf3', 'f3_area_m2', 'f3_area_stair', 'f3_pos_m', 'f3_pos_dx',
+        # ★ R31：F2（异变体界面）—— 块—块相遇的签名
+        'nf2', 'f2_area_m2',
         'f3_std_m', 'n_lath', 'w_lath', 'a_lath', 'box_touch', 'finite',
         'psi_mean',
         # ★★★ R29：**CFL 实际用量** `dt·M·dG_max/dx`（单位：胞/步）。
@@ -86,8 +88,51 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         #   `dry_cln11` step2000 的场 2 完全不可见。
         #   ⇒ **两个口径都存**：旧列保留（历史读数可复现），新列供判决。
         #   `r_col_nm`/`col_cover_min` 是**可见性守卫**：静默丢层从此是落盘数字。
-        'nslab_n1', 'runs1', 'nf3_col1', 'r_col_nm', 'col_cover_min']
+        'nslab_n1', 'runs1', 'nf3_col1', 'r_col_nm', 'col_cover_min',
+        # ★★★ R31（目标第 (2) 项）：**全局弹性能** + **块表**
+        #   （`BLOCK_SELFAC.md` 的 J-1/J-3；`P-SA-1`/`P-SA-3` 的判据量）。
+        #   块表只在 `--pair-every` 命中时算（它含 3D 连通标注）⇒ 否则列为空串。
+        'E_el_J',
+        'nblk_sig', 'blk_laths', 'blk_vars', 'n_var_sig', 'n_habit', 'f_var',
+        'r_selfac',
+        # ★ R31：**逐块沿它自己的 n\*** 数板条（多块配置下沿单一 n* 的柱剖面无意义）。
+        'blk_nlath', 'blk_span_nm', 'blk_alen_nm', 'blk_wlen_nm']
 assert len(COLS) == len(set(COLS))
+
+
+_BLK_EMPTY = dict(nblk_sig='', blk_laths='', blk_vars='', n_var_sig='',
+                  n_habit='', f_var='', r_selfac='', blk_nlath='', blk_span_nm='',
+                  blk_alen_nm='', blk_wlen_nm='')
+
+
+def _blk_cols(g, reg, dx, vmap):
+    """★ R31（J-1/J-2）：**块表**的 CSV 列（`_bk_measure.blocks()` 的薄包装）。
+
+    ⚠ 只在 `--pair-every` 命中时调用（含 3D 连通标注）；否则由 `_BLK_EMPTY` 填空串，
+    ⇒ `series.csv` 的列**永远存在**（`COLS` 的 `_miss` 硬检查不会炸）。
+    """
+    try:
+        import _bk_measure as _BM
+        ax = {}
+        for _v in sorted(set(int(x) for x in vmap.values())):
+            _n = np.asarray(NPF[_v], float)
+            _nref, _, _ = W.argmin_normal_cached(C, np.asarray(EPS0[_v - 1], float))
+            _R = W.LevelSetMulti._rank1_axes(np.asarray(EPS0[_v - 1], float), _nref)
+            ax[_v] = (np.asarray(NPF[_v], float), np.asarray(_R[1], float),
+                      np.asarray(_R[2], float))
+        b = _BM.blocks(reg, dx, vmap, eps0_var=EPS0, npf_var=NPF, axes_var=ax)
+        return dict(nblk_sig=int(b['nblk_sig']), blk_laths=b['blk_laths'],
+                    blk_vars=b['blk_vars'], n_var_sig=int(b['n_var_sig']),
+                    n_habit=int(b['n_habit']), f_var=b['f_var'],
+                    blk_nlath=b.get('blk_nlath', ''),
+                    blk_span_nm=b.get('blk_span_nm', ''),
+                    blk_alen_nm=b.get('blk_alen_nm', ''),
+                    blk_wlen_nm=b.get('blk_wlen_nm', ''),
+                    r_selfac=(round(float(b['r_selfac']), 6)
+                              if np.isfinite(b['r_selfac']) else ''))
+    except Exception as exc:                                    # pragma: no cover
+        print('⚠ 块表计算失败（不影响仿真）: %s' % exc, flush=True)
+        return dict(_BLK_EMPTY)
 
 
 def _sparse_band(phi, dx, band_cells):
@@ -343,6 +388,94 @@ def run(a):
     c0 = np.array([L / 2] * 3)
     T, gap = a.plate_T * 1e-9, a.gap_nm * 1e-9
     span = (M - 1) * (T + gap)
+
+    # ================= ★★★ R31（目标第 (2) 项 J-4）：**多块播种** =================
+    #   为什么必须新增（`R30_AUDIT_LEDGER.md` 的 **P1-13**，本轮登记）：
+    #     原来的播种**一律用 `laths[0]` 的 `n_hab`/`a_ax`/`w_ax`**（`:221-227`）——
+    #     对 `--laths 1,1,1,…`（全同变体）这是对的，但一旦变体不同，
+    #     就会把**变体 2 的板条也沿变体 1 的惯习面摆**，而惯习面是变体的**身份**。
+    #     ⇒ 多块仿真的第一件事就是把它改对。**归档单变体路径逐位不受影响**。
+    #   ★ 块的划分（`BLOCK_SELFAC.md §2.2`）：`laths_eff` 里**连续的同一个变体**算一块
+    #     （`[1,1,1,2,2,2]` ⇒ 2 块，各 3 根）。
+    #   ★ 布局：块心沿**块 0 的长轴 `a_0`** 排开，间距 `--block-gap-nm`（默认 2000 nm）
+    #     ⇒ 两块**相向长大**、在盒内相遇（`§7.2` 的 P-SA-2）。
+    def _variant_axes(v):
+        """变体 v 的 (n*, a, w) —— 与 `:221-227` **同一套定义**，只是按变体取。"""
+        nv_ = np.asarray(NPF[v], float)
+        nv_ = nv_ / np.linalg.norm(nv_)
+        nref_, _, _ = W.argmin_normal_cached(C, np.asarray(EPS0[v - 1], float))
+        R_ = W.LevelSetMulti._rank1_axes(np.asarray(EPS0[v - 1], float), nref_)
+        av_ = np.asarray(R_[1], float); av_ = av_ / np.linalg.norm(av_)
+        wv_ = np.asarray(R_[2], float); wv_ = wv_ / np.linalg.norm(wv_)
+        return nv_, av_, wv_
+
+    _blk = []                                   # [(variant, [field ids 1-based])]
+    for _i, _v in enumerate(laths_eff, start=1):
+        if _blk and _blk[-1][0] == int(_v):
+            _blk[-1][1].append(_i)
+        else:
+            _blk.append((int(_v), [_i]))
+    _blk_axes = [_variant_axes(v) for v, _ in _blk]
+
+    if a.multi_block:
+        nb = len(_blk)
+        _gap_blk = (a.block_gap_nm * 1e-9 if a.block_gap_nm > 0 else 2.0e-6)
+        P('★★★ R31 多块播种：%d 块（%s）；块心按 **c0 − d_b·a_b** 摆'
+          '（每块沿**自己的长轴**朝公共中心长大）'
+          % (nb, ' + '.join('V%d×%d' % (v, len(fs)) for v, fs in _blk)))
+        for _b, (_v, _fs) in enumerate(_blk):
+            _n, _aa, _ww = _blk_axes[_b]
+            # ★★ 布局方向**必须按每块自己的长轴反推**：实测 V1 的 a 与 V3 的 a
+            #   夹角约 121°（`a1·a3 = −0.518`）⇒ 若沿同一个方向排开，两块会**背向**
+            #   长大、永不相遇。取 `c0 − d_b·a_b` ⇒ 每块的 `+a_b` 都指向 c0 ✓。
+            _d = (_b - (nb - 1) / 2.0) * _gap_blk
+            _cb = c0 - _d * _aa
+            for _j, _fid in enumerate(_fs):
+                _off = (_j - (len(_fs) - 1) / 2.0) * (T + gap)
+                g.seed_plate(_fid, _cb + _off * _n, _n, a.plate_W * 0.5e-9, T,
+                             elong=a.plate_L / a.plate_W, along=_aa,
+                             flat_end=True)
+                n_seeded = _fid
+            P('   块%d：变体 V%d，%d 根；n*=%s  a=%s  块心=%s µm'
+              % (_b, _v, len(_fs), np.array2string(_n, precision=3),
+                 np.array2string(_aa, precision=3),
+                 np.array2string(_cb * 1e6, precision=2)))
+        g.init_parent()
+        # ★ 播种后**实测**两块之间的质心距（不靠推理）：若已经重叠就当场说清楚
+        #   （判据 P-SA-2 的前提是"它们能在预算内相遇、且 t=0 是分离的"）。
+        if nb >= 2:
+            _cc = []
+            for _v, _fs in _blk:
+                _m = np.zeros(g.region().shape, bool)
+                for _fid in _fs:
+                    _m |= (g.region() == _fid)
+                if _m.any():
+                    _cc.append(np.argwhere(_m).mean(0) * dx)
+            if len(_cc) >= 2:
+                _dist = float(np.linalg.norm(_cc[0] - _cc[1])) * 1e6
+                # ⚠ 单位：`--plate-L` 的单位是 **nm** ⇒ 到 µm 要 ×1e-3（第一版写成 1e-6，
+                #   于是"半长"被印成 0.00 µm、"分离"判据恒真 —— 本仓库第 5 次 nm/µm 混淆）。
+                _half = 0.5 * a.plate_L * 1e-3
+                P('   播种后**两块质心距** = %.2f µm（半长 %.2f µm；沿长轴到盒壁余量 %.2f µm）'
+                  % (_dist, _half, 0.5 * L * 1e6 - _half))
+                if _dist < _half:
+                    P('   ⚠⚠ 两块质心距 < 半长（粗判据）⇒ 可能重叠；看下面的**精确判据**')
+                # ★★ 精确判据（取代粗判据）：**t=0 有没有 F2（异变体）接触面**。
+                #   质心距只是粗判据（两块长轴夹角约 121°，包围盒重叠 ≠ 真接触）。
+                #   `F2 面数 == 0` ⟺ 两块在 t=0 **真正分离** —— 这是可证伪的。
+                _mA = np.zeros(g.region().shape, bool)
+                for _fid in _blk[0][1]:
+                    _mA |= (g.region() == _fid)
+                _mB = np.zeros(g.region().shape, bool)
+                for _fid in _blk[1][1]:
+                    _mB |= (g.region() == _fid)
+                _f2 = 0
+                for _ax in (0, 1, 2):
+                    for _sh in (1, -1):
+                        _f2 += int((_mA & np.roll(_mB, _sh, axis=_ax)).sum())
+                P('   **精确判据**：t=0 的两块异变体接触面 = **%d** 个格面 ⇒ %s'
+                  % (_f2, '✅ 真正分离' if _f2 == 0 else '⚠ 已接触（含初始混杂）'))
+
     P('播种 %d 片（%s nm）沿 n* 堆叠：厚 %.0f nm、间隔 %.0f nm、跨度 %.2f µm；'
       '沿 a 长 %.0f nm、沿 w 宽 %.0f nm'
       % (len(laths_eff), laths_eff, a.plate_T, a.gap_nm, (span + T) * 1e6,
@@ -437,6 +570,10 @@ def run(a):
              a.plate_T - (a.plate_t_physical if a.plate_t_physical > 0
                           else a.plate_T),
              a.eng_t_last_reduce_nm))
+    elif a.multi_block:
+        # ★★★ R31（J-4）：多块播种已在上面完成 ⇒ **跳过**原来的"沿同一个 n* 堆叠"
+        #   两支（否则会把刚播好的多块覆盖掉）。
+        n_seeded = nv
     elif len(laths_eff) == 1 and M > 1:
         for i in range(M):
             off = (i - (M - 1) / 2.0) * (T + gap)
@@ -451,14 +588,19 @@ def run(a):
                          elong=a.plate_L / a.plate_W, along=a_ax, flat_end=True)
         n_seeded = M
         g.init_parent()
-    margin = 0.5 * L - 0.5 * (span + T) - 0.5 * a.plate_L * 1e-9
-    P('   沿 n* 到盒壁余量 %.2f µm；沿 a 余量 %.2f µm（标量估计，%s）'
-      % ((0.5 * L - 0.5 * (span + T)) * 1e6, margin * 1e6,
-         '余量充裕' if margin > 1.0e-6 else
-         '⚠ 余量偏紧：归档几何下 700 步长跑会撞壁（见 §4.1）'))
+    if a.multi_block:
+        margin = 0.5 * L - 0.5 * (a.plate_L * 1e-9) - 0.5 * a.block_gap_nm * 1e-9
+        P('   多块：块心间距 %.2f µm ⇒ 沿长轴余量 %.2f µm'
+          % (a.block_gap_nm * 1e-3, margin * 1e6))
+    else:
+        margin = 0.5 * L - 0.5 * (span + T) - 0.5 * a.plate_L * 1e-9
+        P('   沿 n* 到盒壁余量 %.2f µm；沿 a 余量 %.2f µm（标量估计，%s）'
+          % ((0.5 * L - 0.5 * (span + T)) * 1e6, margin * 1e6,
+             '余量充裕' if margin > 1.0e-6 else
+             '⚠ 余量偏紧：归档几何下 700 步长跑会撞壁（见 §4.1）'))
     if margin < 0.5e-6:
         P('   ⚠⚠ 沿 a 余量 < 0.5 µm ⇒ **本算例会在中期撞盒壁**（`box_touch` 会置 1）')
-    if span + T > L:
+    if (span + T > L) and not a.multi_block:
         raise SystemExit('✗ 堆叠跨度 %.2f µm > 盒 %.2f µm —— 播不下'
                          % ((span + T) * 1e6, L * 1e6))
 
@@ -476,7 +618,12 @@ def run(a):
             _t_nuc = (250.0 + a.nuc_overlap_nm) * 1e-9
         g.nuc_cfg(a.eng_r_nm * 1e-9, _t_nuc, gamma=a.gamma0, n_init=0,
                   p_auto=0.0, harden_f=1.0, sym_gap_cells=0, max_per_step=1,
-                  seed=a.eng_seed, var_rule='ed',
+                  seed=a.eng_seed,
+                  # ★ R31（J-5）：**变体选择规则**暴露到驱动。
+                  #   `ed`（默认）= 按弹性能变化最小选（Du 2017）——**可以是涌现的**；
+                  #   `random` = 均匀随机（`BLOCK_SELFAC.md §7.1 P-SA-1` 的**负对照臂**）。
+                  #   ⚠ 默认仍是 `ed` ⇒ 归档逐位不变。
+                  var_rule=a.var_rule,
                   vgroup=vmap, nfsv=True, attach=True,
                   attach_overlap=a.nuc_overlap_nm * 1e-9,
                   elong=((a.eng_elong if a.eng_elong > 1.0
@@ -756,7 +903,8 @@ def run(a):
             f3_pairs=('' if not _pair_now else _pair_str(reg, mm)),
             f3_pairs_pos=('' if not _pair_now else _pairpos_str(reg)),
             nf3=mm['f3_faces'], f3_area_m2=mm['f3_area'],
-            f3_area_stair=mm['f3_area_stair'], f3_pos_m=pm,
+            # ★★ R31：**F2 面（异变体界面）** —— "块与块相遇"的签名（原来没有量具）
+            nf2=mm['f2_faces'], f2_area_m2=mm['f2_area'],            f3_area_stair=mm['f3_area_stair'], f3_pos_m=pm,
             f3_pos_dx=((pm - P0) / dx if (np.isfinite(pm) and P0 is not None)
                        else float('nan')),
             f3_std_m=mm['f3_std_n'],
@@ -774,6 +922,16 @@ def run(a):
             #   `g.dG_max`（第 0 步还没 advance ⇒ 没有该属性 ⇒ 记 nan，不假装是 0）。
             cfl_used=(float(dt) * MOB * float(getattr(g, 'dG_max', float('nan')))
                       / dx),
+            # ★ R31（J-3）：**全局弹性能**落盘。`BLOCK_SELFAC.md §7.1 P-SA-1` 的判据
+            #   （`ed` 臂 vs `random` 臂的末态 `E_el`）需要它，而此前**从未落盘**
+            #   （S5 的 G-8）。`g.pf` 是 FFT 谱法弹性求解器 ⇒ `E_el()` 是一次求和，便宜。
+            E_el_J=(float(g.pf.E_el()) if getattr(g, 'pf', None) is not None
+                    else float('nan')),
+            # ★ R31（J-1）：**块表**（块数 / 每块板条根数 / 变体分数 / 实测自协调残差 /
+            #   实测惯习面数）。⚠ `blocks()` 要对每个变体做一次 3D 连通标注
+            #   （scipy.ndimage.label），N=96 时约 0.1 s/变体 ⇒ 只在 `--pair-every`
+            #   命中时算（与逐对 F3 面积同一个节流阀）。
+            **(_blk_cols(g, reg, dx, vmap) if _pair_now else _BLK_EMPTY),
             # ★ R30（P0-1）：柱剖面的修正口径 + 可见性守卫
             nslab_n1=mm['nslab_n1'], runs1=mm['runs1'].replace(',', '/'),
             nf3_col1=mm['nf3_col1'], r_col_nm=round(mm['r_col_nm'], 1),
@@ -960,6 +1118,19 @@ def main():
     ap.add_argument('--phi-band-cells', type=int, default=6,
                     help='带内稀疏 φ 的判定带：存 |phi| <= 本值·dx 的胞（默认 6）')
     ap.add_argument('--laths', default='1,1,1,1,1,1')
+    # ★★★ R31（目标第 (2) 项 J-4）：**多块播种**。
+    #   `--laths 3,3` ⇒ 2 块（变体 1 的 3 根 + 变体 2 的 3 根）。
+    #   块内沿**该变体自己的** n* 堆叠；块心沿**块 0 的长轴 a** 排开 `--block-gap-nm`。
+    #   ⚠ 不传 `--multi-block` ⇒ 归档路径**逐位不变**（原来的"沿同一个 n* 堆叠"）。
+    ap.add_argument('--multi-block', action='store_true',
+                    help='按 laths 里**连续的同一个变体**分块；每块用该变体自己的 '
+                         'n*/a/w 播种，块心沿块 0 的长轴排开 --block-gap-nm')
+    ap.add_argument('--block-gap-nm', type=float, default=2000.0,
+                    help='多块播种时**块心间距**（nm）；<=0 ⇒ 用默认 2000 nm')
+    # ★ R31（J-5）：变体选择规则。`ed`（默认，归档）⇒ 逐位不变；
+    #   `random` 是 `BLOCK_SELFAC.md §7.1 P-SA-1` 的负对照臂。
+    ap.add_argument('--var-rule', default='ed', choices=['ed', 'random', 'doublet'],
+                    help='新核的**变体选择规则**：ed（按弹性能，默认）/ random / doublet')
     ap.add_argument('--omega-max-deg', type=float, default=5.0)
     ap.add_argument('--omega-mode', default='ladder', choices=['ladder', 'random'])
     ap.add_argument('--plate-L', type=float, default=2400.0)

@@ -142,7 +142,8 @@ def _label_periodic(mask):
     return remap[lab], nxt
 
 
-def blocks(region, dx, vmap, eps0_var=None, npf_var=None, min_vox=MIN_SIG_VOX):
+def blocks(region, dx, vmap, eps0_var=None, npf_var=None, min_vox=MIN_SIG_VOX,
+           axes_var=None):
     """★★★ R30（`BLOCK_SELFAC.md` §2.2 的 **J-1**）：**块表量具**。
 
     ## 定义（先写死）
@@ -203,6 +204,76 @@ def blocks(region, dx, vmap, eps0_var=None, npf_var=None, min_vox=MIN_SIG_VOX):
     sig.sort(key=lambda t: -t[1])
     out['blk_laths'] = '/'.join(str(t[2]) for t in sig[:12])
     out['blk_vars'] = '/'.join(str(t[0]) for t in sig[:12])
+
+    # ---- ★ R31：**逐块沿它自己的 n\*** 数板条（多块配置下"沿单一 n* 的柱剖面"无意义）
+    #   为什么必须逐块（R31 实测）：`--multi-block --laths 1,1,3,3` 的算例里，
+    #     全局 `nslab_n1` 给 4（沿块 0 的 n* 投影时把块 1 的 4 根也数进去了），
+    #     而两个块只有**各 2 根**。⇒ 判据必须逐块、用**该块自己的** n*。
+    #   实现：把该块的胞投影到 `n_b`，按 `dx` 分箱、取每箱的**众数场号**，
+    #     再去掉空箱与短于 `min_run` 的段（`min_run=1` ⇒ 不丢薄层）。
+    out['blk_nlath'] = ''
+    out['blk_span_nm'] = ''
+    out['blk_alen_nm'] = ''
+    out['blk_wlen_nm'] = ''
+    if axes_var is not None and sig:
+        _nl, _sp = [], []
+        _al, _wl = [], []
+        for v, _nvox, _nlaths, ids in sig[:12]:
+            try:
+                n_b = np.asarray(axes_var[v][0], float)
+                a_b = np.asarray(axes_var[v][1], float)
+                w_b = np.asarray(axes_var[v][2], float)
+            except (KeyError, IndexError, TypeError):
+                _nl.append(0)
+                _sp.append(float('nan'))
+                _al.append(float('nan'))
+                _wl.append(float('nan'))
+                continue
+            n_b = n_b / (np.linalg.norm(n_b) + 1e-300)
+            a_b = a_b / (np.linalg.norm(a_b) + 1e-300)
+            w_b = w_b / (np.linalg.norm(w_b) + 1e-300)
+            m = np.zeros((N, N, N), bool)
+            for k in ids:
+                m |= (region == k)
+            ii = np.arange(N) * dx
+            rel = [ii[:, None, None] - 0.0, ii[None, :, None] - 0.0,
+                   ii[None, None, :] - 0.0]
+
+            def _proj(u):
+                return u[0] * rel[0] + u[1] * rel[1] + u[2] * rel[2]
+
+            vv = _proj(n_b)[m]
+            if vv.size == 0:
+                _nl.append(0)
+                _sp.append(float('nan'))
+                _al.append(float('nan'))
+                _wl.append(float('nan'))
+                continue
+            edges = np.arange(vv.min() - 0.5 * dx, vv.max() + 1.5 * dx, dx)
+            ids_flat = region[m]
+            idxb = np.digitize(vv, edges) - 1
+            prof = np.zeros(len(edges) - 1, np.int32)
+            for bi in range(prof.size):
+                sel = (idxb == bi)
+                if sel.any():
+                    prof[bi] = int(np.bincount(ids_flat[sel]).argmax())
+            segs = []
+            for val in prof:
+                if segs and segs[-1][0] == int(val):
+                    segs[-1][1] += 1
+                else:
+                    segs.append([int(val), 1])
+            runs_b = [s0[0] for s0 in segs if s0[0] != 0 and s0[1] >= 1]
+            _nl.append(len(runs_b))
+            _sp.append(float(vv.max() - vv.min()) * 1e9)
+            # ★ R31：**该块自己的长轴/宽度方向的跨度** —— 判"块在面内停住没有"的量。
+            #   （用全局 `a_lath` 会把另一个变体的板条也混进中位数。）
+            _al.append(float(np.ptp(_proj(a_b)[m])) * 1e9)
+            _wl.append(float(np.ptp(_proj(w_b)[m])) * 1e9)
+        out['blk_nlath'] = '/'.join(str(x) for x in _nl)
+        out['blk_span_nm'] = '/'.join('%.0f' % x for x in _sp)
+        out['blk_alen_nm'] = '/'.join('%.0f' % x for x in _al)
+        out['blk_wlen_nm'] = '/'.join('%.0f' % x for x in _wl)
 
     # ---- 变体体积分数（对**已转变**体积归一）----
     vols = {v: float(sum(int((region == k).sum()) for k in laths
@@ -666,6 +737,25 @@ def measure_state(region, dx, n_hab, w_ax, a_ax, vmap, r_col=300e-9,
     out['f3_cells'] = int(f3_cells.sum())
     out['f3_area'] = float((fdir * np.abs(np.asarray(n_hab, float))).sum()) * dx ** 2
     out['f3_area_stair'] = float(fdir.sum()) * dx ** 2
+    # ---- ★★ R31：**F2 面（异变体界面）** —— 这是"**块与块相遇**"的签名 ----------
+    #   为什么必须补（S4 的发现）：`_bk_measure` 原来**只有 F1 与 F3**，
+    #   异变体对在 `:393` 被 `continue` 直接跳过 ⇒ **F2 连量具都没有**，
+    #   而"两块相遇后停住"这件事**只能**由 F2 面积的增长来证明。
+    #   ⇒ 同一套格面计数，只是把"同变体"换成"**异**变体"。
+    f2dir = np.zeros(3, np.int64)
+    for i, ki in enumerate(laths):
+        for kj in laths[i + 1:]:
+            if vmap[ki] == vmap[kj]:
+                continue
+            mi, mj = (region == ki), (region == kj)
+            if not mi.any() or not mj.any():
+                continue
+            for axx in (0, 1, 2):
+                for sh in (1, -1):
+                    f2dir[axx] += int((mi & np.roll(mj, sh, axis=axx)).sum())
+    out['f2_faces'] = int(f2dir.sum())
+    out['f2_area'] = float((f2dir * np.abs(np.asarray(n_hab, float))).sum()) * dx ** 2
+    out['f2_area_stair'] = float(f2dir.sum()) * dx ** 2
     if f3_cells.any():
         bb = _bbox_of(f3_cells)
         cc = _sub_coord(bb, dx)
