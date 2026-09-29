@@ -532,6 +532,31 @@ def run(a):
              (np.mean(tstep[-a.every:]) if tstep else 0.0)))
     csvf.close()
 
+    # ★★★ R15：把**形核通道的诊断计数落盘**。原先 `g._nuc['dbg']` 只在内存里，
+    #   于是"`nfsv` 到底有没有因为没空场而拒绝事件"这类判据（本轮预登记的 G-5）
+    #   **无法从落盘数据复核** —— 而用户的要求正是"全过程数据留盘、量具/判据
+    #   有 bug 也能事后重测"。⇒ 写成 `nuc_dbg.json`（只在 `arm=eng` 时）。
+    if a.arm == 'eng' and getattr(g, '_nuc', None) is not None:
+        try:
+            with open(os.path.join(outdir, 'nuc_dbg.json'), 'w',
+                      encoding='utf-8') as f:
+                json.dump(dict(n_eng_ev=n_eng_ev,
+                               n_events_by_mode={
+                                   m: sum(1 for _k, mm in g._nuc_events if mm == m)
+                                   for m in sorted(set(mm for _k, mm
+                                                       in g._nuc_events))},
+                               dbg={k: int(v) for k, v in
+                                    g._nuc.get('dbg', {}).items()},
+                               nuc_cfg={k: (v if not isinstance(v, np.ndarray)
+                                            else v.tolist())
+                                        for k, v in g._nuc.items()
+                                        if k not in ('rng', 'dbg')}),
+                          f, ensure_ascii=False, indent=1)
+            P('★ 形核诊断已落盘: nuc_dbg.json（n_eng_ev=%d, dbg=%s）'
+              % (n_eng_ev, g._nuc.get('dbg', {})))
+        except Exception as exc:                                # pragma: no cover
+            P('⚠ nuc_dbg.json 落盘失败（不影响仿真结果）: %s' % exc)
+
     s = read_series(os.path.join(outdir, 'series.csv'))
     P('-' * 104)
     P('判决 臂=%-5s  M=%d  nslab_n %d→%d（应 == M=%d）  nf3_col %d→%d  '
