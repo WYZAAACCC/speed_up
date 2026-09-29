@@ -367,6 +367,20 @@ def barrier_ratio(gamma, dG_v, T):
     return dG_star(gamma, dG_v) / (K_B * float(T))
 
 
+def rate_slowdown_decades(gamma, dG_v, T, ratio_max=BARRIER_RATIO_MAX):
+    """★ C-1a 的正确量纲：相对"可测门槛"慢了多少**个数量级**。[推]
+
+    `ΔG*/kT` 与门槛 `ratio_max` 的**比值**是 `ΔG*/(ratio_max·kT)`（无量纲倍数），
+    而**速率**之比是 `exp[−(ΔG*/kT − ratio_max)]` ⇒ 数量级 = `(ΔG*/kT − ratio_max)/ln10`。
+
+    ⚠ 这两个数**不是一回事**，本文件第一版把"比值 8.6–42"错写成了"9–42 个数量级"
+    （阶段回顾时发现）。现在两者都单独算、单独核。
+    返回 `(倍数, 数量级)`。
+    """
+    r = barrier_ratio(gamma, dG_v, T)
+    return r / float(ratio_max), (r - float(ratio_max)) / math.log(10.0)
+
+
 def hetero_barrier_factor(theta_deg):
     """异相形核的接触角因子 `f(θ) = (2 − 3cosθ + cos³θ)/4`（球形冠，标准式）。[推]
 
@@ -412,6 +426,49 @@ def contact_angle_max(gamma, dG_v, T, ratio_max=BARRIER_RATIO_MAX):
         else:
             hi = mid
     return 0.5 * (lo + hi), f_need
+
+
+def barrier_ratio_range(gammas=GAMMA_F1_BAND, T_lo=298.0, T_hi=None,
+                        ratio_max=BARRIER_RATIO_MAX, n=61):
+    """★ C-1a 的**正确取值范围**：在 `(γ, T)` 的矩形上算 `ΔG*/kT`。[推]
+
+    `ΔG_v` 与 `T` **不是独立的**：`ΔG_v(T) = DS·(T0 − T)`。
+    ⇒ 矩形 = `γ ∈ gammas` × `T ∈ [T_lo, T_hi]`（`T_hi` 默认 `M_s`）。
+
+    ⚠ 为什么必须有这条（阶段回顾抓到的**第二处**错）：
+      文档第一版写 `ΔG*/kT = 516…2500`，其中 **516 是 T=298 K、γ=0.25 的值**，
+      与"M_s 处、γ 取文献带两端"**不是同一个工况** ⇒ 两个数被拼成了一个区间。
+      正确：`T = M_s`、`γ ∈ [0.201,0.337]` ⇒ **887…4181**；
+      把 T 也放开到 298 K ⇒ 全矩形 **268…4181**。
+
+    返回 dict：`ratio_min/max`、`factor_min/max`（相对门槛的倍数）、
+    `decades_min/max`（速率慢的数量级）、以及取到极值的 `(γ, T)`。
+    """
+    hi = float(M_S_TI64) if T_hi is None else float(T_hi)
+    Ts = np.linspace(float(T_lo), hi, int(n))
+    rmin, rmax = float('inf'), -float('inf')
+    amin = amax = None
+    for g in gammas:
+        for T in Ts:
+            dG = float(DS_REF) * (T0_TI64 - T)
+            if dG <= 0:
+                continue
+            r = barrier_ratio(g, dG, T)
+            if r < rmin:
+                rmin, amin = r, (float(g), float(T))
+            if r > rmax:
+                rmax, amax = r, (float(g), float(T))
+    # ★ 口径修（Round 4 回顾）：`decades`/`factor` **必须由 ratio 的极值算出**，
+    #   不能各自独立取极值再配对 —— 第一版就是各自取极值，结果把
+    #   "最小比值"配上了"最大倍数"，四个对照全 FAIL。
+    #   关系是单调的：ratio 越大 ⇒ 倍数越大、数量级越大。
+    def _f(r):
+        return (r / float(ratio_max), (r - float(ratio_max)) / math.log(10.0))
+    fmin, dmin = _f(rmin)
+    fmax, dmax = _f(rmax)
+    return dict(ratio_min=rmin, ratio_max=rmax, argmin=amin, argmax=amax,
+                factor_min=fmin, factor_max=fmax,
+                decades_min=dmin, decades_max=dmax)
 
 
 def gamma_max_athermal(dG_v, T, ratio_max=BARRIER_RATIO_MAX):
@@ -761,6 +818,37 @@ def selftest(verbose=True):
        hetero_barrier_factor(20.0) * barrier_ratio(0.25, DG_CRIT_REF, M_S_TI64) < 60.0,
        '%.1f' % (hetero_barrier_factor(20.0)
                  * barrier_ratio(0.25, DG_CRIT_REF, M_S_TI64)))
+    # ---- C-1c：**量纲**（比值 vs 数量级）与**正确的取值范围** --------------
+    #   ★ 纠正两处：① 第一版文档把**比值**"9–42"说成了"个数量级"；
+    #                ② 第一版文档的区间 `516…2500` 把 M_s 处与 298 K 处的值拼在一起。
+    _br = barrier_ratio_range()
+    ck('C-1c.1 ΔG*/kT 全矩形 (γ∈[0.201,0.337], T∈[298,873] K) = %.0f…%.0f'
+       % (_br['ratio_min'], _br['ratio_max']),
+       255.0 < _br['ratio_min'] < 262.0 and 4180.0 < _br['ratio_max'] < 4185.0,
+       'min@(γ=%.3f,T=%.0f) max@(γ=%.3f,T=%.0f)'
+       % (_br['argmin'][0], _br['argmin'][1], _br['argmax'][0], _br['argmax'][1]))
+    # 解析钉点：`ratio ∝ γ³/[(T0−T)²·T]` ⇒ 最小值在 `d/dT[(T0−T)²T]=0` ⇒ **T = T0/3**
+    ck('C-1c.1b 解析：最小值出现在 **T = T0/3 = %.1f K**（数值 %.0f K）'
+       % (T0_TI64 / 3.0, _br['argmin'][1]),
+       abs(_br['argmin'][1] - T0_TI64 / 3.0) < 6.0,
+       '%.1f vs %.1f' % (_br['argmin'][1], T0_TI64 / 3.0))
+    ck('C-1c.2 相对门槛(60)的**倍数** = %.1f…%.1f'
+       % (_br['factor_min'], _br['factor_max']),
+       4.0 < _br['factor_min'] < 4.6 and 69.0 < _br['factor_max'] < 70.0,
+       '%.1f / %.1f' % (_br['factor_min'], _br['factor_max']))
+    ck('C-1c.3 **速率**慢的数量级 = %.0f…%.0f'
+       % (_br['decades_min'], _br['decades_max']),
+       84.0 < _br['decades_min'] < 88.0 and 1780.0 < _br['decades_max'] < 1800.0,
+       '%.1f / %.1f' % (_br['decades_min'], _br['decades_max']))
+    ck('C-1c.4 ★负对照：倍数与数量级**不是同一个数**（相差 ≫1）',
+       (_br['decades_max'] / _br['factor_max']) > 20.0,
+       '%.1f vs %.1f' % (_br['decades_max'], _br['factor_max']))
+    # 单独钉住"M_s 处、γ 取文献带两端"这个工况（文档里最常引的那对）
+    _r201 = barrier_ratio(0.201, DG_CRIT_REF, M_S_TI64)
+    _r337 = barrier_ratio(0.337, DG_CRIT_REF, M_S_TI64)
+    ck('C-1c.5 T=M_s、γ=0.201/0.337 ⇒ ΔG*/kT = %.0f / %.0f' % (_r201, _r337),
+       885.0 < _r201 < 890.0 and 4180.0 < _r337 < 4185.0,
+       '（第一版文档误写成 516…2500 —— 那混进了 T=298 K 的值）')
 
     # --- C-2：板条数 ------------------------------------------------------
     n25 = alpha_km_n_lath(298.0)

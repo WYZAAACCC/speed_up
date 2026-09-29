@@ -59,11 +59,17 @@ def closure_numbers():
     rec = CL.recommend()
     w = CL.wetting_check(0.25, 5.0)
     _th, _fn = CL.contact_angle_max(0.25, CL.DG_CRIT_REF, CL.M_S_TI64)
+    _br = CL.barrier_ratio_range()
     return [
-        ('C-1a **匀相**形核：ΔG*/kT @M_s（γ=0.25）',
-         '%.0f' % CL.barrier_ratio(0.25, CL.DG_CRIT_REF, CL.M_S_TI64),
-         '需要 ≲60 才有可测速率；差 %.0f 倍' % (
-             CL.barrier_ratio(0.25, CL.DG_CRIT_REF, CL.M_S_TI64) / 60.0)),
+        ('C-1a **匀相**形核：ΔG*/kT 全矩形', '%.0f … %.0f' % (_br['ratio_min'],
+                                                             _br['ratio_max']),
+         'γ∈[0.201,0.337]、T∈[298,873] K；最小值在 T=T0/3≈382 K（解析）'),
+        ('C-1a 相对门槛(60)的**倍数**', '%.1f … %.1f ×' % (_br['factor_min'],
+                                                           _br['factor_max']),
+         '无量纲比值'),
+        ('C-1a **速率**慢的**数量级**', '%.0f … %.0f' % (_br['decades_min'],
+                                                        _br['decades_max']),
+         '★ 与"倍数"不是一回事（相差 26 倍）—— 第一版把两者混过'),
         ('C-1a 允许**匀相**形核的 γ 上限', '%.4f J/m²' % CL.gamma_max_athermal(
             CL.DG_CRIT_REF, CL.M_S_TI64),
          '文献最低端 0.201 ⇒ **低 2.5 倍**，结论不依赖 γ 取哪个文献值'),
