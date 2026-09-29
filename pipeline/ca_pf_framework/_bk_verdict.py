@@ -55,7 +55,8 @@ def arm_report(tagroot, arm):
         meta = json.load(open(mp, encoding='utf-8'))
     rows = load_series(d)
     snaps = sorted(glob.glob(os.path.join(d, 'snap_*.npz')))
-    out = dict(arm=arm, dir=d, meta=meta, rows=rows, snaps=snaps)
+    mtime = os.path.getmtime(os.path.join(d, 'series.csv')) if rows else 0.0
+    out = dict(arm=arm, dir=d, meta=meta, rows=rows, snaps=snaps, mtime=mtime)
     if snaps:
         per = []
         for s in snaps:
@@ -137,6 +138,30 @@ def main():
                    'box_touch=%s' % sorted(set(bt))))
         ck.append(('V-5 数值健康 (ncomp_max 末 ≤ 2)',
                    ncm[-1] <= 2, 'ncomp_max: %.0f → %.0f' % (ncm[0], ncm[-1])))
+
+        # ---- V-1g：**「长出来的块」**专用判据 ----------------------------------
+        # ★ 为什么 V-1 不能直接用在生长臂上：生长臂按定义 **t=0 只有 1 个核**
+        #   （`dry_gs2` 实测 nslab_n 首值 = 1），而 V-1 要求**每个测点都 == M**
+        #   ⇒ 生长臂必然 FAIL，但这不是物理失败，是判据不适用。
+        # ★ 生长臂该证的是**三件事**（缺一不可）：
+        #   ① 末态与预装臂**同构**：`nslab_n == M` 且 `nf3_col == M-1` 且面 > 0；
+        #   ② `nslab_n` 从 1 出发、**单调不减**、**每次只 +1**（= 一次一个新场，
+        #      不是一次劈裂出多片，也不是并成一片）；
+        #   ③ 阶梯的**级数 == M-1**（确实发生了 M-1 次形核）。
+        if r['meta'].get('grow_stack'):
+            n1s = [int(round(v)) for v in ns]
+            steps_up = [i for i in range(1, len(n1s)) if n1s[i] != n1s[i - 1]]
+            ok_up = all(n1s[i] - n1s[i - 1] == 1 for i in steps_up)
+            ok_fin = (bool(M) and n1s[-1] == M and int(round(nc[-1])) == M - 1
+                      and int(round(nf[-1])) > 0)
+            ck.append(('V-1g 长出来的块 (末态同构 + 单调+1 阶梯 + 级数 M-1)',
+                       bool(ok_up and ok_fin and n1s[0] == 1
+                            and len(steps_up) == M - 1),
+                       'nslab 阶梯=%s（首=%d 末=%d，级数=%d 应为 %d，'
+                       '面=%d）' % ('→'.join(str(x) for x in
+                                             [n1s[0]] + [n1s[i] for i in steps_up]),
+                                    n1s[0], n1s[-1], len(steps_up), M - 1,
+                                    int(round(nf[-1])))))
         for t, ok, det in ck:
             print('   %-52s %s  %s'
                   % (t, 'PASS' if ok else ('—' if ok is None else '**FAIL**'), det))

@@ -53,6 +53,37 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
 assert len(COLS) == len(set(COLS))
 
 
+def read_series(path):
+    """读 `series.csv` ⇒ `{列名: np.ndarray}`；整型列给 int，数值列给 float，
+    其余（如 `runs='5/3/1/2/4/6'`）原样给 str。
+
+    ★★ 为什么不能用 `np.genfromtxt(..., names=True, dtype=None)`：
+    `runs` 这一列是**斜杠分隔的字符串**，而 genfromtxt 的类型自动升级会按
+    `bool→int→float→complex→longdouble` 一路试到底，最后抛
+    `ValueError: Cannot convert string '1/2'`。
+    实测后果：`dry_gs2` **老老实实跑完 200 步**（数据全部落盘、完好），
+    却在收尾打印判决时崩掉 ⇒ **主判据一个字都没打出来**，
+    日志尾部看起来像"跑挂了"。（`--dry-run` 走不到这里，所以之前没暴露。）
+    """
+    import csv as _csv
+    with open(path, newline='') as f:
+        rows = list(_csv.DictReader(f))
+    if not rows:
+        return {}
+    out = {}
+    for c in rows[0]:
+        vals = [r[c] for r in rows]
+        for conv in (int, float):
+            try:
+                out[c] = np.array([conv(v) for v in vals])
+                break
+            except (TypeError, ValueError):
+                continue
+        else:
+            out[c] = np.array(vals, dtype=object)
+    return out
+
+
 def sha256(p):
     import hashlib
     h = hashlib.sha256()
@@ -197,7 +228,22 @@ def run(a):
                 #   ⇒ 物理上"sympathetic 邻位形核"本来指**在已有板条的界面上形核**
                 #     （Furuhara 2008 的 repeated nucleation adjacent to each other）
                 #     ⇒ 新核应当**贴着**已有块放。间隙由 `--nuc-gap-nm` 控制（默认 0）。
-                c = c0 + ((edge - cproj) + side * (T / 2 + a.nuc_gap_nm * 1e-9)) * n_hab
+                # ★★ Round 9 实测新增（`_bk_pair.py`，gs2 末态）：
+                #   "贴着放"**还不够**。`edge` 是**格心**投影，`T=250 nm = 4Δx`，
+                #   于是新片的零水平集落在**非格点**位置 ⇒ 两列阶梯错开 ⇒
+                #   界面被劈成两半：
+                #       1-2 界面：F3 直接接触 0.4601 + **1 胞厚 β 膜 0.9492**
+                #                 = 1.4093 µm² ≈ 整片足迹 ⇒ 覆盖率仅 0.33
+                #       2-4：0.4081 + 0.9102；4-6：0.5136 + 0.7617（+侧全如此）
+                #       而 −侧 3-1、5-3 是满的（1.5477 / 1.4804，几乎无 β）
+                #   机理：`seed_plate` 用真 SDF 且把其它场抬到 `-sdf`，`argmin` 把
+                #   界面定在**两个零水平集的中面**。所以**只要种子与旧片有重叠**，
+                #   界面就是一张完整的阶梯面；**恰好相切**时中面退化成旧片的
+                #   零水平集，台阶对不上的地方就留 1 胞 β（阶梯错位伪影，非物理）。
+                #   ⇒ 用 `--nuc-overlap-nm` 让新片**咬进**旧片（物理上就是
+                #     "在界面上形核"，共用一张界面，不是隔缝相望）。
+                c = c0 + ((edge - cproj)
+                          + side * (T / 2 - a.nuc_overlap_nm * 1e-9)) * n_hab
                 c = c - L * np.floor(c / L)          # 周期折回
         g.seed_plate(j, c, n_hab, a.plate_W * 0.5e-9, T,
                      elong=a.plate_L / a.plate_W, along=a_ax, flat_end=True)
@@ -209,7 +255,8 @@ def run(a):
         g.init_parent()
         P('★★ 生长中的同变体邻位形核：t=0 只播第 %d 片（场 %d）；'
           '此后每 %d 步在外侧播下一片（同一变体、新场）⇒ 片间自动成 F3'
-          % (j0, j0, a.nuc_every))
+          '； 咬入旧片 %.1f nm（`--nuc-overlap-nm`；0=相切，实测 F3 覆盖率仅 0.62）'
+          % (j0, j0, a.nuc_every, a.nuc_overlap_nm))
     elif len(laths_eff) == 1 and M > 1:
         for i in range(M):
             off = (i - (M - 1) / 2.0) * (T + gap)
@@ -272,6 +319,19 @@ def run(a):
                        gap_nm=a.gap_nm, norm_smooth=a.norm_smooth,
                        beta_h=a.beta_h, beta_w=a.beta_w, adv=a.adv,
                        reinit_band=a.reinit_band, nthreads=a.nthreads,
+                       # ★★ 2026-09-29 补：这几个**决定这次跑的到底是什么**的开关
+                       # 原先**没写进 meta.json**（`reinit_dt` / `grow_stack` /
+                       # `nuc_every` / `nuc_gap_nm` / `phi_every`），
+                       # 直接违反用户「全过程数据要能事后重测」的要求：
+                       # 光看 meta 无法判断一个臂是"预装 6 根"还是"长出来的"。
+                       # 除了逐个列出，还整份 dump `vars(a)`（argparse 命名空间），
+                       # **今后任何新增的 CLI 开关都会自动进 meta**，不再依赖记得加。
+                       reinit_dt=a.reinit_dt, reinit_every=0,
+                       grow_stack=bool(a.grow_stack), nuc_every=a.nuc_every,
+                       nuc_gap_nm=a.nuc_gap_nm, phi_every=a.phi_every,
+                       nuc_overlap_nm=a.nuc_overlap_nm,
+                       snap_every=a.snap_every, every=a.every,
+                       out_root=a.out, exp_args=vars(a),
                        gamma0=0.15, DF=DF, Mob=MOB, dt=dt, t_sim=a.steps * dt,
                        n_hab=n_hab.tolist(), w_ax=w_ax.tolist(), a_ax=a_ax.tolist(),
                        sha_windowB_surface=sha256(os.path.join(_HERE, 'windowB_surface.py')),
@@ -366,8 +426,7 @@ def run(a):
              (np.mean(tstep[-a.every:]) if tstep else 0.0)))
     csvf.close()
 
-    s = np.genfromtxt(os.path.join(outdir, 'series.csv'), delimiter=',',
-                      names=True, dtype=None, encoding='utf-8')
+    s = read_series(os.path.join(outdir, 'series.csv'))
     P('-' * 104)
     P('判决 臂=%-5s  M=%d  nslab_n %d→%d（应 == M=%d）  nf3_col %d→%d  '
       'F3 面积 %.4f→%.4f µm²  Δpos %s dx  nc_max %d→%d'
@@ -417,6 +476,11 @@ def main():
                          '在当前块外侧播下一片（同变体、新场）⇒ 生长中堆叠成块')
     ap.add_argument('--nuc-every', type=int, default=30)
     ap.add_argument('--nuc-gap-nm', type=float, default=0.0)
+    # ★ Round 9：新核**咬进**已有块的深度（nm）。0 = 恰好相切（旧行为，
+    #   实测会因阶梯错位留 1 胞 β 膜 ⇒ F3 覆盖率只有 0.62）。
+    #   物理上"在界面上形核"就是共用一张界面 ⇒ 用一个正的重叠量。
+    #   建议值 ≥ 1.5Δx（Δx=62.5 nm ⇒ 94 nm），保证中面离两侧零集都够远。
+    ap.add_argument('--nuc-overlap-nm', type=float, default=0.0)
     ap.add_argument('--norm-smooth', type=int, default=0)
     ap.add_argument('--beta-h', type=float, default=3.5)
     ap.add_argument('--beta-w', type=float, default=2.3)

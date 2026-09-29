@@ -34,24 +34,34 @@ for s in snaps:
         keys = ks
     rows.append((int(z['step']),
                  {k: (r['n_%d' % k], r['w_%d' % k], r['a_%d' % k],
-                      r['vol_%d' % k]) for k in ks}))
+                      r['vol_%d' % k], r['ncomp_%d' % k]) for k in ks}))
 print('%-28s %s' % (os.path.basename(d), '   '.join('板条%d' % k for k in keys)))
-hdr = '  step  ' + '  '.join('%-22s' % ('n/w/a(nm)  V(um3)') for _ in keys)
+hdr = '  step  ' + '  '.join('%-30s' % ('n/w/a(nm)  V(um3)  nc') for _ in keys)
 print(hdr)
 for st, dd in rows:
     line = '  %4d  ' % st
     for k in keys:
-        n, w, a, v = dd[k]
-        line += '%-22s' % ('%3.0f/%3.0f/%4.0f %.4f' % (n * 1e9, w * 1e9, a * 1e9,
-                                                       v * 1e18))
+        n, w, a, v, ncp = dd[k]
+        line += '%-30s' % ('%3.0f/%3.0f/%4.0f %.4f %d' % (n * 1e9, w * 1e9,
+                                                          a * 1e9, v * 1e18, ncp))
     print(line)
 print()
-print('Δ 相对首快照:')
-st0, d0 = rows[0]
+print('Δ 相对**该板条自己首次出现**的快照（grow-stack 下各核出生步不同；'
+      '未出生时 vol=0，过去这里会 ZeroDivisionError）:')
 stN, dN = rows[-1]
 for k in keys:
-    n0, w0, a0, v0 = d0[k]
-    n1, w1, a1, v1 = dN[k]
-    print('  板条%d: Δn=%+6.0f  Δw=%+6.0f  Δa=%+6.0f nm   ΔV=%+5.1f%%'
-          % (k, (n1 - n0) * 1e9, (w1 - w0) * 1e9, (a1 - a0) * 1e9,
-             100 * (v1 / v0 - 1)))
+    born = next((i for i, (_st, dd) in enumerate(rows) if dd[k][3] > 0), None)
+    if born is None:
+        print('  板条%d: **从未出现**（该场始终为空）' % k)
+        continue
+    st0, d0 = rows[born]
+    n0, w0, a0, v0, _c0 = d0[k]
+    n1, w1, a1, v1, c1 = dN[k]
+    vs = [dd[k][3] for _st, dd in rows if dd[k][3] > 0]
+    mono = all(vs[i] <= vs[i + 1] + 1e-30 for i in range(len(vs) - 1))
+    print('  板条%d: 生于 step %-4d  Δn=%+6.0f  Δw=%+6.0f  Δa=%+6.0f nm   '
+          'V %.4f→%.4f µm³ (%+.1f%%)  %s  末态分量数=%d%s'
+          % (k, st0, (n1 - n0) * 1e9, (w1 - w0) * 1e9, (a1 - a0) * 1e9,
+             v0 * 1e18, v1 * 1e18, 100 * (v1 / v0 - 1),
+             '单调↑' if mono else '**非单调**', c1,
+             '' if c1 <= 1 else '  ← **该场碎裂**'))
