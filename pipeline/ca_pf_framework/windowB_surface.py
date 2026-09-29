@@ -1232,6 +1232,7 @@ class LevelSetMulti(object):
                 var_rule='ed', use_fcrit=False,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
                 elong=1.0, along=None, prefer_end=True, nfsv_strict=True,
+                along_per_variant=False,
                 block_edge=True, align_inplane=True, alt_side=True,
                 force_reinit_after_event=None, t_last_reduce=0.0):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
@@ -1354,6 +1355,17 @@ class LevelSetMulti(object):
                          # ★ R14：`nfsv` 找不到空场时**拒绝**该事件（而不是回退到 k）。
                          #   只在 `nfsv=True` 时被读到 ⇒ 默认路径不变。
                          nfsv_strict=bool(nfsv_strict),
+                         # ★★★ R31（**P1-17**）：`along`（新核的**长轴**）原来是一个
+                         #   **全局**方向（取自驱动层的 `laths[0]`），于是**变体 2 的核
+                         #   会沿变体 1 的长轴拉长** —— 而长轴是变体的身份
+                         #   （`atab[k] = _rank1_axes(eps0[k])[1]`）。
+                         #   `fresh` 通道更彻底：它**根本不传** `elong/along/flat_end`
+                         #   ⇒ 播的是**圆盘**（实测足迹只有长条板的 1/5）。
+                         #   `along_per_variant=True` ⇒ 三个通道都改用**该场自己的**
+                         #   `atab[k]`，且 `fresh` 也长出长条（`flat_end=True`）。
+                         #   ⚠ **默认 False ⇒ 归档路径逐位不变**（`_bk_par_identity`
+                         #     级别的回归由 `_r30_regress.sh` 把关）。
+                         along_per_variant=bool(along_per_variant),
                          # ★ R17：`attach` 落位基准用**整块外缘**（而非源板条自身外缘）。
                          #   只在 `attach=True` 时被读到 ⇒ 默认路径不变。
                          block_edge=bool(block_edge),
@@ -1435,8 +1447,7 @@ class LevelSetMulti(object):
         dt = ndimage.distance_transform_edt(par) * self.dx
         return (dt >= (R_nuc + gap_cells * self.dx)) & par, par
 
-    def nucleate(self, ed, R_nuc=None, t_nuc=None, n_fresh=0, n_stack=0,
-                 f_now=0.0, drive_min=None, df=0.0):
+    def nucleate(self, ed, R_nuc=None, t_nuc=None, n_fresh=0, n_stack=0,                 f_now=0.0, drive_min=None, df=0.0):
         """**每步调用一次**：按三阶段规则新增核。返回本轮新种下的 `[(k, mode)]`。
 
         `ed` = `elastic_driving()` 的返回（`(nreg,N,N,N)`）。
@@ -1450,6 +1461,24 @@ class LevelSetMulti(object):
         rng = c['rng']
         nv = self.nreg - 1
         out = []
+
+        def _along_of(kk):
+            """★ R31（P1-17）：该场自己的**真长轴**；取不到就退回全局 `along`。
+
+            `along_per_variant=False`（默认）⇒ **恒返回 `c['along']`** ⇒ 归档路径
+            逐位不变（这是 R8 的硬要求）。
+            """
+            if not c.get('along_per_variant', False):
+                return c.get('along')
+            at = getattr(self, 'atab', None)
+            try:
+                if at is not None and 0 <= int(kk) < len(at):
+                    v = np.asarray(at[int(kk)], float)
+                    if np.isfinite(v).all() and np.linalg.norm(v) > 0:
+                        return v / np.linalg.norm(v)
+            except Exception:
+                pass
+            return c.get('along')
         cap = max(1, c['cap'])
         # ---------- 形核判据 `f_nuc^crit = 4γ/d`（Du 2017）
         # ✅ **W1-4（2026-09-28）：本判据已接线**，由 `nuc_cfg(use_fcrit=True)` 打开。
@@ -1584,7 +1613,15 @@ class LevelSetMulti(object):
                                 (not bool((self.region()[_cover] == 0).all())):
                             continue                     # 该候选位置不行 ⇒ 试下一个
                         try:
-                            self.seed_plate(kk, _cc, _nrm, R, t)
+                            # ★ R31（P1-17）：`fresh` 原来**不传** elong/along/flat_end
+                            #   ⇒ 播的是**圆盘**（足迹只有长条板的 1/5）。开了
+                            #   `along_per_variant` 就按**该场自己的长轴**播长条。
+                            self.seed_plate(kk, _cc, _nrm, R, t,
+                                            elong=(c.get('elong', 1.0)
+                                                   if c.get('along_per_variant')
+                                                   else 1.0),
+                                            along=_along_of(kk),
+                                            flat_end=bool(c.get('along_per_variant')))
                             _placed = True
                             _any_ok = True
                             out.append((kk, 'fresh'))
@@ -1849,7 +1886,7 @@ class LevelSetMulti(object):
                             try:
                                 self.seed_plate(k_new, cc, nrm, R, _t_use,
                                                 elong=c.get('elong', 1.0),
-                                                along=c.get('along'),
+                                                along=_along_of(k_new),
                                                 flat_end=True)
                                 out.append((k_new, 'attach'))
                                 _dbg['ok'] += 1
@@ -1908,7 +1945,7 @@ class LevelSetMulti(object):
                             try:
                                 self.seed_plate(k, cc, nrm, R, t,
                                                 elong=c.get('elong', 1.0),
-                                                along=c.get('along'),
+                                                along=_along_of(k),
                                                 flat_end=True)
                                 out.append((k, 'stack'))
                                 _dbg['ok'] += 1

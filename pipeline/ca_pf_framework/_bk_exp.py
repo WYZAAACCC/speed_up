@@ -600,7 +600,9 @@ def run(a):
              '⚠ 余量偏紧：归档几何下 700 步长跑会撞壁（见 §4.1）'))
     if margin < 0.5e-6:
         P('   ⚠⚠ 沿 a 余量 < 0.5 µm ⇒ **本算例会在中期撞盒壁**（`box_touch` 会置 1）')
-    if (span + T > L) and not a.multi_block:
+    # ⚠ `span` 假设**所有板条沿同一个 n* 排成一列** —— 对 `--nuc-init > 0`
+    #   （新核撒在随机位点上）这个假设不成立 ⇒ 那条硬检查**不适用**。
+    if (span + T > L) and not a.multi_block and a.nuc_init <= 0:
         raise SystemExit('✗ 堆叠跨度 %.2f µm > 盒 %.2f µm —— 播不下'
                          % ((span + T) * 1e6, L * 1e6))
 
@@ -616,7 +618,8 @@ def run(a):
         _t_nuc = a.eng_t_nm * 1e-9
         if use_engine and a.eng_t_nm <= 250.0 and a.nuc_overlap_nm > 0:
             _t_nuc = (250.0 + a.nuc_overlap_nm) * 1e-9
-        g.nuc_cfg(a.eng_r_nm * 1e-9, _t_nuc, gamma=a.gamma0, n_init=0,
+        g.nuc_cfg(a.eng_r_nm * 1e-9, _t_nuc, gamma=a.gamma0,
+                  n_init=int(getattr(a, 'nuc_init', 0)),
                   p_auto=0.0, harden_f=1.0, sym_gap_cells=0, max_per_step=1,
                   seed=a.eng_seed,
                   # ★ R31（J-5）：**变体选择规则**暴露到驱动。
@@ -624,6 +627,10 @@ def run(a):
                   #   `random` = 均匀随机（`BLOCK_SELFAC.md §7.1 P-SA-1` 的**负对照臂**）。
                   #   ⚠ 默认仍是 `ed` ⇒ 归档逐位不变。
                   var_rule=a.var_rule,
+                  # ★ R31（P1-17）：新核的**长轴按变体取**（`atab[k]`），
+                  #   且 `fresh` 通道也播**长条**（原来播圆盘）。
+                  #   ⚠ 只在 `--nuc-init > 0`（走 fresh）时打开 ⇒ 归档逐位不变。
+                  along_per_variant=(a.nuc_init > 0),
                   vgroup=vmap, nfsv=True, attach=True,
                   attach_overlap=a.nuc_overlap_nm * 1e-9,
                   elong=((a.eng_elong if a.eng_elong > 1.0
@@ -635,7 +642,24 @@ def run(a):
                   t_last_reduce=((a.eng_t_last_reduce_nm if a.eng_t_last_reduce_nm > 0
                                   else (a.nuc_overlap_nm * 0.5 if use_engine else 0.0))
                                  * 1e-9))
-        _ed_dummy = np.zeros((g.nreg, 1, 1, 1))
+    # ★★★ R31（**P1-16**）：`--arm eng` 一直把**零数组**当 `ed` 传给 `nucleate()`。
+    #   本来无害（`stack` 通道根本不读 `ed`，所以 eng12/cl1b/cln11 全跑得通），
+    #   但只要有人用 `fresh` 通道（`--nuc-init > 0`）或 `use_fcrit`，就会
+    #   **崩在 `IndexError`**（实测：`ed` 形状 (nreg,1,1,1)，而 `nucleate` 用
+    #   `ed[1:, ci0, ci1, ci2]` 索引真实格点）—— 或者更糟：静默按**全零驱动**
+    #   做 `argmax`（⇒ 永远选第一个变体）。
+    #   ⇒ 修法：**只有在真要 `fresh` 的时候**才算真实弹性驱动（它占单步 13.5%，
+    #     不该为 `stack` 通道白付）。
+    _ed_dummy = np.zeros((g.nreg, 1, 1, 1)) if use_engine else None
+
+    def _ed_for_nuc():
+        if a.nuc_init > 0:
+            return g.elastic_driving()
+        if _ed_dummy is not None:
+            return _ed_dummy
+        return g.elastic_driving()
+
+    if use_engine:
         P('★★★ 臂 eng：**形核交给引擎**（`nucleate` 的 stack 通道 + attach + nfsv）'
           '；R=%.0f nm t=%.1f nm（**含自动补厚**），咬入 %.1f nm，节奏 %s，seed=%d'
           % (a.eng_r_nm, _t_nuc * 1e9, a.nuc_overlap_nm,
@@ -774,14 +798,18 @@ def run(a):
             if a.eng_cadence == 0 or (it % a.eng_cadence == 0):
                 _reg_e = g.region()
                 _fnow = 1.0 - float((_reg_e == 0).sum()) / g.N ** 3
-                _ev = g.nucleate(_ed_dummy if _ed_dummy is not None
-                                 else g.elastic_driving(),
-                                 f_now=_fnow, n_fresh=0, n_stack=1)
+                # ★★ R31：`--nuc-init > 0` ⇒ 走 **`fresh`（独立形核）** 通道，
+                #   那条通道才是**按 `--var-rule` 选变体**的那一条（`stack` 通道是
+                #   "同变体、新场"，与变体选择无关）。MB-2 的 P-SA-1 必须走这条。
+                _nf = 1 if a.nuc_init > 0 else 0
+                _ev = g.nucleate(_ed_for_nuc(),
+                                 f_now=_fnow, n_fresh=_nf, n_stack=1)
                 n_eng_ev += len(_ev)
                 if _ev:
-                    _kk = _ev[0][0]
-                    P('   ★★ **引擎形核** @ step %d：场 %d，模式 %s（累计 %d 次）'
-                      % (it, _kk, _ev[0][1], n_eng_ev))
+                    _kk, _md = _ev[0][0], _ev[0][1]
+                    P('   ★★ **引擎形核** @ step %d：场 %d（变体 V%d），模式 %s'
+                      '（累计 %d 次）'
+                      % (it, _kk, vmap.get(_kk, -1), _md, n_eng_ev))
         # ★★★ R29：**athermal 律触发的形核**（`--nuc-law athermal`）。
         #   判据不是"第几步"，而是**累计核数**：
         #       `n_target(T) = floor(α_KM·(M_s − T))`，`T = T_of_t(t)`。
@@ -793,9 +821,9 @@ def run(a):
             while n_ath_tgt < _tgt and n_ath_tgt < nv:
                 _reg_e = g.region()
                 _fnow = 1.0 - float((_reg_e == 0).sum()) / g.N ** 3
-                _ev = g.nucleate(_ed_dummy if _ed_dummy is not None
-                                 else g.elastic_driving(),
-                                 f_now=_fnow, n_fresh=0, n_stack=1)
+                _ev = g.nucleate(_ed_for_nuc(),
+                                 f_now=_fnow,
+                                 n_fresh=(1 if a.nuc_init > 0 else 0), n_stack=1)
                 n_ath_tgt += 1
                 if _ev:
                     n_eng_ev += len(_ev)
@@ -1009,7 +1037,12 @@ def run(a):
                                             else v.tolist())
                                         for k, v in g._nuc.items()
                                         if k not in ('rng', 'dbg')}),
-                          f, ensure_ascii=False, indent=1)
+                          f, ensure_ascii=False, indent=1,
+                          # ★ R31：`_nuc['sites']` 是 `[(k, ndarray), …]`
+                          #   ⇒ 原来的"只把顶层 ndarray 转 list"漏掉了**嵌套** ⇒
+                          #   `nuc_dbg.json` **静默落盘失败**（被 try/except 吞掉）。
+                          default=lambda o: (o.tolist() if isinstance(o, np.ndarray)
+                                             else str(o)))
             P('★ 形核诊断已落盘: nuc_dbg.json（n_eng_ev=%d, dbg=%s）'
               % (n_eng_ev, g._nuc.get('dbg', {})))
         except Exception as exc:                                # pragma: no cover
@@ -1131,6 +1164,11 @@ def main():
     #   `random` 是 `BLOCK_SELFAC.md §7.1 P-SA-1` 的负对照臂。
     ap.add_argument('--var-rule', default='ed', choices=['ed', 'random', 'doublet'],
                     help='新核的**变体选择规则**：ed（按弹性能，默认）/ random / doublet')
+    # ★ R31（J-4 的第二半）：`fresh`（独立形核）通道需要**待机位点**；
+    #   位点由引擎在 t=0 随机撒下（`_nuc_place_initial`）。>0 才会走 `fresh` 通道，
+    #   而**只有 `fresh` 通道才按 `--var-rule` 选变体**（`stack` 是"同变体、新场"）。
+    ap.add_argument('--nuc-init', type=int, default=0,
+                    help='t=0 撒下的**待机形核位点**数；>0 ⇒ 走 fresh 通道（按 --var-rule 选变体）')
     ap.add_argument('--omega-max-deg', type=float, default=5.0)
     ap.add_argument('--omega-mode', default='ladder', choices=['ladder', 'random'])
     ap.add_argument('--plate-L', type=float, default=2400.0)
