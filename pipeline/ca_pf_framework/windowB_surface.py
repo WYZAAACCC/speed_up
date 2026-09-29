@@ -1648,6 +1648,27 @@ class LevelSetMulti(object):
                             else:
                                 _dbg['nfsv_ok'] = _dbg.get('nfsv_ok', 0) + 1
                     c0 = (idx.mean(0) + 0.5) * self.dx
+                    # ★★★ R16：**`attach` 下改用稳健中心（中位数）**。
+                    #   为什么：`c0 = idx.mean(0)` 用的是**该场全部胞**的质心，
+                    #   而场里总有 **1–2 体素的孤立碎点**散在盒子里（`eng2` 的
+                    #   `ncomp_max` 到 14、`eng5` 到 18，而 `ncompbig_max` 恒为 1）。
+                    #   碎点把**均值**拉偏 ⇒ 新片的**面内中心**跟着偏 ⇒ 两张板条
+                    #   只**部分**重叠 ⇒ 界面一部分贴、一部分夹母相
+                    #   ⇒ `V-7b`（β 占比）变差、`V-3g` 变大（界面被推着走）。
+                    #   **驱动层 `_seed_next` 不受此影响**：它把新片放在**原始盒心**
+                    #   `c0` 上、只沿 n* 平移。
+                    #   实测对照（同配置、同 200 步）：
+                    #     `gs5`（驱动层）  V-7b 最差 0.15 / V-3g 0.024 Δx
+                    #     `eng5`（引擎，均值中心） V-7b 最差 1.00 / V-3g 0.439 Δx
+                    #   ⇒ 中位数对少数离群胞**免疫**；`attach_only=True` 保证
+                    #     只改新 regime（`attach=False` 时用原均值 ⇒ 逐位不变）。
+                    c0_at = None
+                    if c.get('attach', False):
+                        c0_at = (np.median(idx, axis=0) + 0.5) * self.dx
+                        _sh = float(np.linalg.norm(c0_at - c0)) / self.dx
+                        _dbg['c_shift_max_dx'] = max(
+                            _dbg.get('c_shift_max_dx', 0.0), _sh)
+                        c0 = c0_at
                     nrm = np.asarray(self._npref_of(k), float)
                     nrm = nrm / np.linalg.norm(nrm)
                     pos = (idx.astype(float) + 0.5) * self.dx
