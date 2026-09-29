@@ -215,9 +215,13 @@ def blocks(region, dx, vmap, eps0_var=None, npf_var=None, min_vox=MIN_SIG_VOX,
     out['blk_span_nm'] = ''
     out['blk_alen_nm'] = ''
     out['blk_wlen_nm'] = ''
+    out['blk_nruns'] = ''
+    out['blk_nprof'] = ''
     if axes_var is not None and sig:
         _nl, _sp = [], []
         _al, _wl = [], []
+        _nr = []
+        _npr = []
         for v, _nvox, _nlaths, ids in sig[:12]:
             try:
                 n_b = np.asarray(axes_var[v][0], float)
@@ -264,7 +268,25 @@ def blocks(region, dx, vmap, eps0_var=None, npf_var=None, min_vox=MIN_SIG_VOX,
                 else:
                     segs.append([int(val), 1])
             runs_b = [s0[0] for s0 in segs if s0[0] != 0 and s0[1] >= 1]
-            _nl.append(len(runs_b))
+            # ★★★ R33（**新发现的量具缺陷**）：`len(runs_b)`（**连续段数**）会被
+            #   分箱众数的噪声**抬高** —— 实测 `mb1s`（只有 3 个场！）：
+            #     `blk_laths = 3`（不同场数，正确）而 `blk_nlath = 5–6`（段数）。
+            #   机理：某一箱的众数在相邻两场之间跳一下，就把一段劈成两段
+            #   ⇒ 与"链长 ≲2Δx 被 min_run 丢掉"是同一族错的**反面**（那次是少读，
+            #     这次是多读）。⇒ 主口径改成**不同场数**（对分箱噪声免疫），
+            #     段数只作**诊断**保留（两者不等 ⇒ 剖面有噪声，可当场看见）。
+            distinct_b = sorted({int(x) for x in prof if int(x) != 0})
+            # ★★★ R33 **最终口径**：`blk_nlath` 直接取 **`ids`（该块覆盖的场数）**，
+            #   **不用剖面**。理由（实测）：
+            #     * 场（level-set field）= 板条的**表示单位** ⇒ `len(ids)` 是定义式的；
+            #     * 剖面口径（不论数段还是数不同场）会被**分箱众数的噪声**扰动：
+            #       实测 `mb1s` 真值 3 而段数给 5–6；`mb1` 给 4（而 `ids` 是 3）。
+            #     * 两个口径不一致这件事**本身有价值** ⇒ 保留为 `blk_nprof`/`blk_nruns`
+            #       两个诊断列，并在不一致时**打印告警**，而不是让噪声进主判据。
+            #   ⚠ 这也意味着 `blk_nlath ≡ blk_laths`（后者是第一版就有的、稳定的那个）。
+            _nl.append(len(ids))
+            _npr.append(len(distinct_b))
+            _nr.append(len(runs_b))
             _sp.append(float(vv.max() - vv.min()) * 1e9)
             # ★ R31：**该块自己的长轴/宽度方向的跨度** —— 判"块在面内停住没有"的量。
             #   （用全局 `a_lath` 会把另一个变体的板条也混进中位数。）
@@ -274,6 +296,14 @@ def blocks(region, dx, vmap, eps0_var=None, npf_var=None, min_vox=MIN_SIG_VOX,
         out['blk_span_nm'] = '/'.join('%.0f' % x for x in _sp)
         out['blk_alen_nm'] = '/'.join('%.0f' % x for x in _al)
         out['blk_wlen_nm'] = '/'.join('%.0f' % x for x in _wl)
+        # 诊断：段数口径（会被分箱噪声抬高）。与 `blk_nlath`（不同场数）不等
+        # ⇒ 该块的柱剖面有噪声，**可当场看见**，不必等到结论出错才发现。
+        out['blk_nruns'] = '/'.join(str(x) for x in _nr)
+        out['blk_nprof'] = '/'.join(str(x) for x in _npr)
+        if _npr != _nl or _nr != _nl:
+            print('[blocks] ⚠ 剖面口径与【场数】口径不一致：nlath=%s nprof=%s nruns=%s'
+                  ' ⇒ 该块的柱剖面有噪声（判据仍用**场数**口径）'
+                  % (_nl, _npr, _nr), flush=True)
 
     # ---- 变体体积分数（对**已转变**体积归一）----
     vols = {v: float(sum(int((region == k).sum()) for k in laths

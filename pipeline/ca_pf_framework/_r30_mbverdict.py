@@ -110,12 +110,104 @@ def rate(xs, ys, lo=None, hi=None):
     return float(np.polyfit(x, y, 1)[0])
 
 
+def selfac_verdict(root, arms, vbox):
+    """★★ R31 **MB-2/MB-3 自协调变体选择**的判决（P-SA-1a..c）。
+
+    ## 为什么必须**按已转变分数 f 配对**
+    `r_selfac` 与 `E_el_J` **都随 f 增长**（变体越多、转变越多，两者都动）。
+    两臂的形核节奏由同一个 `--eng-cadence` 决定，但**长出来的速度不一定一样**
+    （变体不同 ⇒ 弹性驱动不同）⇒ **直接比末态会被 f 的差异混杂**。
+    ⇒ 正确口径：在一组**目标 f** 上各取最近的一行，**逐点配对**比。
+
+    ## 正对照（先证明配对本身可信）
+    两臂 t=0 的种子**完全相同**（同一 `--laths`、同一变体 1）⇒ 在**最早**的那个
+    目标 f 上两臂的 `r_selfac` 必须**几乎相同**。若这里就已经差很多 ⇒ 配对口径有问题。
+
+    ## 判据（预先登记，双向）
+      P-SA-1a 在**共同 f 区间**上，ed 臂的 `r_selfac` **低于** random 臂（逐点多数成立）
+      P-SA-1b 在共同 f 区间上，ed 臂的 `E_el_J` 更低
+      P-SA-1c ed 臂的 `n_var_sig`/`n_habit` **不多于** random 臂
+    ⚠ 任一条**不成立就如实写"P-SA-1 被否证"**，不得挑区间。
+    """
+    def load(arm):
+        d = os.path.join(_HERE, root, 'eng_%s' % arm)
+        rows = load_csv(d)
+        return d, rows
+
+    data = {}
+    for arm in arms:
+        d, rows = load(arm)
+        if not rows:
+            print('⚠ %s 没有数据' % arm)
+            return 1
+        data[arm] = [(fnum(r, 'step'), fnum(r, 'Vt') * 1e18 / vbox,
+                      fnum(r, 'r_selfac'), fnum(r, 'E_el_J'),
+                      fnum(r, 'n_var_sig'), fnum(r, 'n_habit'), r.get('f_var', ''))
+                     for r in rows if r.get('r_selfac') not in (None, '')]
+        print('%-5s %d 个有效测点，f: %.4f → %.4f，step %g → %g'
+              % (arm, len(data[arm]), data[arm][0][1], data[arm][-1][1],
+                 data[arm][0][0], data[arm][-1][0]))
+    if len(data) < 2:
+        return 1
+    a1, a2 = arms[0], arms[1]
+
+    def nearest(seq, f):
+        return min(seq, key=lambda t: abs(t[1] - f))
+
+    f_lo = max(data[a1][0][1], data[a2][0][1])
+    f_hi = min(data[a1][-1][1], data[a2][-1][1])
+    print('\n共同 f 区间：[%.4f, %.4f]；在其上取 6 个目标点逐点配对'
+          % (f_lo, f_hi))
+    print('  %-9s | %-22s | %-22s | %s'
+          % ('f', '%s (r / E_el / nvar)' % a1, '%s (r / E_el / nvar)' % a2,
+             '判读'))
+    grid = [f_lo + (f_hi - f_lo) * k / 5.0 for k in range(6)]
+    win_a = win_b = win_c = 0
+    n = 0
+    for f in grid:
+        t1, t2 = nearest(data[a1], f), nearest(data[a2], f)
+        n += 1
+        ok_a = t1[2] < t2[2]
+        ok_b = t1[3] < t2[3]
+        ok_c = t1[4] <= t2[4]
+        win_a += int(ok_a)
+        win_b += int(ok_b)
+        win_c += int(ok_c)
+        print('  %-9.5f | %-8.4f %-8.3e %-4g | %-8.4f %-8.3e %-4g | %s %s %s'
+              % (f, t1[2], t1[3], t1[4], t2[2], t2[3], t2[4],
+                 'a' if ok_a else '.', 'b' if ok_b else '.', 'c' if ok_c else '.'))
+    # 正对照：最早的目标点上两臂应当几乎相同（种子相同）
+    t1, t2 = nearest(data[a1], f_lo), nearest(data[a2], f_lo)
+    same0 = abs(t1[2] - t2[2]) < 0.02
+    print('\n  [正对照] f=%.4f 处两臂 r_selfac 差 = %.4f（种子相同 ⇒ 应 ≈0）%s'
+          % (f_lo, abs(t1[2] - t2[2]), '✅' if same0 else '⚠ 配对口径可疑'))
+    print('\n★ 判据 P-SA-1（%d 个配对点）' % n)
+    for tag, w, txt in (('P-SA-1a', win_a, 'ed 的 r_selfac 更低'),
+                        ('P-SA-1b', win_b, 'ed 的 E_el 更低'),
+                        ('P-SA-1c', win_c, 'ed 的变体数不多于 random')):
+        if w >= n - 1:
+            verdict = '**PASS**（%d/%d）' % (w, n)
+        elif w <= 1:
+            verdict = '**否证**（%d/%d —— ed 反而更差/相同）' % (w, n)
+        else:
+            verdict = '**不判定**（%d/%d，两向都出现）' % (w, n)
+        print('  %-9s %-30s %s' % (tag, txt, verdict))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', default='_exp/_bk_mb')
     ap.add_argument('--arms', default='mb1,mb1s')
+    ap.add_argument('--mode', default='impinge',
+                    choices=['impinge', 'selfac'],
+                    help='impinge = MB-1 的两块相遇；selfac = MB-2/MB-3 的变体选择')
     ap.add_argument('--vbox-um3', type=float, default=12.0 ** 3)
     a = ap.parse_args()
+
+    if a.mode == 'selfac':
+        return selfac_verdict(a.root, [x.strip() for x in a.arms.split(',') if x.strip()],
+                              a.vbox_um3)
 
     arms = [x.strip() for x in a.arms.split(',') if x.strip()]
     fnum_map = {}
