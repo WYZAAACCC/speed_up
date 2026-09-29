@@ -1231,7 +1231,7 @@ class LevelSetMulti(object):
                 harden_f=1.0, sym_gap_cells=2, max_per_step=1, seed=11,
                 var_rule='ed', use_fcrit=False,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
-                elong=1.0, along=None, prefer_end=True):
+                elong=1.0, along=None, prefer_end=True, nfsv_strict=True):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
         （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
         `WINDOWB_AUDIT_REGISTER.md` D4/A7。三种处置任选其一，**但必须显式**：
@@ -1349,6 +1349,9 @@ class LevelSetMulti(object):
                          #   "沿惯习面法向的质心投影取到极值"——它假定同组板条
                          #   **共用一张惯习面**（正是 block 的情形）。
                          prefer_end=bool(prefer_end),
+                         # ★ R14：`nfsv` 找不到空场时**拒绝**该事件（而不是回退到 k）。
+                         #   只在 `nfsv=True` 时被读到 ⇒ 默认路径不变。
+                         nfsv_strict=bool(nfsv_strict),
                          rng=np.random.default_rng(seed))
         # ★★ 记账（Round 63 接线；**Round 84 更正依据**——`ReferenceAudit` #14）：
         #   `p_auto` **已接线并使用**（见下面 sympathetic 分支的 `_gain`）。
@@ -1627,6 +1630,21 @@ class LevelSetMulti(object):
                                     break
                             if k_new == k:
                                 _dbg['nfsv_nofield'] = _dbg.get('nfsv_nofield', 0) + 1
+                                # ★★★ R14：**没有空场 ⇒ 必须拒绝该事件，不得回退**。
+                                #   实测（`eng3`，200 步，`prefer_end` 已开）：
+                                #     step 150 时 6 片全在位（✅ 端片优先奏效），
+                                #     但 step 180 又触发一次 —— 6 个场已被占满，
+                                #     `nfsv` 找不到空场 ⇒ 回退成 `k_new = k`
+                                #     ⇒ **往已有场里再播一片** ⇒ `nslab_n` 变成 7、
+                                #     `runs=3/6/5/4/3/1/2`（**场 3 出现两次**）、
+                                #     `Vt` 冲到 3.05（越出预登记的 [2.4,2.9]）。
+                                #   物理含义：「空场用完」= **模型能表示的板条数到顶**
+                                #   （`nv` 是个表示上限，不是物理上限）。此时
+                                #   **静默改播到已有场**会把"表示不了"伪装成"又长了一片"
+                                #   —— 必须**拒绝 + 计数**，让缺口显式可见。
+                                #   ⚠ 只在 `nfsv=True` 时生效 ⇒ 默认路径不变。
+                                if c.get('nfsv_strict', True):
+                                    continue
                             else:
                                 _dbg['nfsv_ok'] = _dbg.get('nfsv_ok', 0) + 1
                     c0 = (idx.mean(0) + 0.5) * self.dx
