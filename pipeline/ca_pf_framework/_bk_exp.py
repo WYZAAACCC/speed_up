@@ -230,7 +230,8 @@ def run(a):
         #   ⚠ 近端面必须仍在 `edge − o`（否则几何就变了）⇒ 中心相应移到
         #     `edge − o + T_j/2`。多出来的厚度加在**外侧**。
         o = a.nuc_overlap_nm * 1e-9
-        Tj = (T + (o if j < nv else 0.5 * o)) if (o > 0 and a.nuc_compensate) else T
+        _fr = float(a.nuc_compensate_frac)
+        Tj = (T + _fr * (o if j < nv else 0.5 * o)) if (o > 0 and a.nuc_compensate) else T
         if j == 1:
             c = c0.copy()
         else:
@@ -537,6 +538,15 @@ def main():
     # ★ Round 10：把会被"咬"掉的厚度预先补上（见 `_seed_next` 的记账）。
     #   只在 `--nuc-overlap-nm > 0` 时有意义。
     ap.add_argument('--nuc-compensate', action='store_true')
+    # ★★ Round 10 实测更正：`--nuc-compensate` 用**名义** `o` 补，而**补过头了**。
+    #   证据（同配置三点）：
+    #     `gs4`（不补）   厚度 238/238/239/230/254/250（均值 241.5，−3.4%）Vt 2.1062
+    #     `gs5`（补 o）   厚度 261/289/303/285/314/282（均值 289，**+15.6%**）Vt 2.6897
+    #   原因：实际重叠**小于**名义 `o` —— `edge` 是**格心**投影，本来就落在真实
+    #   α′ 边界**内侧**最多约 `0.5·max|n_i|·Δx ≈ 40 nm`；`_bk_pair.py` 实测的
+    #   投影间隙只有 −2…−69 nm（均值 ≈ −28 nm），远小于 62.5。
+    #   ⇒ 加这个系数：`T_j = T + frac·o`。`frac=1.0` ⇒ **与 `gs5` 逐位相同**。
+    ap.add_argument('--nuc-compensate-frac', type=float, default=1.0)
     ap.add_argument('--norm-smooth', type=int, default=0)
     ap.add_argument('--beta-h', type=float, default=3.5)
     ap.add_argument('--beta-w', type=float, default=2.3)
