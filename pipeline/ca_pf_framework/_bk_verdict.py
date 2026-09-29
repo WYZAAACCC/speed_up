@@ -385,8 +385,14 @@ def main():
     else:
         dmax = None
     if dmax is not None:
+        _csteps = int(fnum(cr['rows'][-1], 'step')) if cr and cr['rows'] else -1
         print('-' * 104)
-        print('正对照 %s（γ=100）：max|Δpos| = %.3f Δx' % (a.ctrl_arm, dmax))
+        print('正对照 %s（γ=100）：max|Δpos| = %.3f Δx   ⚠ 该对照只跑了 **%d 步**'
+              % (a.ctrl_arm, dmax, _csteps))
+        print('   ⚠ **长度必须配对**：对照自己的漂移也随步数增长 —— 实测同一个 γ=100 臂，'
+              '60 步给 0.236 Δx、200 步给 0.344 Δx。')
+        print('     拿 60 步的对照去比 200 步的臂，会把 `dry_nr` 的 4.0× 压成 2.7× 并**误判 FAIL**。'
+              '（`--ctrl-tag` 请选与该臂步数相当的对照。）')
         for arm, r in reps.items():
             _M2 = int(r['meta'].get('nv', 0)) or None
             _ns2 = [fnum(x, 'nslab_n') for x in r['rows']]
