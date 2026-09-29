@@ -46,6 +46,33 @@ def fnum(r, k, dv=float('nan')):
         return dv
 
 
+def drift_basis(rows, grown):
+    """`\u0394pos` 的**可用基准**：生长臂要剔除形核步，否则平均位置的跳变被误读成迁移。
+
+    ★ 为什么 V-6 也必须用它：V-6 是"界面不动的分辨力对照"，若 `dry` 那一侧
+      用的是**含形核跳变**的原始 `max|\u0394pos|`（`gs4` = 1.266 \u0394x），
+      就会算出 `0.236/1.266 = 0.2\u00d7` 并**判 FAIL** —— 而真实情况是
+      `V-3g = 0.0225 \u0394x`，比值应为 **10.5\u00d7，PASS**。
+      同一份数据、同一把尺，只因基准选错就得出相反结论（本项目已多次栽在这上面）。
+    ★ 非生长臂 `grown=False` ⇒ 返回原始 max，**与改动前逐位相同**。
+    """
+    fin = [abs(fnum(x, 'f3_pos_dx')) for x in rows
+           if np.isfinite(fnum(x, 'f3_pos_dx'))]
+    if not fin:
+        return None
+    if not grown:
+        return max(fin)
+    ns = [fnum(x, 'nslab_n') for x in rows]
+    jj = []
+    for i in range(1, len(rows)):
+        if int(round(ns[i])) != int(round(ns[i - 1])):
+            continue
+        a0, a1 = fnum(rows[i - 1], 'f3_pos_dx'), fnum(rows[i], 'f3_pos_dx')
+        if np.isfinite(a0) and np.isfinite(a1):
+            jj.append(abs(a1 - a0))
+    return max(jj) if jj else None
+
+
 def arm_report(tagroot, arm):
     d = os.path.join(_HERE, tagroot, arm)
     if not os.path.isdir(d):
@@ -328,23 +355,34 @@ def main():
     # V-6 通道活性（与正对照配对）
     # ★ 必须**先滤掉 nan**：没有 F3 面的测点 `f3_pos_dx` 是 nan，
     #   不滤的话 `dmax/dm = 0.236/nan = inf` ⇒ **假 PASS**（实测踩过）。
-    _fin = lambda rows: [abs(fnum(x, 'f3_pos_dx')) for x in rows
-                         if np.isfinite(fnum(x, 'f3_pos_dx'))]
+    # ★ 生长臂的基准还要**剔除形核步**（见 `drift_basis` 的记账），
+    #   否则同一份数据会算出 0.2× 并误判 FAIL。
     cr = arm_report(a.ctrl_root, '%s_%s' % (a.ctrl_arm, a.ctrl_tag))
-    if cr and cr['rows'] and _fin(cr['rows']):
-        dmax = max(_fin(cr['rows']))
+    if cr and cr['rows']:
+        _cM = int(cr['meta'].get('nv', 0)) or None
+        _cns = [fnum(x, 'nslab_n') for x in cr['rows']]
+        _cgrown = bool(cr['meta'].get('grow_stack')) or (bool(_cM) and _cns
+                                                         and _cns[0] < _cM)
+        dmax = drift_basis(cr['rows'], _cgrown)
+    else:
+        dmax = None
+    if dmax is not None:
         print('-' * 104)
         print('正对照 %s（γ=100）：max|Δpos| = %.3f Δx' % (a.ctrl_arm, dmax))
         for arm, r in reps.items():
-            fv = _fin(r['rows'])
-            if not fv:
+            _M2 = int(r['meta'].get('nv', 0)) or None
+            _ns2 = [fnum(x, 'nslab_n') for x in r['rows']]
+            _gr = bool(r['meta'].get('grow_stack')) or (bool(_M2) and _ns2
+                                                        and _ns2[0] < _M2)
+            dm = drift_basis(r['rows'], _gr)
+            if dm is None:
                 print('   V-6 %-6s vs 正对照：**本臂全程无有效 F3 测点** '
                       '⇒ 无法判定（不是 PASS）' % arm)
                 continue
-            dm = max(fv)
             ratio = dmax / dm if dm > 1e-12 else float('inf')
-            print('   V-6 %-6s vs 正对照：%.3f / %.3f = **%.1f×**  ⇒ %s'
+            print('   V-6 %-6s vs 正对照：%.3f / %.3f = **%.1f×**（基准%s）⇒ %s'
                   % (arm, dmax, dm, ratio,
+                     '剔除形核步' if _gr else '原始 max',
                      'PASS（通道是活的）' if ratio > 3 else '**FAIL（量具无分辨力）**'))
     else:
         print('-' * 104)
