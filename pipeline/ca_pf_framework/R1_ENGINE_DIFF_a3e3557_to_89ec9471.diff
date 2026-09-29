@@ -1,0 +1,88 @@
+# 引擎 diff 证据：lath1/mid1 用的 a3e3557  ->  当前 89ec9471
+# 生成于 2026-09-29T08:12:17
+# 用途：判定跨 SHA 组的算例能不能并列比
+# 命令：git diff c2913a24 9d31b4fa -- pipeline/ca_pf_framework/windowB_surface.py
+
+diff --git a/pipeline/ca_pf_framework/windowB_surface.py b/pipeline/ca_pf_framework/windowB_surface.py
+index 0b881ab8..c899b578 100644
+--- a/pipeline/ca_pf_framework/windowB_surface.py
++++ b/pipeline/ca_pf_framework/windowB_surface.py
+@@ -3244,13 +3244,33 @@ class LevelSetMulti(object):
+                     if x != y:
+                         pairs.add((int(min(x, y)), int(max(x, y))))
+         if not pairs:
++            self._reinit_all_skipped_last = True
++            self._reinit_band_after = self._reinit_band_before
+             return
+         # ★ 关键：**逐胞只用它自己的界面配对**（karr,larr），否则多配对（含母相）的
+         #   修正会互相叠加、把界面推错（实测：叠加时界面跑到 -0.047um，逐胞后回到解析值附近）。
+-        _karr = np.argmin(self.phi, axis=0)
+-        _order = np.argsort(self.phi, axis=0)
+-        _karr, _larr = _order[0], _order[1]
+-        delta = np.zeros_like(self.phi)
++        #
++        # ★★★ R1 任务①（2026-09-29，**子代理 `_r1_reinit_when.py` 实测驱动**）：
++        #   **懒构造**（lazy）。原来这里**无条件**先做
++        #       `np.argsort(self.phi, axis=0)`  ← 造一个 (nreg,N³) int64 临时量
++        #       `delta = np.zeros_like(self.phi)` ← 再造一个 (nreg,N³) float64
++        #   **在逐对跳过判据（`reinit_skip_tol`）之前**。
++        #   而生产触发口径下实测：**8 个配对全部被跳过、100 次 Sussman 一次都没跑**
++        #     （`_r1_reinit_when.py`：doneΔ=0 / skipΔ=8，6 次触发，每次只多花 0.47 s）。
++        #   ⇒ 全跳过时这两笔开销**白付**，且它们**一次都没被用到**
++        #     （`_karr/_larr` 只在 `is_kl` 掩模里用；`delta` 只在有配对被处理时累加）。
++        #   实测量级（N=96）：`argsort(13 场)` = **0.177 s**、`region()` = 0.042 s；
++        #     按 N³ 折算到 N=192 约 **1.4–1.8 s/次触发**；内存上 N=192 的 argsort
++        #     临时量是 **13×7.08e6×8 B = 736 MB**（int64），`delta` 又是 736 MB。
++        #   改法：把这两样**推迟到第一次真正要做 reinit 时**再建。
++        #   ⚠ **逐位不变**（证明）：跳过分支里这两个量**没有被读过**；
++        #     若一个配对都没做，`delta` 恒为 0 ⇒ 原来的 `self.phi = self.phi + 0.0`
++        #     对有限值**逐位不变** ⇒ 直接 return 等价。
++        #   ⚠ 同时删掉原来的 `_karr = np.argmin(self.phi, axis=0)` —— 它是**死代码**
++        #     （下一行立刻被 `_order[0]` 覆盖）。
++        _karr = _larr = delta = None
++        _did_any = 0
++        self._reinit_all_skipped_last = False
+         for (k, l) in pairs:
+             # ★★ T2 修（P0-3，2026-09-28）：对**半差分** d2 = (φ_k−φ_l)/2 做重初始化，
+             #   目标 |∇d2| = 1  ⟺  |∇d| = 2  ⟺  |∇φ_k| = |∇φ_l| = 1（VDF 的正确 SDF 条件）。
+@@ -3324,6 +3344,13 @@ class LevelSetMulti(object):
+             self._reinit_pairs_last = self._reinit_pairs_last + 1
+             import time as _tm2
+             _tp0 = _tm2.perf_counter()
++            # ★ R1：**懒构造**（见上面 `_karr = _larr = delta = None` 的记账）。
++            #   到这一步才确定"确实有配对被处理" ⇒ 现在才付 `argsort`/`delta` 的钱。
++            if delta is None:
++                _order = np.argsort(self.phi, axis=0)
++                _karr, _larr = _order[0], _order[1]
++                del _order
++                delta = np.zeros_like(self.phi)
+             if abs(_med - 1.0) > 0.5:
+                 import warnings as _w
+                 _w.warn('pair reinit: band |grad(d/2)| median=%.3f 明显偏离 1; '
+@@ -3340,6 +3367,17 @@ class LevelSetMulti(object):
+             #       且 φ_k+φ_l 逐位不变（不引入整体漂移）✓
+             delta[k] += corr2
+             delta[l] -= corr2
++            _did_any += 1
++        if _did_any == 0:
++            # ★ R1 记账：**一个配对都没做** ⇒ `delta` 恒为 0（甚至没被构造）
++            #   ⇒ 原来的 `self.phi = self.phi + 0` 对有限值**逐位不变** ⇒ 直接返回等价。
++            #   （`_band_bonds` 也不重算了：`region()` 未变 ⇒ 键数不变。）
++            self._reinit_all_skipped_last = True
++            self._reinit_reg_flips_last = 0
++            self._reinit_band_after = self._reinit_band_before
++            self._reinit_wall_total = getattr(self, '_reinit_wall_total', 0.0) + (
++                _tm.perf_counter() - _tw0)
++            return
+         self.phi = self.phi + delta
+         # ★★★ A2（2026-09-28）**硬守卫：区域指派必须逐个胞保持不变**。
+         #   为什么用这个判据：多区域 VDF 里"几何"的**定义**就是 `argmin_k φ_k`
+
+# ===== 结论（逐行判定）=====
+# 1) 有配对被处理的路径：同一个 argsort -> 同一个 _karr/_larr -> 同一个 corr2
+#    -> 同一个 delta -> 同一个 self.phi + delta  => 数值上完全同一（无算式改动）
+# 2) 全跳过路径：原来做 self.phi = self.phi + delta（delta 恒 0），现在直接 return。
+#    对有限值 x + 0.0 == x 逐位成立；唯一差别是 -0.0 + 0.0 = +0.0（零的符号）。
+#    而本引擎里 phi 只经 S = phi0/sqrt(phi0^2+dx^2) 使用，没有对 phi 取倒数
+#    => 零的符号不可观测。
+# => 两个引擎数值等价；跨 SHA 的并列**可以保留**（历史上限：lath1/mid1 仅用于 m=0 基线）。
