@@ -66,7 +66,15 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         'f3_pairs',
         'nf3', 'f3_area_m2', 'f3_area_stair', 'f3_pos_m', 'f3_pos_dx',
         'f3_std_m', 'n_lath', 'w_lath', 'a_lath', 'box_touch', 'finite',
-        'psi_mean']
+        'psi_mean',
+        # ★★★ R29：**CFL 实际用量** `dt·M·dG_max/dx`（单位：胞/步）。
+        #   为什么必须落盘：`advance` 把**总驱动**（`Δf + Δed − γκ`，含弹性与曲率）
+        #   的最大值写在 `g.dG_max`，而本驱动层定 dt 用的是**化学驱动力** `Δf`。
+        #   本仓库已有前车之鉴（`suggest_dt` 的 docstring）：只按 `Δf` 定 dt，
+        #   实测会让界面每步位移到 **0.6–0.75 dx**（超 CFL 4–5 倍）⇒ 剖面失真。
+        #   ⇒ 实际用量必须落盘，判据才能事后核。
+        #   （`_bk_defcheck.py` 只遍历**旧行**的键 ⇒ 新增列不影响归档的逐位比较。）
+        'cfl_used']
 assert len(COLS) == len(set(COLS))
 
 
@@ -664,7 +672,11 @@ def run(a):
             psi_mean=(float(g.psi[np.isfinite(
                 lt.gtab[np.clip(karr_m, 0, g.nreg - 1),
                         np.clip(larr_m, 0, g.nreg - 1)])].mean())
-                if (g.psi is not None) else float('nan')))
+                if (g.psi is not None) else float('nan')),
+            # ★ R29：CFL 实际用量（胞/步）。`advance` 每步把总驱动的最大值写在
+            #   `g.dG_max`（第 0 步还没 advance ⇒ 没有该属性 ⇒ 记 nan，不假装是 0）。
+            cfl_used=(float(dt) * MOB * float(getattr(g, 'dG_max', float('nan')))
+                      / dx))
         # ★ 防御：`cw.writerow([row[c] for c in COLS])` 里少一个键就是 KeyError，
         #   而它出现在**第 0 步写第一行**时 —— 那时构造已经花掉 60 s，
         #   且发生在长跑开头而不是起跑前。这里提前硬失败，把话说明白。
