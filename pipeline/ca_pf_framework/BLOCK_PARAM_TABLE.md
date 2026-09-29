@@ -63,6 +63,7 @@
 | `gamma_m (RS)` | `0.396102` | J/m² | windowB_lath.GAMMA_M_TI64 | γ_RS 的上限 | **推** | γ_m = E0·θ_m = 0.39610（自检 S-3.2） |
 | `DS_REF` | `4.1470e+05` | J/(m³K) | windowB_km | ΔG_v(T) = DS(T0−T) | **推** | = DG_CRIT_REF/(T0−Ms)；带 ±20%（DS_BAND） |
 | `df (引擎常数)` | `3.5000e+08` | J/m³ | T16_verify_rve.DF | 引擎的驱动力 | **推** | = drive_of_T(298 K)。**本应是 T 的函数** ⇒ 闭环版改用 set_T(T_of_t) |
+| `q (冷速)` | `q_cap × cool_ratio` | K/s | windowB_closure.q_max_ordered | athermal 时钟 T(t)=T_start−q·t 的速率 | **推** | C-3 的有序性上界 `q ≤ M·ΔG_v(T_start)/(α_KM·L_lath)` × 安全系数。CLI：`_bk_exp.py --cool-rate`（0 = 自动取 C-3 的值；非 0 = 用户给定并检查） |
 
 ### 3.2 **[借]** 文献值（带出处与误差带）
 
@@ -96,6 +97,7 @@
 | `p_auto` | `0` | - | nuc_cfg(p_auto=…) | sympathetic 增益 1+p·4f(1−f) | **标** | **本项目自设**；原引 Bhadeshia (5.24) 已撤（分母未读到） |
 | `t_nuc` | `250` | nm | _bk_exp.py --eng-t-nm | 核厚 = 板条厚 | **标** | **与文献冲突**：Shuai 2026 给 0.51–0.88 µm ⇒ 闭环版用 510 nm |
 | `plate L/W/T` | `(2400, 640, 250)` | nm | _bk_exp.py --plate-* | 种子几何/长厚比 | **标** | 归档 L/T = 9.6 ≈ Wang 2026 的 9:1 ✓；绝对尺度受盒子限制（C-4） |
+| `gamma_film (γ_f)` | `0.6` | J/m² | _bk_exp.py --gamma-film | `auto` 臂的面带 ψ 模型里的"残余 β 膜"面能 | **标** | 用于 C-1/C-6 的润湿判决（P-2）：**假设存在**一层 β 膜时的膜/基体面能。C-6 说 γ_RS,max=0.277 < 2γ_α′β ⇒ **不润湿 ⇒ 干晶界**，而 `auto` 臂的实测 ψ 单调退湿到 0.09 与之一致。⚠ 它只在 `--arm auto` 被读到；闭环算例（`dry`/`gpos`）不用它 |
 
 ### 3.4 **[数]** 数值/建模选择（不是物理量）
 
@@ -109,7 +111,8 @@
 | `nuc cadence` | `30` | steps | _bk_exp.py --eng-cadence | 形核节奏 | **数** | **规定值**；闭环版由 C-2/C-3 的 athermal 律取代 |
 | `overlap` | `62.5` | nm | _bk_exp.py --nuc-overlap-nm | 共用界面的咬入量 | **数** | 剂量–响应实测：1Δx 最优；0 会留 1 胞 β 膜、1.5Δx 会撕碎先成片 |
 | `nv (场数)` | `6` | - | _bk_exp.py --laths | 可表示的板条数上限 | **数** | 表示上限（region() 是 int8 ⇒ nreg ≤ 127），不是物理上限。闭环版由 C-2 导出：`--laths` = n 个 1 |
-| `t_seed (播种厚)` | `t_phys + o` | nm | _bk_closed.py | 引擎播种的板条厚 | **数** | **不是物理量**，是"预补被咬量"的记账偏移；判据（V-8b/A-8）的靶是 `--plate-t-physical` |
+| `t_seed (播种厚)` | `t_phys + o` | nm | _bk_closed.py | 引擎播种的板条厚 | **数** | **不是物理量**，是"预补被咬量"的记账偏移；判据（V-8b/A-8）的靶是 `--plate-t-physical`。⚠ Round 5 实测：被咬量**不是常数 o/2**（n=2 时≈0、n=6 时≈o）⇒ 本条的**取值未闭合**，开关 `--seed-comp-frac`（`_bk_closed.py`） |
+| `cool_ratio` | `0.8` | - | _bk_exp.py --cool-ratio | q 的安全系数 | **数** | 0.8 ⇒ Δt_grow/Δt_nuc = 0.8（留 20% 余量）；同时决定 C-3 的步数下界要乘 1/0.8 |
 | `N / dx` | `(96, 62.5)` | -/nm | _bk_exp.py --N/--dx-nm | 离散化 | **数** | 约束① t/Δx ≥ 3；C-4 给 N=96 下 Δx 必须 ≥125 nm 才能装下文献厚度的 6 根 |
 | `aniso (Herring)` | `0.4` | - | _bk_exp.py kw | γ(n) 各向异性强度 | **数** | Herring 刚度项；与 γ_RS 的 θ 依赖正交 |
 | `facet_lam / facet_eps` | `(0, 0.05)` | - | _bk_exp.py --facet-* | 刻面（默认关） | **数** | facet_lam=0 ⇒ 归档算例未启用刻面 |

@@ -749,7 +749,23 @@ def params():
     #   ⇒ 判据的靶必须是 `--plate-t-physical`，不是 `--plate-T`。
     A(_p('t_seed (播种厚)', 't_phys + o', 'nm', '_bk_closed.py', '引擎播种的板条厚', '数',
          '**不是物理量**，是"预补被咬量"的记账偏移；'
-         '判据（V-8b/A-8）的靶是 `--plate-t-physical`'))
+         '判据（V-8b/A-8）的靶是 `--plate-t-physical`。'
+         '⚠ Round 5 实测：被咬量**不是常数 o/2**（n=2 时≈0、n=6 时≈o）'
+         '⇒ 本条的**取值未闭合**，开关 `--seed-comp-frac`（`_bk_closed.py`）'))
+    # ---- ★ Round 5 参数完备性审计（`_bk_param_audit.py`）补登的三条 ----
+    A(_p('q (冷速)', 'q_cap × cool_ratio', 'K/s', 'windowB_closure.q_max_ordered',
+         'athermal 时钟 T(t)=T_start−q·t 的速率', '推',
+         'C-3 的有序性上界 `q ≤ M·ΔG_v(T_start)/(α_KM·L_lath)` × 安全系数。'
+         'CLI：`_bk_exp.py --cool-rate`（0 = 自动取 C-3 的值；非 0 = 用户给定并检查）'))
+    A(_p('cool_ratio', 0.8, '-', '_bk_exp.py --cool-ratio', 'q 的安全系数', '数',
+         '0.8 ⇒ Δt_grow/Δt_nuc = 0.8（留 20% 余量）；'
+         '同时决定 C-3 的步数下界要乘 1/0.8'))
+    A(_p('gamma_film (γ_f)', 0.6, 'J/m²', '_bk_exp.py --gamma-film',
+         '`auto` 臂的面带 ψ 模型里的"残余 β 膜"面能', '标',
+         '用于 C-1/C-6 的润湿判决（P-2）：**假设存在**一层 β 膜时的膜/基体面能。'
+         'C-6 说 γ_RS,max=0.277 < 2γ_α′β ⇒ **不润湿 ⇒ 干晶界**，'
+         '而 `auto` 臂的实测 ψ 单调退湿到 0.09 与之一致。'
+         '⚠ 它只在 `--arm auto` 被读到；闭环算例（`dry`/`gpos`）不用它'))
     # ---- 网格 ------------------------------------------------------------
     A(_p('N / dx', (96, 62.5), '-/nm', '_bk_exp.py --N/--dx-nm', '离散化', '数',
          '约束① t/Δx ≥ 3；C-4 给 N=96 下 Δx 必须 ≥125 nm 才能装下文献厚度的 6 根'))
