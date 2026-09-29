@@ -1233,7 +1233,7 @@ class LevelSetMulti(object):
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
                 elong=1.0, along=None, prefer_end=True, nfsv_strict=True,
                 block_edge=True, align_inplane=True, alt_side=True,
-                force_reinit_after_event=True):
+                force_reinit_after_event=None, t_last_reduce=0.0):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
         （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
         `WINDOWB_AUDIT_REGISTER.md` D4/A7。三种处置任选其一，**但必须显式**：
@@ -1363,9 +1363,32 @@ class LevelSetMulti(object):
                          # ★ R21：`attach` 下**交替选端**（对齐驱动层 `_seed_next` 的
                          #   `side = +1 if j%2==0 else -1`）。只在 `attach=True` 时读到。
                          alt_side=bool(alt_side),
-                         # ★ R22：有形核事件时是否强制 reinit（默认 True = 归档行为）。
-                         #   `False` ⇒ 与驱动层 `_seed_next` 一致（后者不置该标志）。
-                         force_reinit_after_event=bool(force_reinit_after_event),
+                         # ★ R22/R23：有形核事件时是否强制 reinit。
+                         #   `None`（默认）= **自动**：`attach` 下 **False**、其余 **True**。
+                         #   ⇒ `attach=False`（归档路径）**逐位不变**；
+                         #     而 `attach=True` 的新 regime 自动拿到 R22 验过的正确设置。
+                         #   为什么 `attach` 下必须是 False（R23 查明机理）：
+                         #     `reinitialize()` 默认 `mode='pair'`（EXPERT-#3 修，本意是
+                         #     让界面的零等值面**不动**）。但 `seed_plate()` 会把**所有
+                         #     未播种场**写成 `phi[j] = max(phi[j], -sdf)` ⇒ 在新片内部
+                         #     `phi_j ≡ -sdf`（对所有 j ≠ k_new）⇒ **任意两场的差恒为 0**
+                         #     ⇒ "pair 带"退化成一片**零梯度平坦区** ⇒ Sussman 在平坦场上
+                         #     **会移动零等值面**。这正是日志里反复出现的
+                         #     `pair reinit: band |grad(d/2)| median=0.000 明显偏离 1`。
+                         #   实测代价（同配置只差这一个开关）：
+                         #     `eng10`（True）  逐对面积涨到 **2.246**、`nc_max` 15–25、
+                         #                      `V-7b` 最差 1.00、`V-3g` 0.439 Δx
+                         #     `eng11`（False） 逐对面积 **1.50–1.59**、`nc_max` **1**、
+                         #                      `V-7b` 最差 0.151、`V-3g` 0.0406 Δx
+                         #   ⚠ 记账：`reinit_dt=1e-4` 而 `dt=2.68e-8` ⇒ 按容差的 reinit
+                         #     需要 ~3733 步才触发 ⇒ **200 步的算例里 `False` 等于
+                         #     "全程无 reinit"**。健康指标（`nc_max`≡1、`Vt` 单调、
+                         #     `box_touch`=0、`V-3g` 0.04 Δx）都正常，但这是**经验上的**，
+                         #     不是"已证明无代价" ⇒ 长跑（≫3733 步）时必须重新评估。
+                         t_last_reduce=float(t_last_reduce),
+                         force_reinit_after_event=((not bool(attach))
+                                                   if force_reinit_after_event is None
+                                                   else bool(force_reinit_after_event)),
                          rng=np.random.default_rng(seed))
         # ★★ 记账（Round 63 接线；**Round 84 更正依据**——`ReferenceAudit` #14）：
         #   `p_auto` **已接线并使用**（见下面 sympathetic 分支的 `_gain`）。
@@ -1729,6 +1752,20 @@ class LevelSetMulti(object):
                         #     `dbg['edge_gap_max_dx']`（**这是本诊断的可证伪点**：
                         #     若它 ≈ 0，说明源板条一直就是最外那张，本条修法无意义）。
                         #   ⚠ `block_edge=False` 或 `attach=False` ⇒ 原路径 ⇒ 逐位不变。
+                        # ★ R23：**末片减薄**（`t_last_reduce`）。驱动层 `_seed_next`
+                        #   的末片播 `T+o/2`（其余 `T+o`）；引擎一律 `t`
+                        #   ⇒ `V-8b`（末态厚度保真）FAIL（实测 252/332/304/306/303/322）。
+                        #   判据："本事件用掉之后就再没有同变体空场了" ⇒ 这是末片。
+                        _t_use = t
+                        if c.get('t_last_reduce', 0.0) and c.get('nfsv', False):
+                            _vg2 = c.get('vgroup') or {}
+                            _left = [j for j in range(1, nv + 1)
+                                     if j != k_new
+                                     and _vg2.get(j) == _vg2.get(k_new)
+                                     and not bool((reg == j).any())]
+                            if not _left:
+                                _t_use = t - float(c['t_last_reduce'])
+                                _dbg['t_last_used'] = _t_use
                         if c.get('block_edge', True):
                             _bi = np.argwhere(reg > 0)
                             _ball = ((_bi.astype(float) + 0.5) * self.dx) @ nrm
@@ -1790,7 +1827,7 @@ class LevelSetMulti(object):
                                 break
                             _edge = _e_hi if _side > 0 else _e_lo
                             cc = c0 + ((_edge - float(c0 @ nrm))
-                                       + _side * (t / 2.0
+                                       + _side * (_t_use / 2.0
                                                   - c.get('attach_overlap', 0.0))) * nrm
                             cc = cc - self.L * np.floor(cc / self.L)   # 周期折回
                             if np.any(cc < R + 0.3e-6) or np.any(cc > self.L - R - 0.3e-6):
@@ -1810,7 +1847,7 @@ class LevelSetMulti(object):
                                 _dbg['cov'] += 1
                                 continue
                             try:
-                                self.seed_plate(k_new, cc, nrm, R, t,
+                                self.seed_plate(k_new, cc, nrm, R, _t_use,
                                                 elong=c.get('elong', 1.0),
                                                 along=c.get('along'),
                                                 flat_end=True)
