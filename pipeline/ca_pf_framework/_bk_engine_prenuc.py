@@ -1229,8 +1229,7 @@ class LevelSetMulti(object):
     # ================= 长大中的形核（D18，2026-09-28 用户批准并入）=================
     def nuc_cfg(self, R_nuc, t_nuc, gamma=0.15, n_init=0, p_auto=0.0,
                 harden_f=1.0, sym_gap_cells=2, max_per_step=1, seed=11,
-                var_rule='ed', use_fcrit=False,
-                vgroup=None, nfsv=False, attach=False, attach_overlap=0.0):
+                var_rule='ed', use_fcrit=False):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
         （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
         `WINDOWB_AUDIT_REGISTER.md` D4/A7。三种处置任选其一，**但必须显式**：
@@ -1280,47 +1279,6 @@ class LevelSetMulti(object):
                          gap=int(sym_gap_cells), cap=int(max_per_step),
                          var_rule=str(var_rule),
                          use_fcrit=bool(use_fcrit),
-                         # ★★★ R11（2026-09-29）：**块的"可表示性"与"界面 regime"**
-                         #   两个开关。默认全关 ⇒ 与归档逐位相同。
-                         #
-                         # 【为什么要 `nfsv`（new field, same variant）】
-                         #   `stack` 通道原来是 `seed_plate(k, …)` —— **同一个场**。
-                         #   而块的定义就是「同变体反复形核」（Furuhara 2008：
-                         #   "a block is formed by REPEATED NUCLEATION OF THE SAME
-                         #   VARIANT of laths adjacent to each other"）。
-                         #   同变体 + 同一个场 ⇒ 第二个核只是**加厚第一片**，
-                         #   永远得不到"多根板条"⇒ **块在这一方案下结构上不可表示**
-                         #   （本仓库 A-5 的判定）。
-                         #   ⇒ `nfsv=True` 时：选中已有场 `k` 后，改播进一个**同变体
-                         #     且当前为空**的新场 `j`；找不到就用 `k`（并计数）。
-                         #   需要一个 `vgroup`（`{场号: 变体号}`）才能知道谁同变体；
-                         #   传 `None` ⇒ 该开关无效（并计数，不静默）。
-                         #
-                         # 【为什么要 `attach`，以及它与 Chen 1979 的关系】
-                         #   原实现在惯习面内平移一整片，**中间留一层残余母相**
-                         #   （`sym_gap_cells=2`），文献锚是 Chen 1979（LBL 博士论文）：
-                         #   新核 "spatially separate from the pre-existing plate"、
-                         #   平行生长、"leaving a layer of retained austenite"。
-                         #   ⚠ **那是 Fe-Ni 马氏体**（母相是奥氏体 γ）。
-                         #   本体系是 **Ti-6Al-4V 的 β→α′**，而本项目的 C-1 判据
-                         #   （Cahn 润湿）给出：`γ_RS(θ≤5°) ≤ 0.277 < 2γ_α′β ≈ 0.30`
-                         #   ⇒ **不润湿 ⇒ 干晶界才是稳定态**；
-                         #   且 `P-2` 实测（`auto` 臂 ψ 单调退湿到 0.09）与之一致。
-                         #   ⇒ **两条结论都对，但对不同体系。** `attach=True` 就是
-                         #     "按 C-1 选干晶界"这一 regime：新核与源板条**共用一张
-                         #     界面**（近端面落在源板条边界上、再咬入 `attach_overlap`），
-                         #     于是 `seed_plate` 的真 SDF + `argmin` 把界面定在**中面**
-                         #     ⇒ 一张完整的阶梯界面，而不是两列错开的阶梯夹一层 β。
-                         #   `attach_overlap` 的经验值（同分辨率 Δx=62.5 nm、
-                         #   同 n*、N=96、200 步的剂量–响应实测）：
-                         #     `o = 1Δx = 62.5 nm` ⇒ 界面完整（β 夹层占比 0.13–0.15
-                         #     = 预摆对照底噪），`o = 0` ⇒ 只有 0.29–0.62（阶梯错位）；
-                         #     `o = 1.5Δx` **过大**，会把先形成的板条撕碎。
-                         #   ⚠ **这是模型选择，不是从自由能推出来的**（记账红线）。
-                         vgroup=({int(a): int(b) for a, b in vgroup.items()}
-                                 if vgroup is not None else None),
-                         nfsv=bool(nfsv), attach=bool(attach),
-                         attach_overlap=float(attach_overlap),
                          rng=np.random.default_rng(seed))
         # ★★ 记账（Round 63 接线；**Round 84 更正依据**——`ReferenceAudit` #14）：
         #   `p_auto` **已接线并使用**（见下面 sympathetic 分支的 `_gain`）。
@@ -1582,68 +1540,10 @@ class LevelSetMulti(object):
                     idx = np.argwhere(m)
                     if idx.size == 0:
                         continue
-                    # ★★★ R11：**同变体 ⇒ 新场**（`nfsv`）。默认关 ⇒ 下面
-                    #   `k_new == k`，与归档**逐位相同**。
-                    k_new = k
-                    if c.get('nfsv', False) and not hardened:
-                        vg = c.get('vgroup')
-                        if vg is None:
-                            _dbg['nfsv_novgroup'] = _dbg.get('nfsv_novgroup', 0) + 1
-                        else:
-                            _v = vg.get(k)
-                            for _j in range(1, nv + 1):
-                                if _j == k or vg.get(_j) != _v:
-                                    continue
-                                if not bool((reg == _j).any()):
-                                    k_new = _j
-                                    break
-                            if k_new == k:
-                                _dbg['nfsv_nofield'] = _dbg.get('nfsv_nofield', 0) + 1
-                            else:
-                                _dbg['nfsv_ok'] = _dbg.get('nfsv_ok', 0) + 1
                     c0 = (idx.mean(0) + 0.5) * self.dx
                     nrm = np.asarray(self._npref_of(k), float)
                     nrm = nrm / np.linalg.norm(nrm)
                     pos = (idx.astype(float) + 0.5) * self.dx
-                    # ★★★ R11：**共用一张界面**（`attach`）。默认关 ⇒ 走下面的
-                    #   16 方向 × 4 档偏移搜索，与归档**逐位相同**。
-                    if c.get('attach', False):
-                        _pn = pos @ nrm
-                        done = False                 # ★ 必须先初始化：下面 `if done`
-                        for _side in (1.0, -1.0):    #   在"一个都没放成"时也要能求值
-                            if done:
-                                break
-                            _edge = float(_pn.max() if _side > 0 else _pn.min())
-                            cc = c0 + ((_edge - float(c0 @ nrm))
-                                       + _side * (t / 2.0
-                                                  - c.get('attach_overlap', 0.0))) * nrm
-                            cc = cc - self.L * np.floor(cc / self.L)   # 周期折回
-                            if np.any(cc < R + 0.3e-6) or np.any(cc > self.L - R - 0.3e-6):
-                                _dbg['oob'] += 1
-                                continue
-                            rel = self.XYZ - cc
-                            dd = rel @ nrm
-                            rp = np.linalg.norm(rel - dd[..., None] * nrm, axis=-1)
-                            cover = (np.abs(dd) <= t / 2) & (rp <= R)
-                            if not bool(cover.any()):
-                                _dbg['empty'] = _dbg.get('empty', 0) + 1
-                                continue
-                            # ★ 守卫**按 regime 放宽**：允许落在母相(0)**或源板条 k**
-                            #   上 —— 后者正是"共用一张界面"。绝不能落在**别的**场上。
-                            _okr = reg[cover]
-                            if not bool(np.isin(_okr, (0, k)).all()):
-                                _dbg['cov'] += 1
-                                continue
-                            try:
-                                self.seed_plate(k_new, cc, nrm, R, t)
-                                out.append((k_new, 'attach'))
-                                _dbg['ok'] += 1
-                                _dbg['attach_ok'] = _dbg.get('attach_ok', 0) + 1
-                                done = True
-                            except ValueError:
-                                _dbg['exc'] += 1
-                        if done:
-                            continue                    # 本事件已完成，下一个事件
                     # ★ 记账（T27 第 2 版抓到）：原来只试 **1 个偏移距离 × 8 个方向**，
                     #   而 `off = 半展宽 + R + gap` 是个**固定值** ⇒ 在 f 已不小的盒子里
                     #   几乎必然越界或被 `cover` 守卫拒 ⇒ 实测 `stack=0`（通道静默失效）。
