@@ -136,11 +136,27 @@ def judge(tag, root, verbose=True):
 
     # ---- A-7：时钟走完 ---------------------------------------------------
     t_end_sim = float(fnum(last, 't_s'))
-    need = (float(cl['T_start']) - float(cl['T_end'])) / float(q)
+    # `T_start` 的读法要**显式可诊断**：`closure.json` 里没有就按 `T_1` 算，并打印出来。
+    # （本项目在"读数口径"上栽过四次 ⇒ 不允许静默取默认值。）
+    if cl.get('T_start') is not None:
+        T_start, tsrc = float(cl['T_start']), 'closure.json'
+    else:
+        T_start, tsrc = CL.T_start_of_clock(alpha), '⚠ 现场按 T_1 算（closure.json 无 T_start）'
+    need = (T_start - float(cl['T_end'])) / float(q)
     ck.append(('A-7 时钟走完 T_start(T_1) → T_end（t_sim ≥ ΔT/q）',
                t_end_sim >= need * 0.999,
-               't_sim=%.4e 需要≥%.4e（比 %.3f）'
-               % (t_end_sim, need, t_end_sim / need)))
+               't_sim=%.4e 需要≥%.4e（比 %.3f）[T_start=%.2f K 来自 %s]'
+               % (t_end_sim, need, t_end_sim / need, T_start, tsrc)))
+
+    # ---- A-8：总体积与几何预期一致 ---------------------------------------
+    #   `Vt` 应 ≈ n·L·W·t（每片都长到种子尺寸）。这是"块真的是 6 根完整的片"的
+    #   一个**独立**的尺度检查（A-5 只数场数，不看大小）。
+    geo = (M * float(cl['geometry']['plate_L_nm'])
+           * float(cl['geometry']['plate_W_nm'])
+           * float(cl['geometry']['plate_T_nm'])) * 1e-9      # nm³ → µm³
+    Vt = float(fnum(last, 'Vt'))
+    ck.append(('A-8 总体积 ≈ n·L·W·t（±25%）', abs(Vt / geo - 1.0) <= 0.25,
+               'Vt=%.4f µm³  几何=%.4f µm³  比=%.3f' % (Vt, geo, Vt / geo)))
 
     if verbose:
         print('=' * 104)

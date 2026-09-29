@@ -28,11 +28,16 @@
 
 ## 七条关键结论（都有闭式 + `selftest()` 的正/负对照）
 
-**C-1｜匀相形核在本体系热力学上不可能 ⇒ athermal 不是选择、是推论。**
+**C-1｜匀相形核在本体系热力学上不可能；异相形核只在高效位点上才可行。**
    `ΔG* = 16πγ³/(3ΔG_v²)`，`ΔG_v(M_s) = 1.128e8`、`γ ∈ [0.201,0.337]`
-   ⇒ `ΔG*/kT = 516–2500`（需要 ≲60 才有可测速率）。
+   ⇒ **匀相** `ΔG*/kT = 516–2500`（需要 ≲60 才有可测速率）；
    连 `γ = 0.0818 J/m²`（远低于任何文献值）都只能压到 60。
-   ⇒ **位置饱和（site-saturation）是唯一可用的形核机制。**
+   ★ **但"匀相不可能"≠"athermal 是唯一可能"**（Round 29 阶段回顾时发现我自己
+     论证过头）：**异相**形核把势垒乘上接触角因子 `f(θ)=(2−3cosθ+cos³θ)/4`，
+     本体系需要 `f ≤ 0.035` ⇒ **`θ_max ≈ 39°`**。
+     ⇒ 正确的结论是：**任何可用的核必须落在"接触角 ≲39° 的高效位点"上** ——
+     这正是 Olson–Cohen 的**预存核（层错型缺陷，有效界面能远低于宏观 γ）**图像。
+     ⇒ athermal 位置饱和与 `ΔG*` 估算**一致**，但**不得**再说成"由 ΔG* 推出的唯一机制"。
 
 **C-2｜板条数 `n` 从"规定的 6"变成导出量。**
    引擎几何本身给出「一次形核事件 = 占满整个面内足迹 `A_f`」⇒ `A_0 ≡ A_f`。
@@ -346,17 +351,69 @@ def dG_star(gamma, dG_v):
 
 
 def barrier_ratio(gamma, dG_v, T):
-    """`ΔG*/k_B T`：**本体系形核机制的分诊量**。[推]"""
+    """`ΔG*/k_B T`：**匀相**形核的势垒比。[推]
+
+    ⚠ 这是**匀相**的量。异相形核要把势垒乘上接触角因子 `f(θ)`（见下），
+      所以本函数**不能单独**得出"不可能形核"的结论 —— 见 `contact_angle_max()`。
+    """
     return dG_star(gamma, dG_v) / (K_B * float(T))
 
 
+def hetero_barrier_factor(theta_deg):
+    """异相形核的接触角因子 `f(θ) = (2 − 3cosθ + cos³θ)/4`（球形冠，标准式）。[推]
+
+    `ΔG*_hetero = f(θ)·ΔG*_homo`；`f(0) = 0`（完全润湿 ⇒ 无势垒）、`f(90°) = 0.5`。
+    """
+    c = math.cos(math.radians(float(theta_deg)))
+    return (2.0 - 3.0 * c + c ** 3) / 4.0
+
+
+def contact_angle_max(gamma, dG_v, T, ratio_max=BARRIER_RATIO_MAX):
+    """★★ C-1 的**正确版本**：让**异相**形核势垒比压到 `ratio_max` 所需的最大接触角。[推]
+
+    解 `f(θ)·ΔG*_homo/k_B T = ratio_max`，`f` 在 `[0°,90°]` 上单调降 ⇒ 二分求根。
+    返回 `(theta_max_deg, f_needed)`；`f_needed = ratio_max/(ΔG*_homo/kT)`。
+
+    **为什么必须有这条**（Round 29 阶段回顾时发现的**我自己论证过头**的地方）：
+      `C-1` 原来写的是"匀相形核不可能 ⇒ **athermal 是唯一可能的机制**"。
+      前半句对（`ΔG*/kT = 1707 ≫ 60`），**后半句不成立**：
+      异相形核只要位点的接触角足够小，势垒就降到可测。
+      本函数给出**那个门槛**：`f_needed ≈ 0.035` ⇒ `θ_max ≈ 39°`。
+      ⇒ 正确的结论是：
+        **① 匀相形核不可能；**
+        **② 异相形核只有在"接触角 ≲ 39° 的高效位点"上才热激活可行；**
+        **③ 马氏体的惯习面是半共格的、胚芽是**预存**的层错型缺陷（Olson–Cohen），
+           其有效界面能远低于宏观 γ ⇒ 落在 ② 的"高效位点"一侧 ⇒ athermal 位置饱和
+           是与 ΔG* 估算**一致**的机制。**
+      ⚠ **但"athermal 是唯一可能"这个更强的措辞不得再用** —— 它没有从 ΔG* 推出来。
+    """
+    ratio_homo = barrier_ratio(gamma, dG_v, T)
+    f_need = float(ratio_max) / ratio_homo
+    if f_need <= 0.0:
+        return 0.0, f_need
+    # `f` 在 [0°,90°] 上**单调增**，值域 [0, 0.5]。
+    # ★ Round 29 修：第一版写反了这一行（`f_need >= f(0°) = 0` 恒真 ⇒ 永远返回 90°）
+    #   —— 被自检 C-1b.1 当场抓到。
+    if f_need >= hetero_barrier_factor(90.0):
+        return 90.0, f_need
+    lo, hi = 0.0, 90.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if hetero_barrier_factor(mid) < f_need:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi), f_need
+
+
 def gamma_max_athermal(dG_v, T, ratio_max=BARRIER_RATIO_MAX):
-    """★ C-1：能让 `ΔG*/kT ≤ ratio_max` 的最大界面能 `γ`。[推]
+    """★ C-1a：让**匀相** `ΔG*/kT ≤ ratio_max` 的最大界面能 `γ`。[推]
 
     `γ³ = 3·ratio·k_B T·ΔG_v²/(16π)`。
     本体系（`dG_v = 1.128e8`、`T = 873 K`）给 **0.0818 J/m²** ——
     **远低于任何文献界面能**（Murzinova 0.201–0.337；纯 Ti 计算 0.188）
-    ⇒ **无论取哪个文献值，匀相形核都慢到不可测** ⇒ athermal 是**推论**。
+    ⇒ **匀相形核在任何文献 γ 下都慢到不可测**。
+    ⚠ 这只是"匀相"的结论；异相形核见 `contact_angle_max()`（C-1b）。
     """
     g3 = (3.0 * float(ratio_max) * K_B * float(T) * float(dG_v) ** 2
           / (16.0 * math.pi))
@@ -666,6 +723,26 @@ def selftest(verbose=True):
     # 反向：γ 要低到 0.0819 才压到 60 ⇒ 与 C-1.2/C-1.3 是同一个数的两种读法
     ck('C-1.5 反向：γ = γ_max 时 ΔG*/kT == 60（阈值确实在 0.0819）',
        abs(barrier_ratio(gmax, DG_CRIT_REF, M_S_TI64) - 60.0) < 1e-6)
+    # ---- C-1b：**异相**形核（Round 29 阶段回顾补）----------------------
+    #   ★ 这条是对我自己论证过头的纠正：ΔG* 只否掉了「匀相」，
+    #     没有否掉「在高效位点上的异相形核」。这里把门槛算出来。
+    th, f_need = contact_angle_max(0.25, DG_CRIT_REF, M_S_TI64)
+    ck('C-1b.1 异相形核可行的门槛：θ_max ≈ 39°（f_needed ≈ 0.035）',
+       abs(th - 39.0) < 1.5 and abs(f_need - 0.03515) < 5e-4,
+       'θ_max=%.2f°  f_needed=%.5f' % (th, f_need))
+    ck('C-1b.2 f(0)=0、f(90°)=0.5、且随 θ **单调增**',
+       abs(hetero_barrier_factor(0.0)) < 1e-12
+       and abs(hetero_barrier_factor(90.0) - 0.5) < 1e-12
+       and hetero_barrier_factor(20.0) > hetero_barrier_factor(10.0),
+       '%.5f vs %.5f' % (hetero_barrier_factor(20.0), hetero_barrier_factor(10.0)))
+    ck('C-1b.3 ★负对照：θ=50°（>门槛）的势垒比仍 > 60 ⇒ 不可行',
+       hetero_barrier_factor(50.0) * barrier_ratio(0.25, DG_CRIT_REF, M_S_TI64) > 60.0,
+       '%.1f' % (hetero_barrier_factor(50.0)
+                 * barrier_ratio(0.25, DG_CRIT_REF, M_S_TI64)))
+    ck('C-1b.4 ★负对照：θ=20°（<门槛）的势垒比 < 60 ⇒ 可行',
+       hetero_barrier_factor(20.0) * barrier_ratio(0.25, DG_CRIT_REF, M_S_TI64) < 60.0,
+       '%.1f' % (hetero_barrier_factor(20.0)
+                 * barrier_ratio(0.25, DG_CRIT_REF, M_S_TI64)))
 
     # --- C-2：板条数 ------------------------------------------------------
     n25 = alpha_km_n_lath(298.0)
@@ -722,12 +799,12 @@ def selftest(verbose=True):
     #   要跟数值积分比就必须**在同一个 q 上**比。原写法拿 q=1e6 的积分去比
     #   q=q_max 的闭式，差一个 q 的比值 ⇒ 是**我这条对照写错了**，不是公式错。
     q_max = q_max_ordered(v_of_MOB(1e-9, DS_REF * (T0_TI64 - T1)),
-                          ALPHA_KM_REF, 4.5e-6)
+                          ALPHA_KM_REF, 4.59e-6)
     ck('C-3.6a steps_at_q(q=1e6) 与数值积分一致（<0.1%）',
        abs(s_a - steps_at_q(1e-9, 1.0e6, 125e-9, T_f=298.0,
                             T_start=T1)) / s_a < 1e-3,
        '%.1f vs %.1f' % (s_a, steps_at_q(1e-9, 1.0e6, 125e-9, T_f=298.0, T_start=T1)))
-    ck('C-3.6b steps_min_ordered == steps_at_q(q_max)（往返）',
+    ck('C-3.6b steps_min_ordered(L=4.59µm) == steps_at_q(q_max)（往返）',
        abs(smin - steps_at_q(1e-9, q_max, 125e-9, T_f=298.0,
                              T_start=T1)) / smin < 1e-9,
        '%.1f vs %.1f (q_max=%.4e）' % (smin, steps_at_q(1e-9, q_max, 125e-9,

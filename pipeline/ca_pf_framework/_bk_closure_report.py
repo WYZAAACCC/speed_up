@@ -58,14 +58,17 @@ def closure_numbers():
     """把 C-1..C-7 的**当前数值**算一遍（报告里的数字随代码更新，不手抄）。"""
     rec = CL.recommend()
     w = CL.wetting_check(0.25, 5.0)
+    _th, _fn = CL.contact_angle_max(0.25, CL.DG_CRIT_REF, CL.M_S_TI64)
     return [
-        ('C-1 ΔG*/kT @M_s（γ=0.25）', '%.0f' % CL.barrier_ratio(0.25, CL.DG_CRIT_REF,
-                                                               CL.M_S_TI64),
-         '需要 ≲60 才有可测速率；差 %.0f 个数量级'
-         % (CL.barrier_ratio(0.25, CL.DG_CRIT_REF, CL.M_S_TI64) / 60.0)),
-        ('C-1 允许 athermal 的 γ 上限', '%.4f J/m²' % CL.gamma_max_athermal(
+        ('C-1a **匀相**形核：ΔG*/kT @M_s（γ=0.25）',
+         '%.0f' % CL.barrier_ratio(0.25, CL.DG_CRIT_REF, CL.M_S_TI64),
+         '需要 ≲60 才有可测速率；差 %.0f 倍' % (
+             CL.barrier_ratio(0.25, CL.DG_CRIT_REF, CL.M_S_TI64) / 60.0)),
+        ('C-1a 允许**匀相**形核的 γ 上限', '%.4f J/m²' % CL.gamma_max_athermal(
             CL.DG_CRIT_REF, CL.M_S_TI64),
          '文献最低端 0.201 ⇒ **低 2.5 倍**，结论不依赖 γ 取哪个文献值'),
+        ('C-1b **异相**形核的门槛', 'θ_max = %.1f°（f ≤ %.4f）' % (_th, _fn),
+         '★ 纠正：ΔG* 只否掉「匀相」；athermal 与估算**一致**但不是唯一解'),
         ('C-2 n = α_KM(M_s − T_end)', 'floor(%.4f) = **%d**'
          % (rec['n_lath_float'], rec['n_lath']),
          '与归档"规定的 6"**独立地一致**'),

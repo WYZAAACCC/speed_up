@@ -51,6 +51,11 @@ def main():
     ap.add_argument('--steps-factor', type=float, default=1.0,
                     help='<1 = 按比例缩短（**会使 C-3 有序性变差，必须记账**）')
     ap.add_argument('--seed', type=int, default=11)
+    ap.add_argument('--arm', default='dry',
+                    choices=['dry', 'wet', 'gpos', 'gneg', 'g0', 'auto', 'eng'],
+                    help='`gpos` = F3 面能强制 100 J/m²（量具正对照：界面必须移动）。'
+                         '★ 闭环算例若要判 V-6，**必须另跑一个与主臂步数配对的 gpos** ——'
+                         '归档的 `gpos_L200` 只有 200 步、且 Δx 差 2 倍，拿它比会**假 FAIL**。')
     ap.add_argument('--nthreads', type=int, default=2)
     ap.add_argument('--tag', default='cl1')
     ap.add_argument('--out', default='_exp/_bk_closed')
@@ -97,8 +102,8 @@ def main():
             a.cool_rate, 1e-9, a.alpha_km, rec['L_lath'])[0],))
 
     cmd = [PY, '-u', '_bk_exp.py',
-           '--N', str(a.N), '--dx-nm', '%.4f' % rec['dx_nm'],
-           '--steps', str(steps),
+           '--arm', a.arm,
+           '--N', str(a.N), '--dx-nm', '%.4f' % rec['dx_nm'],           '--steps', str(steps),
            '--every', str(a.every), '--snap-every', '1000',
            '--pair-every', str(a.every),
            '--norm-smooth', '0', '--nthreads', str(a.nthreads),

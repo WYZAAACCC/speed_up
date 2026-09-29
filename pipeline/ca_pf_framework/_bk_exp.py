@@ -386,8 +386,10 @@ def run(a):
         n_seeded = M
         g.init_parent()
     margin = 0.5 * L - 0.5 * (span + T) - 0.5 * a.plate_L * 1e-9
-    P('   沿 n* 到盒壁余量 %.2f µm；沿 a 余量 %.2f µm（**700 步长跑会撞壁，见 §4.1**）'
-      % ((0.5 * L - 0.5 * (span + T)) * 1e6, margin * 1e6))
+    P('   沿 n* 到盒壁余量 %.2f µm；沿 a 余量 %.2f µm（标量估计，%s）'
+      % ((0.5 * L - 0.5 * (span + T)) * 1e6, margin * 1e6,
+         '余量充裕' if margin > 1.0e-6 else
+         '⚠ 余量偏紧：归档几何下 700 步长跑会撞壁（见 §4.1）'))
     if margin < 0.5e-6:
         P('   ⚠⚠ 沿 a 余量 < 0.5 µm ⇒ **本算例会在中期撞盒壁**（`box_touch` 会置 1）')
     if span + T > L:
