@@ -1231,7 +1231,7 @@ class LevelSetMulti(object):
                 harden_f=1.0, sym_gap_cells=2, max_per_step=1, seed=11,
                 var_rule='ed', use_fcrit=False,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
-                elong=1.0, along=None):
+                elong=1.0, along=None, prefer_end=True):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
         （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
         `WINDOWB_AUDIT_REGISTER.md` D4/A7。三种处置任选其一，**但必须显式**：
@@ -1340,6 +1340,15 @@ class LevelSetMulti(object):
                          elong=float(elong),
                          along=(None if along is None
                                 else np.asarray(along, float).copy()),
+                         # ★★★ R13：`attach` 下**优先抽端片**。只在 `attach=True`
+                         #   时生效 ⇒ `attach=False`（默认）**完全不变**。
+                         #   动机（实测 `eng2`，200 步）：引擎随机抽 `k`，抽到**内层片**
+                         #   时两侧都被别的场占住 ⇒ `cover` 守卫拒掉 ⇒ 该次事件作废
+                         #   ⇒ 阶梯进度**慢半拍**（step 90 时 3 片，而驱动层方案 4 片）。
+                         #   只有**端片**才有自由外侧。"端片"的判据是
+                         #   "沿惯习面法向的质心投影取到极值"——它假定同组板条
+                         #   **共用一张惯习面**（正是 block 的情形）。
+                         prefer_end=bool(prefer_end),
                          rng=np.random.default_rng(seed))
         # ★★ 记账（Round 63 接线；**Round 84 更正依据**——`ReferenceAudit` #14）：
         #   `p_auto` **已接线并使用**（见下面 sympathetic 分支的 `_gain`）。
@@ -1627,6 +1636,30 @@ class LevelSetMulti(object):
                     # ★★★ R11：**共用一张界面**（`attach`）。默认关 ⇒ 走下面的
                     #   16 方向 × 4 档偏移搜索，与归档**逐位相同**。
                     if c.get('attach', False):
+                        # ★★★ R13：**优先抽端片**（只有端片有自由外侧）。
+                        #   随机抽到的 `k` 若是内层片，`attach` 两侧都会被别的场占住
+                        #   ⇒ `cover` 守卫拒 ⇒ 本次事件作废（`eng2` 实测慢半拍）。
+                        #   ⚠ 这里是**改 `k` 的抽样**，不改几何；`attach=False` 时
+                        #     整段不执行 ⇒ 归档行为不变。
+                        if c.get('prefer_end', True) and len(ks) >= 2:
+                            _pr = {}
+                            for _j in ks:
+                                _i2 = np.argwhere(reg == _j)
+                                if _i2.size:
+                                    _pr[_j] = float(((_i2.mean(0) + 0.5)
+                                                     * self.dx) @ nrm)
+                            if len(_pr) >= 2 and k in _pr:
+                                _lo = min(_pr, key=_pr.get)
+                                _hi = max(_pr, key=_pr.get)
+                                if k not in (_lo, _hi):
+                                    k = _lo if rng.random() < 0.5 else _hi
+                                    _dbg['end_pref'] = _dbg.get('end_pref', 0) + 1
+                                    m = (reg == k)
+                                    idx = np.argwhere(m)
+                                    if idx.size == 0:
+                                        continue
+                                    c0 = (idx.mean(0) + 0.5) * self.dx
+                                    pos = (idx.astype(float) + 0.5) * self.dx
                         _pn = pos @ nrm
                         done = False                 # ★ 必须先初始化：下面 `if done`
                         for _side in (1.0, -1.0):    #   在"一个都没放成"时也要能求值
