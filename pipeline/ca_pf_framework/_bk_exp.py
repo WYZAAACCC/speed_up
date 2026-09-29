@@ -181,6 +181,15 @@ def run(a):
                         reinit_every=0, reinit_dt=a.reinit_dt,
                         reinit_band_cells=a.reinit_band)
     g.lath = lt
+    # ★★★ R12：`--arm eng` —— **引擎侧自发形核**的接线。
+    #   `vgroup` 告诉引擎哪些场同变体（本臂 6 个场全是变体 1）；
+    #   `nfsv` 让同变体形核播进**新的空场**（否则只会加厚第一片）；
+    #   `attach` 让新核与源板条**共用一张界面**（C-1 干晶界 regime）。
+    n_eng_ev = 0
+    _ed_dummy = None
+    # ★★ `nuc_cfg` 必须**等 `vmap` 建好之后**再调（`vgroup=vmap`）——
+    #   第一版把它放在 `g.lath = lt` 旁边，`vmap` 还没定义 ⇒ UnboundLocalError。
+    #   故这里只置一个"待接线"标志，真正的 `nuc_cfg` 在 `vmap` 之后（见下）。
     if a.arm == 'auto':
         # `psi0` 取 0.99（**不能取 1.0**，见上面记账）
         g.film = dict(gamma_f=float(a.gamma_film), W=0.05, L=1.0e8, psi0=0.99)
@@ -208,7 +217,9 @@ def run(a):
     #     都要**先量当前块的实际延伸**（因为块已经长大了）⇒ 是"生长后堆叠"。
     #   ★ **零引擎改动**：场表 / `LathTable` 在构造时就按 `--laths` 建好，
     #     未播种的场一直是空的（φ=1e3 ⇒ 永远不是 argmin）。
-    grow = bool(a.grow_stack)
+    # ★ R12：`arm=eng` 也要"只播第 1 片 + `init_parent`"，但它**不走驱动层形核**
+    #   （`--nuc-every 0`）⇒ 形核由下面的 `g.nucleate()` 负责。
+    grow = bool(a.grow_stack) or (a.arm == 'eng')
     n_seeded = 0
 
     def _seed_next():
@@ -305,6 +316,24 @@ def run(a):
                          % ((span + T) * 1e6, L * 1e6))
 
     vmap = {i + 1: laths_eff[i] for i in range(nv)}
+    # ★★★ R12：`--arm eng` —— **引擎侧自发形核**的接线（放在 `vmap` 之后）。
+    #   `vgroup` 告诉引擎哪些场同变体（本臂 6 个场全是变体 1）；
+    #   `nfsv` 让同变体形核播进**新的空场**（否则只会加厚第一片）；
+    #   `attach` 让新核与源板条**共用一张界面**（C-1 干晶界 regime）。
+    if a.arm == 'eng':
+        g.nuc_cfg(a.eng_r_nm * 1e-9, a.eng_t_nm * 1e-9, gamma=0.15, n_init=0,
+                  p_auto=0.0, harden_f=1.0, sym_gap_cells=0, max_per_step=1,
+                  seed=a.eng_seed, var_rule='ed',
+                  vgroup=vmap, nfsv=True, attach=True,
+                  attach_overlap=a.nuc_overlap_nm * 1e-9)
+        _ed_dummy = np.zeros((g.nreg, 1, 1, 1))
+        P('★★★ 臂 eng：**形核交给引擎**（`nucleate` 的 stack 通道 + attach + nfsv）'
+          '；R=%.0f nm t=%.0f nm，咬入 %.1f nm，节奏 %s，seed=%d'
+          % (a.eng_r_nm, a.eng_t_nm, a.nuc_overlap_nm,
+             ('每步' if a.eng_cadence == 0 else '每 %d 步' % a.eng_cadence),
+             a.eng_seed))
+        P('   ⚠ 记账：**速率仍由驱动层的节奏规定** —— 引擎的 sympathetic 通道'
+          '目前**没有速率律**（`use_fcrit` 只覆盖 `fresh`）。')
     np.savez_compressed(
         os.path.join(outdir, 'seeds.npz'), phi=g.phi.astype(np.float32),
         region=g.region(), n_hab=n_hab, w_ax=w_ax, a_ax=a_ax,
@@ -388,6 +417,24 @@ def run(a):
             if _j is not None:
                 P('   ★★ 形核事件 @ step %d：新核进入**新场 %d**（变体 %d）'
                   % (it, _j, laths_eff[_j - 1]))
+        # ★★★ R12：**引擎侧自发形核**（`--arm eng`）。与上面 `_seed_next` 的区别：
+        #   `_seed_next` 由**驱动层**决定"哪一步、放在哪、进哪个场"；
+        #   这里把**位置与场的选择**交给引擎的 `nucleate()`（`attach` + `nfsv`），
+        #   驱动层只保留**节奏**（`--eng-cadence`；0 = 每步都问一次）。
+        #   ⇒ 记账：**速率仍然是被规定的** —— 引擎的 sympathetic 通道目前
+        #     **没有速率律**（`use_fcrit` 只覆盖 `fresh` 通道）。这一点不得含糊。
+        if (a.arm == 'eng') and it > 0 and a.eng_cadence >= 0:
+            if a.eng_cadence == 0 or (it % a.eng_cadence == 0):
+                _reg_e = g.region()
+                _fnow = 1.0 - float((_reg_e == 0).sum()) / g.N ** 3
+                _ev = g.nucleate(_ed_dummy if _ed_dummy is not None
+                                 else g.elastic_driving(),
+                                 f_now=_fnow, n_fresh=0, n_stack=1)
+                n_eng_ev += len(_ev)
+                if _ev:
+                    _kk = _ev[0][0]
+                    P('   ★★ **引擎形核** @ step %d：场 %d，模式 %s（累计 %d 次）'
+                      % (it, _kk, _ev[0][1], n_eng_ev))
         if (it % a.every) and (it != a.steps):
             continue
         reg = g.region()
@@ -510,7 +557,7 @@ def subprocess_out(cmd):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--arm', default='dry',
-                    choices=['dry', 'wet', 'gpos', 'gneg', 'g0', 'auto'])
+                    choices=['dry', 'wet', 'gpos', 'gneg', 'g0', 'auto', 'eng'])
     ap.add_argument('--N', type=int, default=96)
     ap.add_argument('--dx-nm', type=float, default=62.5)
     ap.add_argument('--steps', type=int, default=400)
@@ -538,6 +585,12 @@ def main():
     # ★ Round 10：把会被"咬"掉的厚度预先补上（见 `_seed_next` 的记账）。
     #   只在 `--nuc-overlap-nm > 0` 时有意义。
     ap.add_argument('--nuc-compensate', action='store_true')
+    # ★★★ R12：`--arm eng` —— 引擎侧自发形核
+    ap.add_argument('--eng-cadence', type=int, default=30,
+                    help='引擎形核的**节奏**（步）；0 = 每步都问一次引擎')
+    ap.add_argument('--eng-r-nm', type=float, default=320.0)
+    ap.add_argument('--eng-t-nm', type=float, default=250.0)
+    ap.add_argument('--eng-seed', type=int, default=11)
     # ★★ Round 10 实测更正：`--nuc-compensate` 用**名义** `o` 补，而**补过头了**。
     #   证据（同配置三点）：
     #     `gs4`（不补）   厚度 238/238/239/230/254/250（均值 241.5，−3.4%）Vt 2.1062
