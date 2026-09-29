@@ -94,6 +94,21 @@ def main():
 
     steps = int(round(rec['steps'] * a.steps_factor))
     beta_h = (rec['beta_h_use'] if a.beta_h < 0 else a.beta_h)
+    # ★★★ R29 修（`dry_cl1` 跑到 step 1000 时由 `_bk_thick.py` 抓到）：
+    #   **播种厚度必须比物理板条厚多出"会被咬掉的那部分"。**
+    #   共享界面（`attach`）把重叠区 `o` 从**两片各吃 o/2**：
+    #     · 内部片（两张界面）共被吃 `o`      ⇒ 播种 `t_phys + o`
+    #     · 端片（一张界面）被吃 `o/2`        ⇒ 播种 `t_phys + o/2`（末片走 `t_last_reduce`）
+    #   不补的实测代价（`dry_cl1`：`--plate-T 510 --eng-t-nm 510 --nuc-overlap-nm 125`）：
+    #     场 1（被咬两次）剔孤儿厚度 **391.8 nm** vs 物理靶 510 ⇒ **−23%**，
+    #     掉出 V-8b 窗口 [408, 663]；场 2/3（还没被咬）503/508 ✓
+    #   ⇒ 播种厚 = `t_phys + o`；`t_last_reduce = o/2` 把末片拨回去。
+    #   ⚠ 同时必须把 `--plate-t-physical` 传下去：判据（V-8b / A-8）的靶是
+    #     **物理厚**，不是播种厚 —— 否则"补对了"反而会被判 FAIL。
+    t_seed_nm = a.t_lath_nm + rec['overlap_nm']
+    print('  ★ 播种厚 = 物理厚 %.0f + 咬入 %.0f = **%.0f nm**'
+          '（末片再减 %.0f nm）' % (a.t_lath_nm, rec['overlap_nm'], t_seed_nm,
+                                    0.5 * rec['overlap_nm']))
     if a.steps_factor != 1.0:
         print('  ⚠⚠ --steps-factor=%.2f ⇒ steps=%d：**C-3 的有序性被破坏**，'
               '本次运行处于 burst regime，结论必须带这条记账' % (a.steps_factor, steps))
@@ -116,9 +131,10 @@ def main():
            '--gamma0', '%.4f' % a.gamma,
            '--plate-L', '%.2f' % (rec['L_lath'] * 1e9),
            '--plate-W', '%.2f' % (rec['W_lath'] * 1e9),
-           '--plate-T', '%.2f' % a.t_lath_nm,
+           '--plate-T', '%.2f' % t_seed_nm,
+           '--plate-t-physical', '%.2f' % a.t_lath_nm,
            '--eng-r-nm', '%.3f' % rec['r_nuc_nm'],
-           '--eng-t-nm', '%.2f' % a.t_lath_nm,
+           '--eng-t-nm', '%.2f' % t_seed_nm,
            '--eng-elong', '%.4f' % rec['elong'],
            '--eng-t-last-reduce-nm', '%.3f' % (0.5 * rec['overlap_nm']),
            '--nuc-overlap-nm', '%.3f' % rec['overlap_nm'],

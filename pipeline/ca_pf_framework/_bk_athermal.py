@@ -149,11 +149,12 @@ def judge(tag, root, verbose=True):
                % (t_end_sim, need, t_end_sim / need, T_start, tsrc)))
 
     # ---- A-8：总体积与几何预期一致 ---------------------------------------
-    #   `Vt` 应 ≈ n·L·W·t（每片都长到种子尺寸）。这是"块真的是 6 根完整的片"的
-    #   一个**独立**的尺度检查（A-5 只数场数，不看大小）。
+    #   `Vt` 应 ≈ n·L·W·t_physical（每片都长到**物理**尺寸）。
+    #   ⚠ 必须用 `T_physical` 而**不是**播种厚：播种厚里含"预补的被咬量"。
+    geo_nm = float(cl['geometry'].get('plate_T_physical_nm')
+                   or cl['geometry']['plate_T_nm'])
     geo = (M * float(cl['geometry']['plate_L_nm'])
-           * float(cl['geometry']['plate_W_nm'])
-           * float(cl['geometry']['plate_T_nm'])) * 1e-9      # nm³ → µm³
+           * float(cl['geometry']['plate_W_nm']) * geo_nm) * 1e-9   # nm³ → µm³
     Vt = float(fnum(last, 'Vt'))
     ck.append(('A-8 总体积 ≈ n·L·W·t（±25%）', abs(Vt / geo - 1.0) <= 0.25,
                'Vt=%.4f µm³  几何=%.4f µm³  比=%.3f' % (Vt, geo, Vt / geo)))

@@ -490,7 +490,10 @@ def run(a):
                                  (float(lt.gtab[i + 1, j + 1])
                                   if np.isfinite(lt.gtab[i + 1, j + 1]) else None)
                                  for i in range(nv) for j in range(i + 1, nv)},
-                       plate=dict(L=a.plate_L, W=a.plate_W, T=a.plate_T),
+                       plate=dict(L=a.plate_L, W=a.plate_W, T=a.plate_T,
+                                  T_physical=(a.plate_t_physical
+                                              if a.plate_t_physical > 0
+                                              else a.plate_T)),
                        gap_nm=a.gap_nm, norm_smooth=a.norm_smooth,
                        beta_h=a.beta_h, beta_w=a.beta_w, adv=a.adv,
                        reinit_band=a.reinit_band, nthreads=a.nthreads,
@@ -773,6 +776,9 @@ def run(a):
                    geometry=dict(N=N, dx_nm=dx * 1e9, L_box=dx * N,
                                  plate_L_nm=a.plate_L, plate_W_nm=a.plate_W,
                                  plate_T_nm=a.plate_T,
+                                 plate_T_physical_nm=(a.plate_t_physical
+                                                      if a.plate_t_physical > 0
+                                                      else a.plate_T),
                                  t_over_dx=float(a.plate_T) * 1e-9 / dx),
                    params=CL.params())
         _cl['n_lath_derived'] = dict(L_lath_um=_rec.get('L_lath', 0) * 1e6,
@@ -890,6 +896,16 @@ def main():
     #   默认 0.15 ⇒ **全部归档读数逐位不变**。
     ap.add_argument('--gamma0', type=float, default=0.15,
                     help='F1/F2 标量面能 [J/m²]；F3 仍走 Read–Shockley γ_RS(θ)')
+    # ★★★ R29：**物理板条厚**（与"播种厚"区分开）。
+    #   为什么必须分开记：`--plate-T` / `--eng-t-nm` 是引擎**播种**用的厚度，
+    #   而共享界面会把每片**咬掉** o/2（两侧被咬的片吃 o）⇒ 播种厚必须比
+    #   **物理板条厚**大，否则末态厚度系统性地偏薄。
+    #   实测代价（`dry_cl1`，未补偿，t_seed = 510 nm、o = 125 nm）：
+    #     场 1（被咬两次）剔孤儿厚度 **391.8 nm**，比 510 薄 **23%** ⇒ 掉出 V-8b 窗口。
+    #   ⇒ `--plate-t-physical` 记的是**物理靶值**，判据（V-8b / A-8）必须用它。
+    #   默认 0 ⇒ 等于 `--plate-T`（归档行为不变）。
+    ap.add_argument('--plate-t-physical', type=float, default=0.0,
+                    help='0 = 等于 --plate-T；否则记进 meta 供判据用（播种厚≠物理厚）')
     # ★★★ R29（2026-10-01）：**形核律**。用户要求"用形核率之类的方式让模型合理运转"。
     #   `cadence`（默认）：`--eng-cadence` 规定的节奏 ⇒ **与全部归档读数逐位相同**。
     #   `athermal`：由 `windowB_closure` 的 C-2/C-3 闭式驱动 ——
