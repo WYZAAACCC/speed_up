@@ -943,6 +943,19 @@ def selftest(verbose=True):
        % (alpha_km_n_lath(200.0) - alpha_km_n_lath(298.0)),
        abs((alpha_km_n_lath(200.0) - alpha_km_n_lath(298.0))
            - 98.0 * ALPHA_KM_REF) < 1e-9)
+    # ★ C-8.6：`n_geo_cap` 是用**种子**足迹算的，但板条会**面内长大**
+    #   （实测 `Vt` 是种子几何的 1.66 倍 ⇒ 面内面积 1.37 倍 ⇒ 线尺度 1.17 倍）。
+    #   板条越大，几何上限越小 ⇒ 必须扫一遍确认结论不翻。
+    _caps = []
+    for _f in (1.0, 1.17, 1.30, 1.50, 1.80):
+        _c, _ = alpha_max_from_box(96 * 125e-9, 510e-9, 4590e-9 * _f,
+                                   1224.153e-9 * _f, nh8, ah8, wh8)
+        _caps.append((_f, _c, who_limits(_c)['binding']))
+    ck('C-8.6 即便板条面内长到 **1.8× 种子**，仍是供给限速'
+       '（n_cap %.0f→%.0f，始终 ≫ n_kin=%.1f）'
+       % (_caps[0][1], _caps[-1][1], alpha_km_n_lath(298.0)),
+       all(c[2] == 'kinetics' for c in _caps) and _caps[-1][1] > 10,
+       ' '.join('%.2fx:%d' % (f, c) for f, c, _ in _caps))
 
     # --- C-3：有序性与算力下界 -------------------------------------------
     T1 = T_start_of_clock(ALPHA_KM_REF)
