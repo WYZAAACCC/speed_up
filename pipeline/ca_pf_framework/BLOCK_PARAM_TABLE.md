@@ -106,7 +106,8 @@
 | `elong` | `3.75` | - | _bk_exp.py --eng-elong | L/W | **数** | = plate_L/plate_W |
 | `nuc cadence` | `30` | steps | _bk_exp.py --eng-cadence | 形核节奏 | **数** | **规定值**；闭环版由 C-2/C-3 的 athermal 律取代 |
 | `overlap` | `62.5` | nm | _bk_exp.py --nuc-overlap-nm | 共用界面的咬入量 | **数** | 剂量–响应实测：1Δx 最优；0 会留 1 胞 β 膜、1.5Δx 会撕碎先成片 |
-| `nv (场数)` | `6` | - | _bk_exp.py --laths | 可表示的板条数上限 | **数** | 表示上限（region() 是 int8 ⇒ nreg ≤ 127），不是物理上限 |
+| `nv (场数)` | `6` | - | _bk_exp.py --laths | 可表示的板条数上限 | **数** | 表示上限（region() 是 int8 ⇒ nreg ≤ 127），不是物理上限。闭环版由 C-2 导出：`--laths` = n 个 1 |
+| `t_seed (播种厚)` | `t_phys + o` | nm | _bk_closed.py | 引擎播种的板条厚 | **数** | **不是物理量**，是"预补被咬量"的记账偏移；判据（V-8b/A-8）的靶是 `--plate-t-physical` |
 | `N / dx` | `(96, 62.5)` | -/nm | _bk_exp.py --N/--dx-nm | 离散化 | **数** | 约束① t/Δx ≥ 3；C-4 给 N=96 下 Δx 必须 ≥125 nm 才能装下文献厚度的 6 根 |
 | `aniso (Herring)` | `0.4` | - | _bk_exp.py kw | γ(n) 各向异性强度 | **数** | Herring 刚度项；与 γ_RS 的 θ 依赖正交 |
 | `facet_lam / facet_eps` | `(0, 0.05)` | - | _bk_exp.py --facet-* | 刻面（默认关） | **数** | facet_lam=0 ⇒ 归档算例未启用刻面 |

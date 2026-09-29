@@ -476,7 +476,7 @@ DX_CAND_NM = (125.0, 150.0, 160.0, 175.0, 200.0, 250.0, 300.0, 400.0, 500.0)
 
 def recommend(N=96, t_lath_nm=T_LATH_MAIN_NM, aspect=ASPECT_LT_WANG,
               alpha_KM=ALPHA_KM_REF, T_f=298.0, MOB=1e-9, cfl=CFL_DEFAULT,
-              ratio_target=0.8, n_floor=3, dx_cand_nm=DX_CAND_NM,
+              ratio_target=0.8, n_floor=2, dx_cand_nm=DX_CAND_NM,
               t_min_over_dx=4.0):
     """★ 由上面几条闭式**一次算出**一套自洽的引擎输入（**不是调出来的**）。
 
@@ -674,7 +674,17 @@ def params():
     A(_p('overlap', 62.5, 'nm', '_bk_exp.py --nuc-overlap-nm', '共用界面的咬入量', '数',
          '剂量–响应实测：1Δx 最优；0 会留 1 胞 β 膜、1.5Δx 会撕碎先成片'))
     A(_p('nv (场数)', 6, '-', '_bk_exp.py --laths', '可表示的板条数上限', '数',
-         '表示上限（region() 是 int8 ⇒ nreg ≤ 127），不是物理上限'))
+         '表示上限（region() 是 int8 ⇒ nreg ≤ 127），不是物理上限。'
+         '闭环版由 C-2 导出：`--laths` = n 个 1'))
+    # ★★★ R29 新增：**播种厚 ≠ 物理厚**（记账偏移，不是物理量）。
+    #   共享界面（`attach`）把重叠区 `o` 从两片各吃 `o/2` ⇒
+    #   内部片播种 `t_phys + o`、末片 `t_phys + o/2`（`t_last_reduce`）。
+    #   实测代价（`dry_cl1` 忘了补，跑到 step 1000）：场 1 剔孤儿厚 **391.8 nm**
+    #   vs 物理靶 510 ⇒ **−23%**，掉出 V-8b 窗口；场 2/3（尚未被咬）503/508 ✓
+    #   ⇒ 判据的靶必须是 `--plate-t-physical`，不是 `--plate-T`。
+    A(_p('t_seed (播种厚)', 't_phys + o', 'nm', '_bk_closed.py', '引擎播种的板条厚', '数',
+         '**不是物理量**，是"预补被咬量"的记账偏移；'
+         '判据（V-8b/A-8）的靶是 `--plate-t-physical`'))
     # ---- 网格 ------------------------------------------------------------
     A(_p('N / dx', (96, 62.5), '-/nm', '_bk_exp.py --N/--dx-nm', '离散化', '数',
          '约束① t/Δx ≥ 3；C-4 给 N=96 下 Δx 必须 ≥125 nm 才能装下文献厚度的 6 根'))

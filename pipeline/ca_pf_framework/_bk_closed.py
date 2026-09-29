@@ -51,6 +51,10 @@ def main():
     ap.add_argument('--steps-factor', type=float, default=1.0,
                     help='<1 = 按比例缩短（**会使 C-3 有序性变差，必须记账**）')
     ap.add_argument('--seed', type=int, default=11)
+    # ★ R29：`--laths` 默认由 C-2 的 n **导出**（n 个 1）⇒ 换 α_KM 时
+    #   **场数自动跟着变**，不必手改（这正是"n 是导出量"在实现上的体现）。
+    ap.add_argument('--laths', default='',
+                    help="'' = 由 C-2 的 n 导出（n 个 1）；也可显式给 '1,1,1'")
     ap.add_argument('--arm', default='dry',
                     choices=['dry', 'wet', 'gpos', 'gneg', 'g0', 'auto', 'eng'],
                     help='`gpos` = F3 面能强制 100 J/m²（量具正对照：界面必须移动）。'
@@ -118,7 +122,8 @@ def main():
 
     cmd = [PY, '-u', '_bk_exp.py',
            '--arm', a.arm,
-           '--N', str(a.N), '--dx-nm', '%.4f' % rec['dx_nm'],           '--steps', str(steps),
+           '--N', str(a.N), '--dx-nm', '%.4f' % rec['dx_nm'],
+           '--laths', (a.laths if a.laths else ','.join(['1'] * rec['n_lath'])),           '--steps', str(steps),
            '--every', str(a.every), '--snap-every', '1000',
            '--pair-every', str(a.every),
            '--norm-smooth', '0', '--nthreads', str(a.nthreads),
