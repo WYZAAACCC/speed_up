@@ -29,6 +29,15 @@
 
 延拓用引擎里**已有**的 `extend_along_normal`（`windowB_surface.py:420`）—— 不另写一份。
 
+## ★★ 两个必须知道的数值事实
+
+1. **ψ≡0 与 ψ≡1 都是 (4.9) 的精确不动点**（@@f'(0)=f'(1)=g'(0)=g'(1)=0@@）
+   ⇒ 从均匀态出发**一步都不动**（Allen–Cahn 的一般性质：均匀态没有"形核"驱动力）。
+   ⇒ `psi0` 必须取 **0.99 / 0.01**（等价于无穷小扰动），**不能取 1.0 / 0.0**。
+2. ψ=1 是否**稳定**取决于 @@\gamma_f-\gamma_{\rm dry}@@ 与 @@W@@：
+   线性化给 @@\psi=1@@ 稳定 @@\iff\gamma_f-\gamma_{\rm dry}<W/3@@。
+   本项目 @@\gamma_f-\gamma_{\rm dry}\approx0.5\gg W/3@@ ⇒ **ψ=1 不稳定 ⇒ 会退湿**（P-2）。
+
 ## 本文件**只提供算子**，不改引擎
 
 ⇒ 生产跑（`_bk_exp.py`）**不受影响**；接线进 `advance` 是下一步（I-5 的剩余部分）。
@@ -119,6 +128,36 @@ def psi_step(psi, phi, dx, g_dry, dt, gamma_f, L=1.0e-8, W=0.05, kappa=0.0,
         new = np.where(band, new, psi)
     return new, dict(dt_eff=dte, dt_req=dte < dt, max_abs_rhs=float(np.max(np.abs(rhs)))
                      if rhs.size else 0.0)
+
+
+def psi_step_local(psi, g_dry, dt, band, gamma_f, W=0.05, L=1.0e8, clip=True):
+    """**局域**（@@\\kappa_\\psi=0@@）AC 一步：**只在 `band` 的胞上更新**。
+
+    ★ 为什么本阶段的 `auto` 臂**这就够**：
+      **P-2（自发退湿）是逐点判据** —— 每个 F3 胞按局部的 @@(\\gamma_f-\\gamma_{\\rm dry})@@
+      决定 ψ 的去向。面内耦合 @@\\kappa_\\psi>0@@ 属精化（记账 S-6），
+      而且它需要 @@\\nabla_\\Sigma^2@@（面延拓），在 N=192 上是**每步几十秒**的开销
+      ⇒ 先用局域版把**判决**拿到。
+
+    ★★ **性能与并行**：用 `np.flatnonzero(band)` 把更新限制在 F3 胞上
+      （生产臂 ~3000 胞），**而不是**在整个 N³ 上算再 `where`
+      ⇒ 瞬时分配从 4×56 MB 降到 **KB 量级**；且它跑在**主线程**
+      （与 `par.for_each` 的 worker 不重叠）⇒ 不引入任何竞态。
+    """
+    if band is None or not band.any():
+        return psi, dict(n_band=0, dt_eff=dt)
+    flat = psi.ravel()
+    idx = np.flatnonzero(band)
+    p = flat[idx]
+    gd = np.asarray(g_dry).ravel()[idx]
+    dte = safe_dt(L, W, gamma_f, float(np.max(np.abs(gd))) if gd.size else 0.0,
+                  0.0, 1.0, dt)
+    p = p + dte * L * ac_rhs(p, gd, gamma_f, W, 0.0, np.zeros_like(p))
+    if clip:
+        p = np.clip(p, 0.0, 1.0)
+    flat[idx] = p
+    return psi, dict(n_band=int(idx.size), dt_eff=dte, dt_req=dte < dt,
+                     psi_mean=float(p.mean()))
 
 
 # ===========================================================================

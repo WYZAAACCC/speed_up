@@ -817,6 +817,31 @@ def _argmin_normal(C, e, **kw):
     return argmin_normal(C, e, **kw)
 
 
+_ARG_NORMAL_CACHE = {}
+
+
+def argmin_normal_cached(C, E):
+    """`_argmin_normal` 的**进程级 memo**（键 = `(C, E)` 的字节）。
+
+    ★★★ R-block（2026-09-29）：**为什么必须有**
+      `_argmin_normal` 是"20k Fibonacci + 局部模式搜索"的**纯函数**，
+      单次 ~10 s。而 `LevelSetMulti.__init__` 会调用它
+      **每个场一次**（12 变体 = 12 次）**加每对一次**（`_pair_normals` = 66 次）
+      ⇒ 单个对象构造 **~780 s**；4 个算例并发时还会互相抢 CPU
+      ⇒ 实测生产臂构造 **>15 min** 还没完。
+      而**同变体的 `eps0` 逐位相同**（本项目的板条表就是复制出来的）
+      ⇒ 12 次里其实只有 1 次是新的。
+    ★ 正确性：纯函数 + 只读缓存 + 键是完整输入 ⇒ 命中与未命中**逐位相同**。
+      `C` / `E` 都按 float64 的字节做键，不受 NaN 影响（这两个量里没有 NaN）。
+    """
+    key = (np.asarray(C, float).tobytes(), np.asarray(E, float).tobytes())
+    v = _ARG_NORMAL_CACHE.get(key)
+    if v is None:
+        v = _argmin_normal(C, E)
+        _ARG_NORMAL_CACHE[key] = v
+    return v
+
+
 class LevelSetMulti(object):
     """多区域 level-set：每个相/变体一个 φ_k（有符号距离），region = argmin_k φ_k。
        · 身份由 φ 平流携带（**没有随机胞翻转** ✗）
@@ -963,6 +988,15 @@ class LevelSetMulti(object):
         #     Read–Shockley @@\gamma_{\rm RS}(\theta_{kl})@@ 逐胞替换；
         #     **F1/F2 仍然用标量** ⇒ 单变量改动。
         self.lath = None
+        # ★★★ R-block（2026-09-29）：**Gibbs 面上的薄膜序参量 ψ**（`BLOCK_DERIVATION` §4.6）。
+        #   `None`（**默认**）⇒ 薄膜通道整段关闭 ⇒ 与改动前**逐位相同**。
+        #   设为 `dict(gamma_f=…, W=0.05, L=1e8, psi0=1.0)` 后：
+        #     · F3（同变体低角晶界）的面能按 γ_Σ(ψ) 混合；
+        #     · ψ 在 F3 胞上按局域 Allen–Cahn 演化（`windowB_film.py`）。
+        #   ★ 需要 `self.lath` 已挂上（否则没有 F3 面片身份）。
+        self.film = None
+        self.psi = None
+        self._psi_diag = None
         # ★★ T10：保存建对象时的 C / eps0 引用，供 `gel_facet` 在**自己的小盒**里
         #   量相干界面弹性能（不复用本对象的大盒 —— 那会白烧机时）。
         self._C_ref = C
@@ -1079,7 +1113,7 @@ class LevelSetMulti(object):
             _nstar = [[] for _ in range(self.nv)]
             for _v in range(self.nv):
                 _E = np.asarray(eps0[_v], float)
-                _nref, _vmin, _cons = _argmin_normal(C, _E)
+                _nref, _vmin, _cons = argmin_normal_cached(C, _E)
                 _nstar[_v] = [float(_vmin), float(_cons)]
                 _R = self._rank1_axes(_E, _nref)
                 if _R is not None:
@@ -1175,7 +1209,7 @@ class LevelSetMulti(object):
                 if not np.any(np.abs(de) > 1e-30):
                     n_zero += 1
                     continue
-                n_p, v_p, c_p = _argmin_normal(C, de)
+                n_p, v_p, c_p = argmin_normal_cached(C, de)
                 tab[k, l] = tab[l, k] = n_p
                 cons[k, l] = cons[l, k] = c_p
         if n_zero:
@@ -2556,7 +2590,31 @@ class LevelSetMulti(object):
             _g0 = self.gamma if gamma0 is None else float(gamma0)
             _G = self.lath.gtab[np.clip(karr, 0, self.nreg - 1),
                                 np.clip(larr, 0, self.nreg - 1)]
-            self._gc_full = np.where(np.isfinite(_G), _G, _g0)
+            _isF3 = np.isfinite(_G)
+            # ---- ★★★ R-block：**Gibbs 面上的薄膜序参量 ψ**（`BLOCK_DERIVATION` §4.6）----
+            #   开关：`self.film`（默认 **None** ⇒ 整条通道关闭 ⇒ 逐位不变）。
+            #   `self.film = dict(gamma_f=…, W=0.05, L=1e8, psi0=1.0)`。
+            #   物理：γ_Σ(ψ) = (1−f)γ_dry + f·γ_f + W·g(ψ)；ψ 只在 **F3 胞**上演化
+            #     （F1/F2 **不碰** ⇒ 变体/母相界面的面能不受影响 = 单变量）。
+            #   数值：κ_ψ=0 ⇒ **纯局域 AC**，用 `flatnonzero` 限制在 F3 胞
+            #     （~3000 胞）⇒ 零额外大分配；跑在**主线程**，与 `for_each` 的 worker
+            #     不重叠 ⇒ 不引入竞态（判据见 `_bk_par_identity.py`）。
+            _fm = getattr(self, 'film', None)
+            if _fm is not None:
+                from windowB_film import gamma_mix, psi_step_local
+                if getattr(self, 'psi', None) is None:
+                    self.psi = np.full(self.phi.shape[1:],
+                                       float(_fm.get('psi0', 1.0)))
+                _gd = np.where(_isF3, _G, _g0)
+                self.psi, self._psi_diag = psi_step_local(
+                    self.psi, _gd, dt, _isF3, float(_fm['gamma_f']),
+                    W=float(_fm.get('W', 0.05)), L=float(_fm.get('L', 1.0e8)))
+                _G = np.where(_isF3, gamma_mix(_G, self.psi,
+                                               float(_fm['gamma_f']),
+                                               float(_fm.get('W', 0.05))), _g0)
+                self._gc_full = _G
+            else:
+                self._gc_full = np.where(_isF3, _G, _g0)
         if per_field:
             ed = self.elastic_driving()
             # ★★ 按**场**推进（2026-09-25 新增，方案 (a)）—— 见 `_advance_perfield` 的记账。

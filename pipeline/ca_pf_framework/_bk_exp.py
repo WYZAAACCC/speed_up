@@ -93,14 +93,12 @@ def run(a):
         laths_eff = laths
 
     n_hab = np.asarray(NPF[laths[0]], float); n_hab /= np.linalg.norm(n_hab)
-    # 先建一个临时对象拿 a/w 轴（三轴由引擎 rank-1 分解给出，**不另建一份**）
-    _e0 = [np.asarray(EPS0[v - 1], float).copy() for v in laths_eff]
-    _p0 = {i + 1: np.asarray(NPF[v], float) for i, v in enumerate(laths_eff)}
-    _g0 = W.LevelSetMulti(24, 2.4e-6, C=C, eps0=_e0, gamma=0.15, Mob=MOB,
-                          df=[0.0] + [DF] * len(laths_eff), workers=1)
-    w_ax = np.asarray(_g0.wtab[1], float); w_ax /= np.linalg.norm(w_ax)
-    a_ax = np.asarray(_g0.atab[1], float); a_ax /= np.linalg.norm(a_ax)
-    del _g0
+    # ★★ 拿 a/w 轴：**直接调静态方法**，不再造一个临时 `LevelSetMulti`
+    #   （临时对象会再跑一遍 `_argmin_normal`；实测 4 臂并发时构造 >15 min）。
+    _nref0, _, _ = W.argmin_normal_cached(C, np.asarray(EPS0[laths[0] - 1], float))
+    _R0 = W.LevelSetMulti._rank1_axes(np.asarray(EPS0[laths[0] - 1], float), _nref0)
+    w_ax = np.asarray(_R0[2], float); w_ax /= np.linalg.norm(w_ax)
+    a_ax = np.asarray(_R0[1], float); a_ax /= np.linalg.norm(a_ax)
 
     lt = build_table(laths_eff, a.omega_max_deg, a.omega_mode, a_ax=a_ax)
     P(lt.summary())
