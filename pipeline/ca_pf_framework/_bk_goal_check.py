@@ -64,8 +64,11 @@ def main():
         ('7b 参数总表（生成物）',
          os.path.exists(os.path.join(_HERE, 'BLOCK_PARAM_TABLE.md')),
          'BLOCK_PARAM_TABLE.md'),
-        ('8a BLOCK_RESULT 更新', has('BLOCK_RESULT.md', '结论二', '§3.2',
-                                     'C-8')[0], '结论二 + 闭环配置表 + 限制'),
+        # ⚠ 第一版这里写 `'§3.2'`，而文档里的小节标题是 `### 3.2`（**没有 §**）
+        #   ⇒ 假"缺"。判据要按**文档实际的写法**写，不要按我以为的写法写。
+        ('8a BLOCK_RESULT 更新', has('BLOCK_RESULT.md', '结论二', '### 3.2',
+                                     'C-8', '结论三')[0],
+         '结论二/三 + 闭环配置表 §3.2 + C-8'),
         ('8b BLOCK_STATUS 更新', has('BLOCK_STATUS.md', '## §28')[0], '§28 全节'),
         ('★ 总检入口存在', os.path.exists(os.path.join(_HERE,
                                                        '_bk_closure_all.sh')),
