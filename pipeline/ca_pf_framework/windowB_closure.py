@@ -76,6 +76,18 @@
    `ΔG_v/f_crit = 17…70 ≫ 1`（与 `_bk_fcrit.py` 独立测得的 73–583 同量级，
    差异来自 `t` 与 `γ` 的取值）⇒ **任何核厚下都拦不住**。
 
+**C-8｜几何容纳 vs 形核供给，**谁限速**？（目标里明确要求判这一条）**
+   两条独立的"上限"：几何 `n_geo_cap`（AABB 精确判据，C-4）与
+   供给 `n_kin = α_KM(M_s − T_f)`（C-2）⇒ `n = min`，**谁小谁限速**。
+   * 闭环配置（Δx=125 nm）：`n_kin = 6.3 < n_geo_cap = 21` ⇒ **供给限速**；
+     "几何开始咬人"的温度 `T_bind = −1036 K`（**不物理**）⇒ 几何**永远**不咬人。
+   * α 取敏感带上端 2e-2 ⇒ `n_kin = 11.5`，**仍是供给限速**。
+   * ★ **负对照**：缩回归档几何（Δx=62.5 nm）且 `t=0.68 µm` ⇒ `n_geo_cap = 3 < 6`
+     ⇒ **变成几何限速** —— 这正是 C-4 逼我们把 Δx 放大到 125 nm 的原因，
+     也说明**归档配置其实一直是几何受限的**（一个此前没被指认出来的隐性缺陷）。
+   ⇒ 可证伪的推论：**`n` 与 `T_end` 成线性**（斜率 `−α_KM`）⇒
+     **冷得越深、板条越多、块越厚**（`W_block = n·t`）—— 这是**工艺可调**的。
+
 用法：
     python3 windowB_closure.py            # 自检（正/负对照）+ 打印关键数
     from windowB_closure import ...       # 当库用
@@ -379,6 +391,33 @@ def rate_slowdown_decades(gamma, dG_v, T, ratio_max=BARRIER_RATIO_MAX):
     """
     r = barrier_ratio(gamma, dG_v, T)
     return r / float(ratio_max), (r - float(ratio_max)) / math.log(10.0)
+
+
+def who_limits(n_geo_cap, alpha_KM=ALPHA_KM_REF, T_f=298.0, Ms=M_S_TI64):
+    """★★ C-8：**几何容纳与形核供给，谁在限速？**[推]
+
+    目标里明确要求判这一条。两条独立的"上限"：
+      * **几何**：盒子装得下几根 ⇒ `n_geo_cap`（`alpha_max_from_box`，AABB 精确判据）
+      * **供给**：athermal 律给得出几根 ⇒ `n_kin = α_KM·(M_s − T_f)`（C-2）
+
+    `n = min(n_kin, n_geo_cap)`；**谁更小谁限速**。
+    另外给出"几何开始咬人"的温度 `T_bind = M_s − n_geo_cap/α_KM`
+    —— 若它在物理温区（> 0 K）之外，说明**本盒子永远不是几何受限的**。
+
+    返回 `dict(n_kin, n_geo_cap, n, binding, T_bind, geom_is_slack)`。
+
+    ★ 本模型的答案（闭环配置）：`n_kin = 6.3`、`n_geo_cap = 21`
+      ⇒ **供给限速**；`T_bind = −1036 K` ⇒ 几何**永远**不咬人。
+    ⇒ 可证伪的推论：**`n` 与 `T_end` 成线性**（斜率 `−α_KM`），
+      冷得越深板条越多、块越厚（`W_block = n·t`）—— 这是**工艺可调**的。
+    """
+    n_kin = alpha_km_n_lath(T_f, alpha_KM, Ms)
+    n_cap = float(n_geo_cap)
+    binding = 'kinetics' if n_kin <= n_cap else 'geometry'
+    T_bind = float(Ms) - n_cap / float(alpha_KM)
+    return dict(n_kin=n_kin, n_geo_cap=n_cap, n=min(n_kin, n_cap),
+                binding=binding, T_bind=T_bind,
+                geom_is_slack=bool(T_bind < 0.0))
 
 
 def hetero_barrier_factor(theta_deg):
@@ -878,6 +917,32 @@ def selftest(verbose=True):
     bnd = alpha_band_n()
     ck('C-2.6 α 带 (5e-3,1.1e-2,2e-2) ⇒ n = 2/6/11',
        [b[2] for b in bnd] == [2, 6, 11], str([b[2] for b in bnd]))
+
+    # --- C-8：**谁限速**（目标里明确要求判这一条）-------------------------
+    nh8 = np.array([-0.4424, 0.4425, -0.7801]); ah8 = np.array([-0.4909, 0.4909, 0.7198])
+    wh8 = np.array([0.7071, 0.7071, 0.0])
+    _cap8, _ = alpha_max_from_box(96 * 125e-9, 510e-9, 4590e-9, 1224.153e-9,
+                                  nh8, ah8, wh8)
+    _wl = who_limits(_cap8)
+    ck('C-8.1 闭环配置：**供给限速**（n_kin=%.2f < n_cap=%d）'
+       % (_wl['n_kin'], _wl['n_geo_cap']),
+       _wl['binding'] == 'kinetics' and _wl['n_geo_cap'] >= 6,
+       'n=%d，binding=%s' % (_wl['n'], _wl['binding']))
+    ck('C-8.2 几何**永远**不咬人：T_bind = %.0f K < 0' % _wl['T_bind'],
+       _wl['geom_is_slack'])
+    ck('C-8.3 即便 α 取敏感带上端 2e-2，仍是供给限速',
+       who_limits(_cap8, 2.0e-2)['binding'] == 'kinetics',
+       str(who_limits(_cap8, 2.0e-2)))
+    ck('C-8.4 ★负对照：把盒子缩到 Δx=62.5 nm 且 t=680 nm ⇒ 变成**几何限速**',
+       who_limits(alpha_max_from_box(96 * 62.5e-9, 680e-9, 9 * 680e-9,
+                                     0.2667 * 9 * 680e-9, nh8, ah8, wh8)[0],
+                  0.011)['binding'] == 'geometry',
+       'n_cap=%d' % alpha_max_from_box(96 * 62.5e-9, 680e-9, 9 * 680e-9,
+                                       0.2667 * 9 * 680e-9, nh8, ah8, wh8)[0])
+    ck('C-8.5 线性推论：T_end 从 298 降到 200 K ⇒ n 增加 %.1f 根'
+       % (alpha_km_n_lath(200.0) - alpha_km_n_lath(298.0)),
+       abs((alpha_km_n_lath(200.0) - alpha_km_n_lath(298.0))
+           - 98.0 * ALPHA_KM_REF) < 1e-9)
 
     # --- C-3：有序性与算力下界 -------------------------------------------
     T1 = T_start_of_clock(ALPHA_KM_REF)

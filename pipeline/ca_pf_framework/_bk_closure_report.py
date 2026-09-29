@@ -19,6 +19,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import numpy as np                                              # noqa: E402
 import windowB_closure as CL                                    # noqa: E402
 
 TIER_ORDER = ['推', '借', '标', '数']
@@ -60,6 +61,11 @@ def closure_numbers():
     w = CL.wetting_check(0.25, 5.0)
     _th, _fn = CL.contact_angle_max(0.25, CL.DG_CRIT_REF, CL.M_S_TI64)
     _br = CL.barrier_ratio_range()
+    _nh8 = np.array([-0.4424, 0.4425, -0.7801])
+    _ah8 = np.array([-0.4909, 0.4909, 0.7198])
+    _wh8 = np.array([0.7071, 0.7071, 0.0])
+    _wl = CL.who_limits(CL.alpha_max_from_box(96 * 125e-9, 510e-9, 4590e-9,
+                                              1224.153e-9, _nh8, _ah8, _wh8)[0])
     return [
         ('C-1a **匀相**形核：ΔG*/kT 全矩形', '%.0f … %.0f' % (_br['ratio_min'],
                                                              _br['ratio_max']),
@@ -97,6 +103,13 @@ def closure_numbers():
         ('C-7 ΔG_v / (4γ/t)', '%.1f（t=510 nm, γ=0.25）'
          % CL.fcrit_ratio(0.25, 510e-9, CL.DG_CRIT_REF)[1],
          '≫1 ⇒ `use_fcrit` 结构性惰性'),
+        ('C-8 **谁限速**（供给 vs 几何）',
+         '**%s**（n_kin=%.1f < n_cap=%d）'
+         % ('供给' if _wl['binding'] == 'kinetics' else '几何',
+            _wl['n_kin'], _wl['n_geo_cap']),
+         '几何开始咬人的温度 T_bind=%.0f K（不物理）⇒ 几何永远不咬人；'
+         '归档几何（Δx=62.5, t=0.68µm）则 n_cap=3 ⇒ **几何限速**（负对照）'
+         % _wl['T_bind']),
     ]
 
 
