@@ -126,7 +126,7 @@ def run(a):
     t0 = time.time()
     g = W.LevelSetMulti(N, L, C=C, eps0=eps0, gamma=0.15, Mob=MOB,
                         df=[0.0] + [DF] * nv, workers=a.nthreads,
-                        reinit_every=0, reinit_dt=6.0e-7,
+                        reinit_every=0, reinit_dt=a.reinit_dt,
                         reinit_band_cells=a.reinit_band)
     g.lath = lt
     if a.arm == 'auto':
@@ -347,6 +347,9 @@ def main():
     ap.add_argument('--facet-eps', type=float, default=0.05)
     ap.add_argument('--adv', default='proj2')
     ap.add_argument('--reinit-band', type=float, default=6.0)
+    ap.add_argument('--reinit-dt', type=float, default=6.0e-7,
+                    help='重初始化间隔（秒）。**默认 6e-7 是生产值**；'
+                         '诊断时给大值（如 1e-4）≈ 关掉 reinit')
     ap.add_argument('--nthreads', type=int, default=4)
     ap.add_argument('--gamma-film', type=float, default=0.6)
     ap.add_argument('--out', default='_exp/_bk_block')
