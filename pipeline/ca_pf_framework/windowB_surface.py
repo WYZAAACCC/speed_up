@@ -1723,10 +1723,18 @@ class LevelSetMulti(object):
                             _bi = np.argwhere(reg > 0)
                             _ball = ((_bi.astype(float) + 0.5) * self.dx) @ nrm
                             _e_hi, _e_lo = float(_ball.max()), float(_ball.min())
-                            _gp = max(_e_hi - float(_pn.max()),
+                            # ★★ R18 修（R17 的设计错误）：原式取**大**者
+                            #   `max(_e_hi-_pn.max(), _pn.min()-_e_lo)`。
+                            #   当源板条**正确地**处在某一端时，它那一侧的差 ≈ 0，
+                            #   而**另一侧的差 = 整块跨度 − 一片厚** ⇒ `max` 选中的
+                            #   正是这一项 ⇒ 读出的 14.61（≈913 nm）**其实是"块有多厚"**，
+                            #   不是"源板条内缩多少"。
+                            #   ⇒ 正确口径是取**小**者：源板条若真在最外端，
+                            #     它至少有一侧与整块外缘齐平 ⇒ min ≈ 0。
+                            _gp = min(_e_hi - float(_pn.max()),
                                       float(_pn.min()) - _e_lo) / self.dx
-                            _dbg['edge_gap_max_dx'] = max(
-                                _dbg.get('edge_gap_max_dx', -9.9), _gp)
+                            _dbg['edge_gap_min_dx'] = min(
+                                _dbg.get('edge_gap_min_dx', 9.9), _gp)
                         else:
                             _e_hi, _e_lo = float(_pn.max()), float(_pn.min())
                         done = False                 # ★ 必须先初始化：下面 `if done`

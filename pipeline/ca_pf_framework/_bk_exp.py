@@ -54,6 +54,12 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         #   ⇒ 这两列必须在**每个测点**上写。用 `'/'` 连接（与 `runs` 同格式），
         #   这样 COLS 固定、M 可变。
         'vols', 'ths',
+        # ★★★ R18：**逐对 F3 面积**（`i-j:A/...`，µm²）。加它的理由（R17 的线索）：
+        #   实测引擎臂在**每次形核后的 10 步内** `f3_area` 掉 7–13%，
+        #   而驱动层 `gs5` 只掉 0.6% ⇒ "每次新事件把已存在的界面推开一部分"。
+        #   但**总量**看不出是**哪几对**被吃 ⇒ 必须逐对、且**每个测点**都记。
+        #   `--pair-every 0`（默认）⇒ 不记 ⇒ 与改动前逐位相同（列会是空串）。
+        'f3_pairs',
         'nf3', 'f3_area_m2', 'f3_area_stair', 'f3_pos_m', 'f3_pos_dx',
         'f3_std_m', 'n_lath', 'w_lath', 'a_lath', 'box_touch', 'finite',
         'psi_mean']
@@ -465,6 +471,22 @@ def run(a):
         #   ⇒ 只对 `vol_k > 0` 的场取中位数；全空则给 0（`vols` 列可辨）。
         _occ = [k for k in range(1, nv + 1) if mm['vol_%d' % k] > 0]
         _med = (lambda f: float(np.median([f(k) for k in _occ])) if _occ else 0.0)
+
+        # ★ R18：逐对 F3 面积（只在命中 `--pair-every` 时算）
+        _pair_now = bool(a.pair_every > 0 and it % a.pair_every == 0)
+
+        def _pair_str(reg_, mm_):
+            out_ = []
+            for _ii, _i in enumerate(_occ):
+                for _j in _occ[_ii + 1:]:
+                    if vmap[_i] != vmap[_j]:
+                        continue
+                    _A = BM._area_from_faces(
+                        BM._faces_between(reg_ == _i, reg_ == _j), n_hab, dx)
+                    if _A > 0:
+                        out_.append('%d-%d:%.6g' % (_i, _j, _A * 1e12))
+            return '/'.join(out_)
+
         row = dict(
             step=it, t_s=round(t_sim, 12), wall_s=round(time.time() - wall0, 2),
             dt=dt, V0=mm['vol_0'], Vt=sum(mm['vol_%d' % k] for k in range(1, nv + 1)),
@@ -479,6 +501,9 @@ def run(a):
                           for k in range(1, nv + 1)),
             ths='/'.join('%.6g' % (mm['n_%d' % k] * 1e9)
                          for k in range(1, nv + 1)),
+            # ★ R18：逐对 F3 面积。只在 `--pair-every` 命中时算（它要按对做
+            #   6 次 `np.roll`，N=96 时约 2–3 s ⇒ 不能每步都算）。
+            f3_pairs=('' if not _pair_now else _pair_str(reg, mm)),
             nf3=mm['f3_faces'], f3_area_m2=mm['f3_area'],
             f3_area_stair=mm['f3_area_stair'], f3_pos_m=pm,
             f3_pos_dx=((pm - P0) / dx if (np.isfinite(pm) and P0 is not None)
@@ -623,6 +648,8 @@ def main():
     ap.add_argument('--eng-r-nm', type=float, default=320.0)
     ap.add_argument('--eng-t-nm', type=float, default=250.0)
     ap.add_argument('--eng-seed', type=int, default=11)
+    # ★ R18：逐对 F3 面积记录间隔（步）。0 = 不记（默认，与改动前逐位相同）。
+    ap.add_argument('--pair-every', type=int, default=0)
     # ★★★ R12：**核的形状**。默认 0 ⇒ 圆盘（= 引擎原行为）。
     #   实测（`--arm eng`，R=320、200 步）圆盘给出的第一次接触面只有 0.39 µm²，
     #   而驱动层的长条板条给 1.5174 µm² ⇒ 终态 F3 面积差 **7 倍**。
