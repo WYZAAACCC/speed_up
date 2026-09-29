@@ -1231,7 +1231,8 @@ class LevelSetMulti(object):
                 harden_f=1.0, sym_gap_cells=2, max_per_step=1, seed=11,
                 var_rule='ed', use_fcrit=False,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
-                elong=1.0, along=None, prefer_end=True, nfsv_strict=True):
+                elong=1.0, along=None, prefer_end=True, nfsv_strict=True,
+                block_edge=True):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
         （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
         `WINDOWB_AUDIT_REGISTER.md` D4/A7。三种处置任选其一，**但必须显式**：
@@ -1352,6 +1353,9 @@ class LevelSetMulti(object):
                          # ★ R14：`nfsv` 找不到空场时**拒绝**该事件（而不是回退到 k）。
                          #   只在 `nfsv=True` 时被读到 ⇒ 默认路径不变。
                          nfsv_strict=bool(nfsv_strict),
+                         # ★ R17：`attach` 落位基准用**整块外缘**（而非源板条自身外缘）。
+                         #   只在 `attach=True` 时被读到 ⇒ 默认路径不变。
+                         block_edge=bool(block_edge),
                          rng=np.random.default_rng(seed))
         # ★★ 记账（Round 63 接线；**Round 84 更正依据**——`ReferenceAudit` #14）：
         #   `p_auto` **已接线并使用**（见下面 sympathetic 分支的 `_gain`）。
@@ -1700,11 +1704,36 @@ class LevelSetMulti(object):
                                     c0 = (idx.mean(0) + 0.5) * self.dx
                                     pos = (idx.astype(float) + 0.5) * self.dx
                         _pn = pos @ nrm
+                        # ★★★ R17：**落位基准改成"整块外缘"**（`block_edge`，默认开）。
+                        #   动机（`eng5`/`eng6` 的共同模式，实测）：按堆叠顺序读相邻对，
+                        #   **只有最外两张界面是干净的**（β 占比 0.13–0.15），
+                        #   **中间三张全脏**（0.43–1.00）。这正是"**新片被插进块内部**"
+                        #   的特征：两端是自由外侧（贴上去就成一张干界面），
+                        #   中间的界面在后续事件里被夹着反复挤压 ⇒ 被推开成 β 夹层。
+                        #   机理：`_pn` 是**源板条自身**的胞投影。若抽到的源板条
+                        #   **不是**几何上最外那张（`prefer_end` 按**质心**取极值，
+                        #   而质心会被碎点与不均匀长大带偏），它的"外缘"就在块内部
+                        #   ⇒ 新片被插到内部。
+                        #   ⇒ 改用**全部 α′ 胞**的投影极值（= 整块外缘）作基准；
+                        #     并把"源板条外缘比整块外缘内缩多少"记进
+                        #     `dbg['edge_gap_max_dx']`（**这是本诊断的可证伪点**：
+                        #     若它 ≈ 0，说明源板条一直就是最外那张，本条修法无意义）。
+                        #   ⚠ `block_edge=False` 或 `attach=False` ⇒ 原路径 ⇒ 逐位不变。
+                        if c.get('block_edge', True):
+                            _bi = np.argwhere(reg > 0)
+                            _ball = ((_bi.astype(float) + 0.5) * self.dx) @ nrm
+                            _e_hi, _e_lo = float(_ball.max()), float(_ball.min())
+                            _gp = max(_e_hi - float(_pn.max()),
+                                      float(_pn.min()) - _e_lo) / self.dx
+                            _dbg['edge_gap_max_dx'] = max(
+                                _dbg.get('edge_gap_max_dx', -9.9), _gp)
+                        else:
+                            _e_hi, _e_lo = float(_pn.max()), float(_pn.min())
                         done = False                 # ★ 必须先初始化：下面 `if done`
                         for _side in (1.0, -1.0):    #   在"一个都没放成"时也要能求值
                             if done:
                                 break
-                            _edge = float(_pn.max() if _side > 0 else _pn.min())
+                            _edge = _e_hi if _side > 0 else _e_lo
                             cc = c0 + ((_edge - float(c0 @ nrm))
                                        + _side * (t / 2.0
                                                   - c.get('attach_overlap', 0.0))) * nrm
