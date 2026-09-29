@@ -71,6 +71,23 @@ python -u _bk_exp.py --arm eng \
 **判定**：`python3 _bk_verdict.py --root _exp/_bk_eng --tag eng12 --arms eng --ctrl-tag L200`
 **稳健性**：`python3 _bk_rscores.py eng12 eng13 eng14`
 
+### 3.1 ★ R28 起：**默认路径就是引擎**（更短，且逐位等价）
+
+```bash
+python -u _bk_exp.py --N 96 --dx-nm 62.5 --steps 200 --every 10 --snap-every 50 \
+  --pair-every 10 --norm-smooth 0 --nthreads 2 --reinit-dt 1e-4 \
+  --grow-stack --eng-cadence 30 --nuc-overlap-nm 62.5 \
+  --tag def1 --out _exp/_bk_eng
+```
+
+**核验**：`python3 _bk_defcheck.py` ⇒ 与 `eng12` 的 `series.csv`
+**逐位比较（忽略 `wall_s`）差异字段数 = 0**。
+
+机制：`--nuc-mode`（默认 `auto`）—— **`--grow-stack` 且 `--nuc-every ≤ 0` ⇒ 引擎**；
+给了 `--nuc-every > 0` ⇒ 驱动层。**归档命令行全部显式传了 `--nuc-every 30`
+⇒ 它们的行为逐位不变**（`--nuc-every` 的默认已从 30 改为 **0**）。
+引擎路径下**自动**取 `elong = plate_L/plate_W`、`t = 250 + o`、`t_last = t − o/2`。
+
 **六个参数的物理含义**（缺一不可，每一个都有实测依据）：
 
 | 参数 | 值 | 作用 / 依据 |
@@ -93,8 +110,9 @@ python -u _bk_exp.py --arm eng \
    已有的 `f_nuc^crit = 4γ/d` 判据**接上也限制不了速率**。
    模型里唯一与速率有关的 `p_auto` **没有一手文献锚**。
    ⇒ **要把它变成"自发"，需要一个形核速率模型（位点密度 + 自催化动力学），超出当前范围。**
-2. **`_bk_exp` 的默认路径仍是驱动层形核**（`--grow-stack --nuc-every N`）；
-   引擎路径是 `--arm eng`，**尚未切换为默认**。
+2. **`_bk_exp` 的默认路径已是引擎**（R28 起）：`--grow-stack` 且未给 `--nuc-every`
+   即走引擎，与显式推荐配置**逐位一致**（`_bk_defcheck.py`）。
+   要复现归档的**驱动层**行为，显式传 `--nuc-every 30`（各臂 `meta.json` 的 `exp_args` 里都有）。
 3. **逐板条体积波动 6–35%**（两臂共有，端片 −6.7% 完全相同）——
    成因是**内层板条两张宽面都是 F3、`Δf = Δe_el ≡ 0` ⇒ 没有体驱动力**（§5.1），
    体积只受 F3 面积最小化支配 ⇒ **是模型的性质，不是缺陷**，但必须一起报。

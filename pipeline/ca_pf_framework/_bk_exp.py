@@ -225,7 +225,10 @@ def run(a):
     #     未播种的场一直是空的（φ=1e3 ⇒ 永远不是 argmin）。
     # ★ R12：`arm=eng` 也要"只播第 1 片 + `init_parent`"，但它**不走驱动层形核**
     #   （`--nuc-every 0`）⇒ 形核由下面的 `g.nucleate()` 负责。
-    grow = bool(a.grow_stack) or (a.arm == 'eng')
+    # ★ R28：**默认走引擎形核**（见下面的 `use_engine`）。
+    use_engine = (a.arm == 'eng') or (a.nuc_mode == 'engine') or (
+        a.nuc_mode == 'auto' and bool(a.grow_stack) and a.nuc_every <= 0)
+    grow = bool(a.grow_stack) or (a.arm == 'eng') or use_engine
     n_seeded = 0
 
     def _seed_next():
@@ -326,22 +329,31 @@ def run(a):
     #   `vgroup` 告诉引擎哪些场同变体（本臂 6 个场全是变体 1）；
     #   `nfsv` 让同变体形核播进**新的空场**（否则只会加厚第一片）；
     #   `attach` 让新核与源板条**共用一张界面**（C-1 干晶界 regime）。
-    if a.arm == 'eng':
-        g.nuc_cfg(a.eng_r_nm * 1e-9, a.eng_t_nm * 1e-9, gamma=0.15, n_init=0,
+    if use_engine:
+        # ★ R28：**自动补厚度** —— 界面落在重叠区中面 ⇒ 每片被吃 `o/2`
+        #   （两侧被吃的片吃 `o`）⇒ 引擎路径下把 `o` 加回 `t_nuc`。
+        #   这样「只给 `--grow-stack`」的最简命令行也能复现 `eng12`。
+        _t_nuc = a.eng_t_nm * 1e-9
+        if use_engine and a.eng_t_nm <= 250.0 and a.nuc_overlap_nm > 0:
+            _t_nuc = (250.0 + a.nuc_overlap_nm) * 1e-9
+        g.nuc_cfg(a.eng_r_nm * 1e-9, _t_nuc, gamma=0.15, n_init=0,
                   p_auto=0.0, harden_f=1.0, sym_gap_cells=0, max_per_step=1,
                   seed=a.eng_seed, var_rule='ed',
                   vgroup=vmap, nfsv=True, attach=True,
                   attach_overlap=a.nuc_overlap_nm * 1e-9,
-                  elong=(a.eng_elong if a.eng_elong > 1.0 else 1.0),
-                  along=(a_ax if a.eng_elong > 1.0 else None),
+                  elong=((a.eng_elong if a.eng_elong > 1.0
+                          else (a.plate_L / a.plate_W if use_engine else 1.0))),
+                  along=(a_ax if (a.eng_elong > 1.0 or use_engine) else None),
                   # ★ R23：默认**不传** ⇒ 由引擎自动决定（attach 下 = False）。
                   #   `--eng-force-reinit` 可强制打开（用于复现 eng5–eng10）。
                   force_reinit_after_event=(True if a.eng_force_reinit else None),
-                  t_last_reduce=a.eng_t_last_reduce_nm * 1e-9)
+                  t_last_reduce=((a.eng_t_last_reduce_nm if a.eng_t_last_reduce_nm > 0
+                                  else (a.nuc_overlap_nm * 0.5 if use_engine else 0.0))
+                                 * 1e-9))
         _ed_dummy = np.zeros((g.nreg, 1, 1, 1))
         P('★★★ 臂 eng：**形核交给引擎**（`nucleate` 的 stack 通道 + attach + nfsv）'
-          '；R=%.0f nm t=%.0f nm，咬入 %.1f nm，节奏 %s，seed=%d'
-          % (a.eng_r_nm, a.eng_t_nm, a.nuc_overlap_nm,
+          '；R=%.0f nm t=%.1f nm（**含自动补厚**），咬入 %.1f nm，节奏 %s，seed=%d'
+          % (a.eng_r_nm, _t_nuc * 1e9, a.nuc_overlap_nm,
              ('每步' if a.eng_cadence == 0 else '每 %d 步' % a.eng_cadence),
              a.eng_seed))
         P('   ⚠ 记账：**速率仍由驱动层的节奏规定** —— 引擎的 sympathetic 通道'
@@ -440,7 +452,7 @@ def run(a):
         #   驱动层只保留**节奏**（`--eng-cadence`；0 = 每步都问一次）。
         #   ⇒ 记账：**速率仍然是被规定的** —— 引擎的 sympathetic 通道目前
         #     **没有速率律**（`use_fcrit` 只覆盖 `fresh` 通道）。这一点不得含糊。
-        if (a.arm == 'eng') and it > 0 and a.eng_cadence >= 0:
+        if use_engine and it > 0 and a.eng_cadence >= 0:
             if a.eng_cadence == 0 or (it % a.eng_cadence == 0):
                 _reg_e = g.region()
                 _fnow = 1.0 - float((_reg_e == 0).sum()) / g.N ** 3
@@ -565,7 +577,7 @@ def run(a):
     #   于是"`nfsv` 到底有没有因为没空场而拒绝事件"这类判据（本轮预登记的 G-5）
     #   **无法从落盘数据复核** —— 而用户的要求正是"全过程数据留盘、量具/判据
     #   有 bug 也能事后重测"。⇒ 写成 `nuc_dbg.json`（只在 `arm=eng` 时）。
-    if a.arm == 'eng' and getattr(g, '_nuc', None) is not None:
+    if use_engine and getattr(g, '_nuc', None) is not None:
         try:
             with open(os.path.join(outdir, 'nuc_dbg.json'), 'w',
                       encoding='utf-8') as f:
@@ -636,7 +648,11 @@ def main():
     ap.add_argument('--grow-stack', action='store_true',
                     help='★ G-1 方案 B：t=0 只播第 1 片，此后每 --nuc-every 步'
                          '在当前块外侧播下一片（同变体、新场）⇒ 生长中堆叠成块')
-    ap.add_argument('--nuc-every', type=int, default=30)
+    # ★★★ R28：**默认 0 = 形核交给引擎**（新默认）。
+    #   要复现归档的**驱动层**行为，显式传 `--nuc-every 30`。
+    #   **归档命令行全部显式传了 30**（见各臂 `meta.json` 的 `exp_args`）
+    #   ⇒ 它们的行为**逐位不变**。
+    ap.add_argument('--nuc-every', type=int, default=0)
     ap.add_argument('--nuc-gap-nm', type=float, default=0.0)
     # ★ Round 9：新核**咬进**已有块的深度（nm）。0 = 恰好相切（旧行为，
     #   实测会因阶梯错位留 1 胞 β 膜 ⇒ F3 覆盖率只有 0.62）。
@@ -651,6 +667,13 @@ def main():
                     help='引擎形核的**节奏**（步）；0 = 每步都问一次引擎')
     ap.add_argument('--eng-r-nm', type=float, default=320.0)
     ap.add_argument('--eng-t-nm', type=float, default=250.0)
+    # ★★★ R28：**形核通道选择**。
+    #   `auto`（默认）：`--grow-stack` 且 `--nuc-every <= 0` ⇒ **引擎**；
+    #                     给了 `--nuc-every > 0` ⇒ **驱动层**。
+    #   ⇒ **所有归档命令行都带 `--nuc-every 30` ⇒ 逐位不变**；
+    #     而「只给 `--grow-stack`」这一新写法自动拿到**已验的引擎路径**。
+    ap.add_argument('--nuc-mode', default='auto',
+                    choices=['auto', 'driver', 'engine'])
     ap.add_argument('--eng-seed', type=int, default=11)
     # ★ R22：关掉"有事件就强制 reinit"（**R23 起改为引擎自动**：attach 下默认关）。
     ap.add_argument('--eng-no-force-reinit', action='store_true',
