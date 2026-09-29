@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""_bk_f3flat.py —— 从快照直接量 **F3 界面的平整度**（`f3_std_n`，沿 `n*` 的标准差）。
+"""_bk_f3flat.py —— 量 **F3 界面的平整度**，**逐对**算，再报逐对值与平均。
 
-为什么要单独一个工具：`V-3g` 测的是界面的**平均位置** `f3_pos` 在两次形核之间动多少。
-如果界面本身**变粗糙了**，平均位置当然会晃 —— 那就不是"界面在迁移"，而是"界面不平了"。
-`f3_std_n` 正好是区分这两件事的那个量，但它**没写进 `series.csv`**（只在 stdout 的日志行里）
-⇒ 从快照重算，才能对**归档算例**也量一遍（归档的幂等日志早没了）。
+★★ 为什么必须**逐对**（Round 17 的教训 —— 我在这一个量上连错两次）：
+  `_bk_measure.f3_std_n` 把**所有对的 F3 胞汇在一起**求标准差。
+  当块里有 k 张界面时，它们分布在 `n*` 的不同位置上
+  ⇒ 汇总标准差**主要反映"界面之间的间距"**，而不是"单张界面有多粗糙"。
+  实测（`_bk_stdtrend.py` 从 `f3_std_m` 列读）：
+      eng12（5 张界面）@200 步 = 333 nm；cl1b（界面更少）@1000 步 = 195 nm
+  ⇒ 我先后得出过两个结论 ——「归档的界面是钉死的」和「归档的界面粗糙 3.5 倍」——
+    **两个都是这个混淆造成的伪影**。
+  ⇒ 正确口径：**逐对算 std，再看逐对值的分布**。
 
 用法：
     python3 _bk_f3flat.py _exp/_bk_eng/eng_eng12 _exp/_bk_closed/dry_cl1b
@@ -19,6 +24,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
 import numpy as np                                              # noqa: E402
+from scipy import ndimage                                       # noqa: E402
 
 
 def main(argv):
@@ -39,45 +45,36 @@ def main(argv):
             dx = float(z['L']) / reg.shape[0]
             nh = np.asarray(z['n_hab'], float)
             nh = nh / (np.linalg.norm(nh) + 1e-300)
-            vk = z['vmap_keys']; vv = z['vmap_vals']
-            vmap = {int(a): int(b) for a, b in zip(vk, vv)}
-            # F3 胞：某胞的 6-邻域里同时出现场 i 与场 j、且 vmap[i]==vmap[j]
-            acc = []
-            fields = [k for k in np.unique(reg) if k > 0]
+            vmap = {int(a): int(b) for a, b in zip(z['vmap_keys'], z['vmap_vals'])}
+            fields = [int(k) for k in np.unique(reg) if k > 0]
+            per = []
             for i in fields:
                 mi = (reg == i)
                 for j in fields:
-                    if j <= i or vmap.get(int(i)) != vmap.get(int(j)):
+                    if j <= i or vmap.get(i) != vmap.get(j):
                         continue
-                    # 用膨胀相交近似"相邻"（比逐面遍历便宜，判据只需相对比较）
-                    from scipy import ndimage
                     adj = mi & ndimage.binary_dilation(reg == j)
                     if adj.sum() < 8:
                         continue
-                    idx = np.argwhere(adj).astype(float)
-                    pr = (idx @ nh) * dx
-                    acc.append(pr)
-            if not acc:
+                    pr = (np.argwhere(adj).astype(float) @ nh) * dx      # 米
+                    per.append((i, j, float(pr.std()) * 1e9, adj.sum(),
+                                float(pr.mean()) * 1e9))
+            if not per:
                 print('    %-14s 无 F3' % os.path.basename(sp))
                 continue
-            cat = np.concatenate(acc)
-            # ★ 单位（Round 16 修）：`cat` 是**米** —— 第一版直接按 nm 打印 ⇒ 全是 0.0，
-            #   而"× 物理板条厚"那一栏又拿米去比 nm ⇒ 报出 1e8 倍的荒唐比值。
-            #   本仓库同类错已第三次（`robust_thickness`、A-8 的 Vt）。
-            std_nm = cat.std() * 1e9
-            span_nm = (cat.max() - cat.min()) * 1e9
-            # ★★ 同时给**权威口径**的值：`_bk_measure.measure_state` 的 `f3_std_n`
-            #   （逐面判 F3，与日志/判据同一把尺）。我自己的"膨胀相交"口径会把
-            #   对角邻居也算进来 ⇒ 数值偏大 ⇒ **两个口径不可混着比**。
-            import _bk_measure as BM
-            _mm = BM.measure_state(reg, dx, nh, np.asarray(z['w_ax'], float),
-                                   np.asarray(z['a_ax'], float), vmap)
-            ref_nm = float(_mm['f3_std_n']) * 1e9
-            print('    %-14s step=%-5s F3胞=%6d  **std(n*) = %6.1f nm**'
-                  '（= %.3f × 物理板条厚）  跨度=%.0f nm'
-                  '   ‖ 权威口径 `_bk_measure.f3_std_n` = **%.1f nm**（= %.3f × t）'
-                  % (os.path.basename(sp), z['step'], cat.size, std_nm,
-                     std_nm / t_ph, span_nm, ref_nm, ref_nm / t_ph))
+            stds = [x[2] for x in per]
+            print('    %-14s step=%-5s 对数=%d  **逐对 std(n*)：%s nm**'
+                  '  平均=%.1f（= %.3f × t）  最大=%.1f'
+                  % (os.path.basename(sp), z['step'], len(per),
+                     '/'.join('%.0f' % s for s in stds),
+                     float(np.mean(stds)), float(np.mean(stds)) / t_ph,
+                     max(stds)))
+            # 界面**位置**的跨度（这才是被 `f3_std_n` 混淆进去的那个量）
+            means = [x[4] for x in per]
+            print('        （界面位置沿 n* 的跨度 = %.0f nm ≈ %.1f × t；'
+                  '**这一项随界面张数增长，正是 `f3_std_n` 被它主导的来源**）'
+                  % (max(means) - min(means),
+                     (max(means) - min(means)) / t_ph))
     return 0
 
 
