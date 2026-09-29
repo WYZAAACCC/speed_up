@@ -498,6 +498,52 @@ def main():
                            % ('/'.join('%.0f' % (_rth[k] * 1e9) for k in present),
                               '/'.join('%.0f' % th[k - 1] for k in present
                                        if k <= len(th)))))
+                # ★★★ R36（**P1-21**）：**V-8c 用「宽面厚度」判** —— 与 V-8b 并列报。
+                _tw = []
+                if 'band_idx' in _z.files:
+                    _N2 = int(_z['N'])
+                    _dx2 = float(_z['L']) / _N2
+                    _nreg2 = len(_z['vmap_keys']) + 1
+                    _phi2 = np.full((_nreg2, _N2, _N2, _N2), np.nan)
+                    _bi = _z['band_idx'].astype(np.int64)
+                    _bv = _z['band_val'].astype(np.float64)
+                    _bf = _z['band_fld'].astype(np.int64)
+                    for _q in range(_nreg2):
+                        _s = (_bf == _q)
+                        if _s.any():
+                            _phi2[_q].ravel()[_bi[_s]] = _bv[_s]
+                    for _k in present:
+                        _rr = BM.wide_face_thickness(_phi2, _dx2, _nh, _k)
+                        _tw.append((_k, _rr['t_wf'] * 1e9 if _rr else float('nan')))
+                if _tw:
+                    _vals = [v for _k, v in _tw if np.isfinite(v)]
+                    _in = [v for v in _vals if 0.8 * _t0 <= v <= 1.3 * _t0]
+                    ck.append(('V-8c 宽面厚度（**修正口径**；V-8b 的 ths 是包围盒跨度）',
+                               (len(_in) == len(_vals)) if _vals else None,
+                               't_wf = %s nm（窗口 [%.0f,%.0f] nm，%d/%d 在带内）'
+                               % ('/'.join('%.0f' % v for _k, v in _tw),
+                                  0.8 * _t0, 1.3 * _t0, len(_in), len(_vals))))
+                else:
+                    ck.append(('V-8c 宽面厚度（**修正口径**）', None,
+                               '最后快照没有带内稀疏 φ（老臂）⇒ **无法判定**'))
+
+                import _bk_cmp as _CMP
+                _z = np.load(_snaps[-1])
+                _reg = _z['region']
+                _dx = float(_z['L']) / _reg.shape[0]
+                _nh = np.asarray(_z['n_hab'], float)
+                _rth = {k: _CMP.robust_thickness(_reg, _dx, _nh, k)
+                        for k in present}
+                _inb = [k for k in present
+                        if 0.8 * _t0 <= _rth[k] * 1e9 <= 1.3 * _t0]
+                ck.append(('V-8b 末态厚度保真（**剔孤儿**后 ∈ [%.0f,%.0f] nm）'
+                           % (0.8 * _t0, 1.3 * _t0),
+                           len(_inb) == len(present),
+                           '剔孤儿后=%s nm（**判据用这个**）；原始 `ths`=%s nm'
+                           '（含孤儿，仅供参考）'
+                           % ('/'.join('%.0f' % (_rth[k] * 1e9) for k in present),
+                              '/'.join('%.0f' % th[k - 1] for k in present
+                                       if k <= len(th)))))
         for t, ok, det in ck:
             print('   %-52s %s  %s'
                   % (t, 'PASS' if ok else ('—' if ok is None else '**FAIL**'), det))

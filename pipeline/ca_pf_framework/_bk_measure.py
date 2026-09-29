@@ -99,6 +99,59 @@ def _ncomp_sizes(mask):
 MIN_SIG_VOX = 32
 
 
+def wide_face_thickness(phi, dx, n_hab, k, band=1.5, cos2_min=0.81,
+                        band_cells=2):
+    """★★★ R36（`R30_AUDIT_LEDGER.md` **P1-21**）：**宽面厚度** `t_wf`。
+
+    ## 为什么要它（实测推翻了口径）
+    `n_%d`（= `ths`，板条胞沿 `n*` 的**包围盒跨度**）**不是板条厚度**：
+    实测 `mb1s` 场 1 的包围跨度 624 → **2631 nm**（1500 步），
+    而由 φ 量出的**两张宽面之间的距离**只有 780 → **732 nm**（−48 nm）。
+    ⇒ 包围跨度被**碎片**（`nc` 12–36）与 **`n*` 与真实板条法向的 7.3° 夹角**
+      （`n*·a = −0.127`）撑大 ⇒ R29 那批 `V-8b` FAIL **至少部分是口径伪影**。
+
+    ## 口径（先写死，与 `_r33_wfthick.py` 同一套）
+    1. 界面胞 = `|φ| ≤ band·Δx`；
+    2. 法向 `n = ∇φ/|∇φ|`；**宽面胞** = `(n·n*)^2 > cos2_min`（默认 0.81 ⇒ 25°）；
+    3. 以该场胞沿 `n*` 的**中位位置**为界，把宽面胞分 ±两簇；
+    4. `t_wf` = **两簇中位位置之差**。
+
+    对"端面/侧面长大"**免疫**（那些胞的 `(n·n*)^2` 小，进不了第 2 步）。
+
+    ⚠ 只吃 `φ`（`(N,N,N)` 单场或 `(nreg,N,N,N)` + `k`）；`φ` 带外的 NaN 由调用方处理。
+    返回 `dict(t_wf=…, lo=…, hi=…, n_wf=…)`；不可测时返回 `None`（**不静默给 0**）。
+    """
+    phi = np.asarray(phi, float)
+    p = phi if phi.ndim == 3 else phi[k]
+    if not np.isfinite(p).any():
+        return None
+    n_hab = np.asarray(n_hab, float)
+    n_hab = n_hab / (np.linalg.norm(n_hab) + 1e-300)
+    N = p.shape[0]
+    pf = np.where(np.isfinite(p), p, 1e3)
+    ii = np.arange(N) * dx
+    prj = (n_hab[0] * ii[:, None, None] + n_hab[1] * ii[None, :, None]
+           + n_hab[2] * ii[None, None, :])
+    # 质心用**本场胞**（不是全盒）
+    own = np.isfinite(p) & (np.abs(pf) <= band_cells * dx)
+    if int(own.sum()) < 20:
+        return None
+    g = np.gradient(pf, dx, edge_order=2)
+    gn = np.sqrt(sum(x ** 2 for x in g)) + 1e-30
+    c2 = np.clip(sum(g[i] / gn * n_hab[i] for i in range(3)) ** 2, 0.0, 1.0)
+    wf = own & (np.abs(pf) <= band * dx) & (c2 > cos2_min)
+    if int(wf.sum()) < 20:
+        return None
+    v = prj[wf]
+    c = float(np.median(prj[own]))
+    lo, hi = v[v < c], v[v >= c]
+    if lo.size < 10 or hi.size < 10:
+        return None
+    return dict(t_wf=float(np.median(hi) - np.median(lo)),
+                lo=float(np.median(lo)), hi=float(np.median(hi)),
+                n_wf=int(wf.sum()))
+
+
 def _label_periodic(mask):
     """6-连通、**周期**边界下的**带标签**分量图（把跨周期面的分量合并成同一个 id）。
 
