@@ -100,13 +100,29 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         # ★ R38（P1-22）：**孤儿免疫**的撞壁判据与核心记账
         'box_touch_core', 'core_vox', 'ncomp_all',
         # ★ R41（P1-25）：`dG_max` 离群性诊断
-        'dG_max_Jm3', 'dG_p999', 'dG_ratio', 'dG_near_max']
+        'dG_max_Jm3', 'dG_p999', 'dG_ratio', 'dG_near_max',
+        # ★ R45（P1-25 直测）：按界面法向分档的 `ed` / `dG`
+        'ed_tip', 'ed_side', 'ed_wide', 'dG_tip', 'dG_side', 'dG_wide']
 assert len(COLS) == len(set(COLS))
 
 
 _BLK_EMPTY = dict(nblk_sig='', blk_laths='', blk_vars='', n_var_sig='',
                   n_habit='', f_var='', r_selfac='', blk_nlath='', blk_span_nm='',
                   blk_alen_nm='', blk_wlen_nm='')
+
+
+def _ebf(g, tag, which):
+    """★ R45：从引擎的 `ed_by_face`（按界面法向分档的 `ed`/`dG` 中位数）取一个值。
+
+    取不到 ⇒ 返回空串（**不假装是 0**）。`which`：0 = `ed`，1 = `dG`。
+    """
+    d = getattr(g, 'ed_by_face', None)
+    if not d or tag not in d:
+        return ''
+    try:
+        return round(float(d[tag][which]), 6)
+    except (TypeError, ValueError, IndexError):
+        return ''
 
 
 def _blk_cols(g, reg, dx, vmap):
@@ -958,6 +974,12 @@ def run(a):
             dG_ratio=(getattr(g, 'dG_max', float('nan'))
                       / max(getattr(g, 'dG_p999', float('nan')), 1e-300)),
             dG_near_max=getattr(g, 'dG_nmax', -1),
+            # ★★★ R45（P1-25 直测）：按界面法向分档的 `ed` / `dG` 中位数
+            #   （把 "弹性偏袒侧面、压制尖端" 从**反解**升级为**直测**）
+            ed_tip=_ebf(g, 'tip', 0), ed_side=_ebf(g, 'side', 0),
+            ed_wide=_ebf(g, 'wide', 0),
+            dG_tip=_ebf(g, 'tip', 1), dG_side=_ebf(g, 'side', 1),
+            dG_wide=_ebf(g, 'wide', 1),
             finite=int(np.all(np.isfinite(g.phi))),
             psi_mean=(float(g.psi[np.isfinite(
                 lt.gtab[np.clip(karr_m, 0, g.nreg - 1),

@@ -3265,6 +3265,49 @@ class LevelSetMulti(object):
         #   现在改存"有效驱动"，在 Mfac 应用之后重算（见下面 _dG_max_from_mfac）。
         self.dG_max = float(np.max(np.abs(dG_cell)))
         self._dG_cell_ref = dG_cell          # 供 Mfac 应用后重算 dG_max
+        # ★★★ R45（**P1-25 的直测**）：把 `ed` 与 `dG` **按界面法向分档**取中位数。
+        #
+        #   为什么必须补：P1-25 的机理（"弹性偏袒侧面、压制尖端"）此前是**反解**出来的
+        #   （用实测压制比 + 一个借来的 `ΔG_max`，见 `R30_AUDIT_LEDGER.md` §15/§17），
+        #   不是逐胞测量。这里把它变成**直测**：
+        #     对每个界面胞，用**winner 变体自己的** (a, w, n*) 把法向分类：
+        #       tip  : (n·a)² > 0.81   —— 长轴端面
+        #       side : (n·w)² > 0.81   —— 宽度侧面
+        #       wide : (n·n*)² > 0.81  —— 惯习宽面
+        #     然后各档记 `median(edk)` 与 `median(dG_cell)`。
+        #   ⇒ 与新判据 "P1-25-D"：**尖端档的 `ed` 应为负且量级 ≈ 0.9·Δf**。
+        #   ⚠ **纯记账**：只读、只统计，不参与任何分支/数值
+        #     （由 `_r30_regress.sh` 的逐位回归把关）。
+        self.ed_by_face = None
+        try:
+            _at = getattr(self, 'atab', None)
+            _wt = getattr(self, 'wtab', None)
+            if (ndir_ is not None and _at is not None and _wt is not None):
+                _ki = np.clip(karr, 0, nreg - 1)
+                _a_c = np.nan_to_num(np.asarray(_at, float)[_ki], nan=0.0)
+                _w_c = np.nan_to_num(np.asarray(_wt, float)[_ki], nan=0.0)
+                _n_c = np.zeros(_shape + (3,), float)
+                _np_tab = getattr(self, 'npref_tab', None)
+                if isinstance(_np_tab, dict):
+                    for _kk, _vv in _np_tab.items():
+                        if _vv is not None and 0 <= int(_kk) < nreg:
+                            _n_c[_ki == int(_kk)] = np.asarray(_vv, float)
+                _c2a = np.clip(np.einsum('...i,...i->...', ndir_, _a_c) ** 2, 0, 1)
+                _c2w = np.clip(np.einsum('...i,...i->...', ndir_, _w_c) ** 2, 0, 1)
+                _c2n = np.clip(np.einsum('...i,...i->...', ndir_, _n_c) ** 2, 0, 1)
+                _ifc = np.isfinite(phb) & (karr > 0)
+                _d = {}
+                for _tag, _m in (('tip', _c2a > 0.81), ('side', _c2w > 0.81),
+                                 ('wide', _c2n > 0.81)):
+                    _mm = _ifc & _m
+                    if int(_mm.sum()) >= 20:
+                        _d[_tag] = (float(np.median(edk[_mm])),
+                                    float(np.median(dG_cell[_mm])),
+                                    int(_mm.sum()))
+                # 母相侧同名量（供对照：母相 `ed ≡ 0`）
+                self.ed_by_face = _d or None
+        except Exception:
+            self.ed_by_face = None
         if drag is not None:
             # ★★ 溶质拖曳（P3.3 / 框架 §6.3 [RULE] K5）：**隐式自洽**解
             #     v = M[ΔG − P_drag(v)]，P_drag = P0/(1+v/v*)（双盒闭式，K1 已验）。
