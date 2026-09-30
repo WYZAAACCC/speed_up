@@ -102,7 +102,8 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         # ★ R41（P1-25）：`dG_max` 离群性诊断
         'dG_max_Jm3', 'dG_p999', 'dG_ratio', 'dG_near_max',
         # ★ R45（P1-25 直测）：按界面法向分档的 `ed` / `dG`
-        'ed_tip', 'ed_side', 'ed_wide', 'dG_tip', 'dG_side', 'dG_wide']
+        'ed_tip', 'ed_side', 'ed_wide', 'dG_tip', 'dG_side', 'dG_wide',
+        'ed_obl', 'dG_obl', 'n_obl']
 assert len(COLS) == len(set(COLS))
 
 
@@ -980,6 +981,11 @@ def run(a):
             ed_wide=_ebf(g, 'wide', 0),
             dG_tip=_ebf(g, 'tip', 1), dG_side=_ebf(g, 'side', 1),
             dG_wide=_ebf(g, 'wide', 1),
+            # ★ R45b：第四档（斜法向）—— H-ε 的判据量
+            ed_obl=_ebf(g, 'oblique', 0), dG_obl=_ebf(g, 'oblique', 1),
+            n_obl=(getattr(g, 'ed_by_face', None) or {}).get(
+                'oblique', (0, 0, 0))[2]
+            if (getattr(g, 'ed_by_face', None) or {}).get('oblique') else '',
             finite=int(np.all(np.isfinite(g.phi))),
             psi_mean=(float(g.psi[np.isfinite(
                 lt.gtab[np.clip(karr_m, 0, g.nreg - 1),

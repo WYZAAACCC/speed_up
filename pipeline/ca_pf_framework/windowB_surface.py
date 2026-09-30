@@ -3297,8 +3297,14 @@ class LevelSetMulti(object):
                 _c2n = np.clip(np.einsum('...i,...i->...', ndir_, _n_c) ** 2, 0, 1)
                 _ifc = np.isfinite(phb) & (karr > 0)
                 _d = {}
+                # ★ R45b：**第四档 `oblique`** —— 三档都不满足的**斜法向**界面胞。
+                #   动机（H-ε）：直测显示三个主面的 `dG` 都 ≤0 或很小，而
+                #   `dG_max = 3.6e8` 落在三档之外 ⇒ **长大可能发生在棱/角的斜面上**。
+                #   面分类量具的正对照（`_r45_facechk.py`）已过：光滑长方体上
+                #   tip/side/wide 三档的胞占比与解析面积占比差 **≤2.4%**。
+                _ob = ~((_c2a > 0.81) | (_c2w > 0.81) | (_c2n > 0.81))
                 for _tag, _m in (('tip', _c2a > 0.81), ('side', _c2w > 0.81),
-                                 ('wide', _c2n > 0.81)):
+                                 ('wide', _c2n > 0.81), ('oblique', _ob)):
                     _mm = _ifc & _m
                     if int(_mm.sum()) >= 20:
                         _d[_tag] = (float(np.median(edk[_mm])),
