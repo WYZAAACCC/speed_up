@@ -103,13 +103,46 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         'dG_max_Jm3', 'dG_p999', 'dG_ratio', 'dG_near_max',
         # ★ R45（P1-25 直测）：按界面法向分档的 `ed` / `dG`
         'ed_tip', 'ed_side', 'ed_wide', 'dG_tip', 'dG_side', 'dG_wide',
-        'ed_obl', 'dG_obl', 'n_obl']
+        'ed_obl', 'dG_obl', 'n_obl',
+        # ★★★ R47：**面间距**（三个面族）—— 「长大速率」的金标准口径。
+        #   实测：包围盒跨度把它放大 2.5–2.8×；逐胞中位 dG **不预测**它。
+        'tip_sep_nm', 'side_sep_nm', 'wide_sep_nm']
 assert len(COLS) == len(set(COLS))
 
 
 _BLK_EMPTY = dict(nblk_sig='', blk_laths='', blk_vars='', n_var_sig='',
                   n_habit='', f_var='', r_selfac='', blk_nlath='', blk_span_nm='',
                   blk_alen_nm='', blk_wlen_nm='')
+
+
+def _facesep_cols(g, dx, vmap):
+    """★ R47：**三个面族的面间距**（「长大速度」的**金标准**口径）→ CSV 列。
+
+    对每个**在场**的场算 `face_separations`，取**中位数**（与 `ths`/`n_lath` 同一口径），
+    单位 nm；不可测就留空串（**不填 0**）。
+    ⚠ 只在 `--pair-every` 命中时调用（每个场一次 `np.gradient`）。
+    """
+    import _bk_measure as _BM
+    _ax = {}
+    for _v in sorted(set(int(x) for x in vmap.values())):
+        _n = np.asarray(NPF[_v], float)
+        _nref, _, _ = W.argmin_normal_cached(C, np.asarray(EPS0[_v - 1], float))
+        _R = W.LevelSetMulti._rank1_axes(np.asarray(EPS0[_v - 1], float), _nref)
+        _ax[_v] = dict(tip=np.asarray(_R[1], float), side=np.asarray(_R[2], float),
+                       wide=_n)
+    acc = {'tip': [], 'side': [], 'wide': []}
+    for _k in sorted(vmap):
+        if not bool((g.region() == _k).any()):
+            continue
+        d = _BM.face_separations(g.phi, dx, _ax[int(vmap[_k])], _k)
+        for t in acc:
+            if t in d:
+                acc[t].append(d[t] * 1e9)
+    out = {}
+    for t in acc:
+        out['%s_sep_nm' % t] = (round(float(np.median(acc[t])), 1)
+                                if acc[t] else '')
+    return out
 
 
 def _ebf(g, tag, which):
@@ -1005,6 +1038,9 @@ def run(a):
             #   （scipy.ndimage.label），N=96 时约 0.1 s/变体 ⇒ 只在 `--pair-every`
             #   命中时算（与逐对 F3 面积同一个节流阀）。
             **(_blk_cols(g, reg, dx, vmap) if _pair_now else _BLK_EMPTY),
+            # ★★★ R47：**三个面族的面间距**（「长大速率」的金标准口径）
+            **(_facesep_cols(g, dx, vmap) if _pair_now
+               else dict(tip_sep_nm='', side_sep_nm='', wide_sep_nm='')),
             # ★ R30（P0-1）：柱剖面的修正口径 + 可见性守卫
             nslab_n1=mm['nslab_n1'], runs1=mm['runs1'].replace(',', '/'),
             nf3_col1=mm['nf3_col1'], r_col_nm=round(mm['r_col_nm'], 1),

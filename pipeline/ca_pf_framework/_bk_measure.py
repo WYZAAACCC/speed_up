@@ -152,6 +152,64 @@ def wide_face_thickness(phi, dx, n_hab, k, band=1.5, cos2_min=0.81,
                 n_wf=int(wf.sum()))
 
 
+def face_separations(phi, dx, axes, k, band=1.5, cos2_min=0.81):
+    """★★★ R47：**三个面族的"面间距"** —— 「长大速率」的**金标准**口径。
+
+    ## 为什么它是金标准（`R30_AUDIT_LEDGER.md` §17 的实测）
+    | 口径 | 会不会被碎片/指状撑大 | 会不会被"中位胞在退、少数胞在长"骗 |
+    |---|---|---|
+    | 包围盒跨度（`n_lath`/`blk_alen_nm`） | ❌ 会（实测放大 **2.5–2.8×**） | — |
+    | 逐胞中位 `dG` 按面分档 | — | ❌ 会（实测**不预测**面运动） |
+    | **面位置**（本函数） | ✅ 不会（只取该面族的**中位位置**） | ✅ 不会（量的是**位置**，不是驱动力） |
+
+    ## 口径（与 `_r41_endface.py` 逐字相同，**两处必须一致**）
+    1. 界面胞 = `|φ| ≤ band·Δx`；法向 `n = ∇φ/|∇φ|`；
+    2. 按 `(n·u)² > cos2_min` 分三族：`tip`（u = a）、`side`（u = w）、
+       `wide`（u = n*）；`oblique` = 三族之外；
+    3. 每族以**该场胞沿 u 的中位位置**为界分 ±两簇，**面间距 = 两簇中位位置之差**。
+
+    ⚠ 返回的是**沿 u 的间距**（不是面积、不是体积）。不可测的族**不返回**（不填 0）。
+    """
+    p = np.asarray(phi, float)
+    if p.ndim == 4:
+        p = p[k]
+    if not np.isfinite(p).any():
+        return {}
+    N = p.shape[0]
+    inner = np.isfinite(p)
+    pf = np.where(inner, p, 1e3)
+    g = np.gradient(pf, dx, edge_order=2)
+    gn = np.sqrt(sum(x ** 2 for x in g)) + 1e-30
+    ii = np.arange(N) * dx
+    rel = [ii[:, None, None], ii[None, :, None], ii[None, None, :]]
+    iface = inner & (np.abs(pf) <= band * dx)
+    out = {}
+    for tag in ('tip', 'side', 'wide'):
+        u = np.asarray(axes[tag], float)
+        u = u / (np.linalg.norm(u) + 1e-300)
+        c2 = np.clip(sum(g[i] / gn * u[i] for i in range(3)) ** 2, 0.0, 1.0)
+        m = iface & (c2 > cos2_min)
+        if int(m.sum()) < 20:
+            continue
+        pu = u[0] * rel[0] + u[1] * rel[1] + u[2] * rel[2]
+        # ★★★ R47 修（**又一次同类错**）：分簇的**中心**原来取
+        #   `inner & (|φ| ≤ 2Δx)`（一条**壳**），而薄板条 + 碎片构型下这条壳会把
+        #   **远处碎片的带**也卷进来 ⇒ 中位中心被拽走 ⇒ 分簇边界错 ⇒ 面间距失真。
+        #   实测代价：场 1 的 `wide` 从 780→**361**（−419 nm），而独立实现
+        #   `_r33_wfthick.py` 给 780→**732**（−48 nm）。
+        #   ⇒ 改用**场自己的体**（`φ ≤ 0` ⟺ 在该场内）作中心，碎片免疫。
+        own = inner & (pf <= 0)
+        if not own.any():
+            own = iface
+        c = float(np.median(pu[own]))
+        v = pu[m]
+        lo, hi = v[v < c], v[v >= c]
+        if lo.size < 10 or hi.size < 10:
+            continue
+        out[tag] = float(np.median(hi) - np.median(lo))
+    return out
+
+
 def _label_periodic(mask):
     """6-连通、**周期**边界下的**带标签**分量图（把跨周期面的分量合并成同一个 id）。
 
