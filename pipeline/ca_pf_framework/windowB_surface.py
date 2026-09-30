@@ -3337,6 +3337,17 @@ class LevelSetMulti(object):
         # AUDIT-#3: 用**有效驱动**重定 dt（原来用未压制的 dG）
         if not isinstance(_mfac_dt, float):
             self.dG_max = float(np.max(np.abs(self._dG_cell_ref * _mfac_dt)))
+            # ★★★ R41（**P1-25**）：**诊断**：`dG_max` 是不是被**极少数异常胞**绑架的？
+            #   动机：实测端面只推进 **0.38 nm/步**，而按迁移率应推 **16.9 nm/步**
+            #   （44×）。`dt` 是按 `dG_max`（**全域最大**）定的 ⇒ 若那个最大值来自
+            #   **1 胞孤儿**（曲率 ~1/Δx ⇒ `γκ` 大），则 `dt` 被整体压低 ⇒ **全场都慢**。
+            #   判据：`dG_max / p99.9` 若 ≫1 ⇒ 最大值是**离群点** ⇒ H-δ 成立。
+            #   ⚠ **纯记账**：只多算两个百分位，**不改变任何数值/分支**
+            #     （默认路径的 `dG_max` 表达式一字未动；由 `_r30_regress.sh` 把关）。
+            _ad = np.abs(self._dG_cell_ref * _mfac_dt)
+            self.dG_p999 = float(np.percentile(_ad, 99.9))
+            self.dG_p99 = float(np.percentile(_ad, 99.0))
+            self.dG_nmax = int(np.count_nonzero(_ad >= 0.99 * self.dG_max))
         sigma = np.where(karr < larr, 1.0, -1.0)
         vcanon = sigma * v_cell
         # ★★ 记账：和单畴一样，**必须做速度扩展**，而且多畴对带宽更敏感 ——

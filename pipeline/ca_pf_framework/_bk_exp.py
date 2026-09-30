@@ -98,7 +98,9 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         # ★ R31：**逐块沿它自己的 n\*** 数板条（多块配置下沿单一 n* 的柱剖面无意义）。
         'blk_nlath', 'blk_span_nm', 'blk_alen_nm', 'blk_wlen_nm',
         # ★ R38（P1-22）：**孤儿免疫**的撞壁判据与核心记账
-        'box_touch_core', 'core_vox', 'ncomp_all']
+        'box_touch_core', 'core_vox', 'ncomp_all',
+        # ★ R41（P1-25）：`dG_max` 离群性诊断
+        'dG_max_Jm3', 'dG_p999', 'dG_ratio', 'dG_near_max']
 assert len(COLS) == len(set(COLS))
 
 
@@ -948,6 +950,14 @@ def run(a):
             #   实测 MB-1 的 mb1 报了 27 行，而核心 a 跨度只有 2654 nm（盒 12 µm）。
             box_touch_core=int(mm.get('box_touch_core', 0)),
             core_vox=mm.get('core_vox', -1), ncomp_all=mm.get('ncomp_all', -1),
+            # ★★★ R41（**P1-25** 的决定性诊断）：`dG_max` 是不是被极少数异常胞绑架？
+            #   `dG_max/p99.9 ≫ 1` 或 `dG_near_max` 极小 ⇒ 最大值是**离群点**
+            #   ⇒ `dt`（按 `dG_max` 定）被整体压低 ⇒ **全场都慢，含物理时间轴**。
+            dG_max_Jm3=getattr(g, 'dG_max', float('nan')),
+            dG_p999=getattr(g, 'dG_p999', float('nan')),
+            dG_ratio=(getattr(g, 'dG_max', float('nan'))
+                      / max(getattr(g, 'dG_p999', float('nan')), 1e-300)),
+            dG_near_max=getattr(g, 'dG_nmax', -1),
             finite=int(np.all(np.isfinite(g.phi))),
             psi_mean=(float(g.psi[np.isfinite(
                 lt.gtab[np.clip(karr_m, 0, g.nreg - 1),
