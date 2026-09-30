@@ -37,8 +37,8 @@ def main():
         raise SystemExit('✗ 没有快照')
     print('目录 %s；%d 个快照；被诊断的变体 = V%d' % (d, len(snaps), v))
     print('  %-6s %-8s %-11s %-11s %-11s %-9s %s'
-          % ('step', '分量数', '核心 a 跨度', '核心 n*跨度', '核心体积', '显著分量',
-             '全体胞 a 跨度（blocks 口径）'))
+          % ('step', '分量数', '核心 a 跨度', '核心 w 跨度', '核心 n*跨度', '核心体积',
+             '全体胞 a 跨度（blocks 旧口径）'))
     for s in snaps:
         z = np.load(s)
         reg = z['region']
@@ -57,18 +57,20 @@ def main():
         order = np.argsort(sizes)[::-1]
         big = order[0] + 1
         mb = (lab == big)
-        n_ax, a_ax, _w = variant_axes(v)
+        n_ax, a_ax, w_ax = variant_axes(v)
         ii = np.arange(reg.shape[0]) * dx
         rel = [ii[:, None, None], ii[None, :, None], ii[None, None, :]]
         pa = a_ax[0] * rel[0] + a_ax[1] * rel[1] + a_ax[2] * rel[2]
+        pw = w_ax[0] * rel[0] + w_ax[1] * rel[1] + w_ax[2] * rel[2]
         pn = n_ax[0] * rel[0] + n_ax[1] * rel[1] + n_ax[2] * rel[2]
         al_core = float(np.ptp(pa[mb])) * 1e9
+        wl_core = float(np.ptp(pw[mb])) * 1e9
         sp_core = float(np.ptp(pn[mb])) * 1e9
         al_all = float(np.ptp(pa[m])) * 1e9
         nsig = sum(1 for x in sizes if x >= 32)
-        print('  %-6d %-8d %-11.0f %-11.0f %-11d %-9d %.0f'
-              % (int(z['step']), nlab, al_core, sp_core, sizes[order[0]], nsig,
-                 al_all))
+        print('  %-6d %-8d %-11.0f %-11.0f %-11.0f %-9d %.0f（%d 显著）'
+              % (int(z['step']), nlab, al_core, wl_core, sp_core, sizes[order[0]],
+                 al_all, nsig))
 
 
 if __name__ == '__main__':
