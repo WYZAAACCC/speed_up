@@ -36,6 +36,10 @@ def main():
         raise SystemExit(__doc__)
     d = sys.argv[1]
     k = int(sys.argv[sys.argv.index('--field') + 1]) if '--field' in sys.argv else 1
+    # ★ R46：`--axis {a,w,n}` —— 量哪一对面的位置（默认 a = 尖端）。
+    #   动机：`a` 方向的"跨度增长"已被**端面位置**独立验证过（只有 +577 nm），
+    #   而 `w` 方向的 4× 跨度增长**还没有**同样的验证 ⇒ 用同一把尺子量 `w`。
+    ax_name = sys.argv[sys.argv.index('--axis') + 1] if '--axis' in sys.argv else 'a'
     snaps = [s for s in sorted(glob.glob(os.path.join(d, 'snap_*.npz')))
              if 'band_idx' in np.load(s).files]
     if not snaps:
@@ -46,13 +50,14 @@ def main():
     if v is None:
         raise SystemExit('✗ 场 %d 不在 vmap 里' % k)
     n_ax, a_ax, w_ax = variant_axes(v)
-    print('目录 %s；场 %d（变体 V%d）；a = %s'
-          % (d, k, v, np.array2string(a_ax, precision=4)))
-    print('  端面法向 ≈ ±a 的钉扎因子 M(a)/M0 = exp(−β_h·(a·n*)²) = exp(-6.477*%.4f) '
-          '= **%.3f**' % (float(a_ax @ n_ax) ** 2,
-                          float(np.exp(-6.477 * float(a_ax @ n_ax) ** 2))))
+    _AX = {'a': a_ax, 'w': w_ax, 'n': n_ax}[ax_name]
+    print('目录 %s；场 %d（变体 V%d）；**被测轴 = %s** = %s'
+          % (d, k, v, ax_name, np.array2string(_AX, precision=4)))
+    print('  该轴法向的钉扎因子 M/M0 = exp(−β_h·(u·n*)²−β_w·(u·w)²) = **%.4f**'
+          % float(np.exp(-6.477 * float(_AX @ n_ax) ** 2
+                         - 2.3 * float(_AX @ w_ax) ** 2)))
     print('  %-6s %-8s %-13s %-13s %-11s %s'
-          % ('step', '端面胞数', '−端面位置 nm', '+端面位置 nm', '两端间距', '沿 a 跨度'))
+          % ('step', '该面胞数', '−面位置 nm', '+面位置 nm', '两面间距', '沿该轴跨度'))
     for s in snaps:
         z = np.load(s)
         N = int(z['N'])
@@ -67,19 +72,19 @@ def main():
         inner = np.abs(pf) <= (bc - 2) * dx
         g = np.gradient(pf, dx, edge_order=2)
         gn = np.sqrt(sum(x ** 2 for x in g)) + 1e-30
-        ca2 = np.clip(sum(g[i] / gn * a_ax[i] for i in range(3)) ** 2, 0.0, 1.0)
+        ca2 = np.clip(sum(g[i] / gn * _AX[i] for i in range(3)) ** 2, 0.0, 1.0)
         ef = inner & (np.abs(pf) <= 1.5 * dx) & (ca2 > 0.81)
         ii = np.arange(N) * dx
-        pa = (a_ax[0] * ii[:, None, None] + a_ax[1] * ii[None, :, None]
-              + a_ax[2] * ii[None, None, :])
+        pu = (_AX[0] * ii[:, None, None] + _AX[1] * ii[None, :, None]
+              + _AX[2] * ii[None, None, :])
         own = (z['region'] == k)
-        span = float(np.ptp(pa[own])) * 1e9 if own.any() else float('nan')
+        span = float(np.ptp(pu[own])) * 1e9 if own.any() else float('nan')
         if int(ef.sum()) < 20:
             print('  %-6d %-8d %-13s %-13s %-11s %.0f'
                   % (int(z['step']), int(ef.sum()), '（太少）', '—', '—', span))
             continue
-        vv = pa[ef] * 1e9
-        c = float(np.median(pa[own])) * 1e9
+        vv = pu[ef] * 1e9
+        c = float(np.median(pu[own])) * 1e9
         lo, hi = vv[vv < c], vv[vv >= c]
         if lo.size < 10 or hi.size < 10:
             print('  %-6d %-8d %-13s %-13s %-11s %.0f'
