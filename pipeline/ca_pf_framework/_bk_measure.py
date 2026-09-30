@@ -250,14 +250,13 @@ def blocks(region, dx, vmap, eps0_var=None, npf_var=None, min_vox=MIN_SIG_VOX,
             mb = (lab == b)
             nvox = int(mb.sum())
             ids = [k for k in ks if bool((mb & (region == k)).any())]
-            info.append((v, nvox, len(ids), ids))
+            info.append((v, nvox, len(ids), ids, mb))
     out['nblk'] = len(info)
     sig = [t for t in info if t[1] >= min_vox]
     out['nblk_sig'] = len(sig)
     sig.sort(key=lambda t: -t[1])
     out['blk_laths'] = '/'.join(str(t[2]) for t in sig[:12])
     out['blk_vars'] = '/'.join(str(t[0]) for t in sig[:12])
-
     # ---- ★ R31：**逐块沿它自己的 n\*** 数板条（多块配置下"沿单一 n* 的柱剖面"无意义）
     #   为什么必须逐块（R31 实测）：`--multi-block --laths 1,1,3,3` 的算例里，
     #     全局 `nslab_n1` 给 4（沿块 0 的 n* 投影时把块 1 的 4 根也数进去了），
@@ -275,7 +274,7 @@ def blocks(region, dx, vmap, eps0_var=None, npf_var=None, min_vox=MIN_SIG_VOX,
         _al, _wl = [], []
         _nr = []
         _npr = []
-        for v, _nvox, _nlaths, ids in sig[:12]:
+        for v, _nvox, _nlaths, ids, _mb in sig[:12]:
             try:
                 n_b = np.asarray(axes_var[v][0], float)
                 a_b = np.asarray(axes_var[v][1], float)
@@ -289,9 +288,12 @@ def blocks(region, dx, vmap, eps0_var=None, npf_var=None, min_vox=MIN_SIG_VOX,
             n_b = n_b / (np.linalg.norm(n_b) + 1e-300)
             a_b = a_b / (np.linalg.norm(a_b) + 1e-300)
             w_b = w_b / (np.linalg.norm(w_b) + 1e-300)
-            m = np.zeros((N, N, N), bool)
-            for k in ids:
-                m |= (region == k)
+            # ★★★ R38（**P1-22**）：跨度必须只用**这个连通分量**的胞 ——
+            #   旧写法用 `m = ∪(region == k)`（该块覆盖的**场**的全部胞），
+            #   于是同一根板条**飘到远处的 1–2 胞孤儿也被算进 ptp**。
+            #   实测放大倍数：`mb1s` **2.21×**、`mb1` **2.51×**
+            #   （分量数 1 → 76–85，几乎全是孤儿）。
+            m = _mb
             ii = np.arange(N) * dx
             rel = [ii[:, None, None] - 0.0, ii[None, :, None] - 0.0,
                    ii[None, None, :] - 0.0]
@@ -861,6 +863,31 @@ def measure_state(region, dx, n_hab, w_ax, a_ax, vmap, r_col=300e-9,
     out['box_touch'] = bool(any(
         np.take(region, 0, axis=ax).max() > 0
         or np.take(region, N - 1, axis=ax).max() > 0 for ax in (0, 1, 2)))
+    # ★★★ R38（**P1-22**）：**孤儿免疫**的撞壁判据。
+    #   旧 `box_touch` 判的是"**任一**已转变胞落在盒面" ⇒ **一个 1 胞孤儿飘到壁面就置 1**。
+    #   实测代价（MB-1）：`mb1` 报了 **27 行** `box_touch=1`，而它的**核心** a 跨度只有
+    #   **2654 nm**（盒 12 µm）⇒ 那些"撞壁"极可能全是孤儿。
+    #   ⇒ 新增 `box_touch_core`：只看**最大连通分量**有没有碰到盒面。
+    #   （旧列保留 ⇒ 历史读数可复现；判据应改用新列。）
+    try:
+        _lab, _nlab = _label_periodic(np.isin(region, list(allowed)))
+        if _lab is not None and _nlab > 0:
+            _sz = np.bincount(_lab.ravel(), minlength=_nlab + 1)
+            _big = int(np.argmax(_sz[1:])) + 1
+            _mb = (_lab == _big)
+            out['box_touch_core'] = bool(any(
+                bool(np.take(_mb, 0, axis=ax).any())
+                or bool(np.take(_mb, N - 1, axis=ax).any()) for ax in (0, 1, 2)))
+            out['core_vox'] = int(_sz[_big])
+            out['ncomp_all'] = int(_nlab)
+        else:
+            out['box_touch_core'] = False
+            out['core_vox'] = 0
+            out['ncomp_all'] = 0
+    except Exception:                                           # pragma: no cover
+        out['box_touch_core'] = False
+        out['core_vox'] = -1
+        out['ncomp_all'] = -1
     return out
 
 

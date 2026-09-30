@@ -96,7 +96,9 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         'nblk_sig', 'blk_laths', 'blk_vars', 'n_var_sig', 'n_habit', 'f_var',
         'r_selfac',
         # ★ R31：**逐块沿它自己的 n\*** 数板条（多块配置下沿单一 n* 的柱剖面无意义）。
-        'blk_nlath', 'blk_span_nm', 'blk_alen_nm', 'blk_wlen_nm']
+        'blk_nlath', 'blk_span_nm', 'blk_alen_nm', 'blk_wlen_nm',
+        # ★ R38（P1-22）：**孤儿免疫**的撞壁判据与核心记账
+        'box_touch_core', 'core_vox', 'ncomp_all']
 assert len(COLS) == len(set(COLS))
 
 
@@ -941,6 +943,11 @@ def run(a):
             w_lath=_med(lambda k: mm['w_%d' % k]),
             a_lath=_med(lambda k: mm['a_%d' % k]),
             box_touch=int(mm['box_touch']),
+            # ★★★ R38（**P1-22**）：**孤儿免疫**的撞壁判据 + 核心/分量记账。
+            #   旧 `box_touch` 判"任一已转变胞落在盒面" ⇒ 一个 1 胞孤儿就置 1；
+            #   实测 MB-1 的 mb1 报了 27 行，而核心 a 跨度只有 2654 nm（盒 12 µm）。
+            box_touch_core=int(mm.get('box_touch_core', 0)),
+            core_vox=mm.get('core_vox', -1), ncomp_all=mm.get('ncomp_all', -1),
             finite=int(np.all(np.isfinite(g.phi))),
             psi_mean=(float(g.psi[np.isfinite(
                 lt.gtab[np.clip(karr_m, 0, g.nreg - 1),
