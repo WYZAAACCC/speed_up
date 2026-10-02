@@ -515,33 +515,45 @@ def _ckpt_gather(g, it, t_sim, drv, N, L, nv, nreg, vmap, tstep=None):
     return st
 
 
-def _ckpt_write(outdir, st, keep=2, atomic=True, milestone=False):
+def _ckpt_write(cdir, st, keep=2, atomic=True, milestone=False, seq=0):
     """★ **原子写 + 滑动窗口**（goal 任务(3)）。
 
+    ## ⚠ 三个**实测**踩过的坑（R581-ckpt-s1，都靠功能测试抓到）
+    1. **★ `np.savez_compressed(<路径>, ...)` 见到结尾不是 `.npz` 就**自己补 `.npz`****
+       ⇒ 原子写里那个 `…tmp` 会变成 `…tmp.npz` ⇒ `os.replace(tmp, final)` 的**源不存在**
+       报 `[Errno 2] No such file or directory: '…tmp' -> '…npz'`。
+       **修法**：写 `.tmp` 时**必须传文件对象**（numpy 不改文件对象的名字）。
+       实测（`_r581_savez_probe.py`）：传路径 `"b.npz.tmp"` ⇒ 新增 `['b.npz.tmp.npz']`；
+             传**文件对象** `"d.tmp"` ⇒ 新增 `['d.tmp']` ✓
+    2. **★ `cdir` 是**检查点目录本身**（不是 `outdir`）** —— 曾在调用方传
+       `outdir/ckpt` 而本函数又追加一次 ⇒ 写出 `ckpt/ckpt/` 两层。
+       **修法**：约定 `cdir` 就是最终目录，直接 `makedirs` 使用。
+    3. **★ A/B 交替**不能按 `step % 2` 决定**** —— 实测（`--ckpt-every 20`）
+       所有检查点都落在**偶数步** ⇒ **永远写 A** ⇒ "永远有一帧完整"的保证**失效**。
+       **修法**：按**已写出的检查点序号 `seq`** 交替（调用方维护计数器）。
+
     ## 命名
-    * **`n_keep == 2`**（默认）⇒ **A/B 交替**（`ckpt_A.npz` / `ckpt_B.npz`）
-      ⇒ **磁盘恒定，且**完全不需要删除****（goal 逐字推荐的做法）；
+    * **`n_keep == 2`**（默认）⇒ **A/B 交替**（`ckpt_A.npz` / `ckpt_B.npz`，按 `seq` 交替）
+      ⇒ **磁盘恒定、且**完全不需要删除****（goal 逐字推荐）；
     * **`n_keep != 2`** ⇒ 步号命名（`ckpt_%06d.npz`）+ 多余帧 `os.replace` 进
       `_superseded/`（**滚动名覆盖，不用 `rm`** —— 遵守硬禁令）；
     * **里程碑**（`ckptms_%06d.npz`）**不参与滑动**。
-
-    ## 原子性
-    `atomic=True` 时先写 `<name>.tmp` 再 `os.replace()` ⇒
-    **任何时刻都有一帧是完整的**（被 `kill` 也只会留一个 `.tmp`）。
     """
-    cdir = os.path.join(outdir, 'ckpt')
     os.makedirs(cdir, exist_ok=True)
     it = int(st['step'])
     if milestone:
         name = 'ckptms_%06d.npz' % it
     elif int(keep) == 2:
-        name = 'ckpt_%s.npz' % ('A' if (it % 2 == 0) else 'B')      # ★ A/B 交替
+        # ★ 按**写出序号**交替（不是 `it % 2` —— 见上文坑 3）
+        name = 'ckpt_%s.npz' % ('A' if (int(seq) % 2 == 0) else 'B')
     else:
         name = 'ckpt_%06d.npz' % it
     final = os.path.join(cdir, name)
     tmp = final + '.tmp'
     if atomic:
-        np.savez_compressed(tmp, **st)
+        # ★ 必须传**文件对象**：传路径的话 numpy 会把 `…tmp` 改成 `…tmp.npz`
+        with open(tmp, 'wb') as _fh:
+            np.savez_compressed(_fh, **st)
         os.replace(tmp, final)
     else:
         np.savez_compressed(final, **st)
@@ -1900,6 +1912,9 @@ def run(a):
     #   ⇒ 这里**只加一个初始值**，让检查点采集器能安全读它（**数值零影响**：
     #     既有的唯一赋值点照旧覆盖它，且没有任何读取点）。
     _qs_rel_last = None             # ⚠ **只写不读**（留档用；见上注）
+    # ★ R581-ckpt：**已写出的检查点序号**（A/B 交替必须按它，不能按 `step % 2`
+    #   —— 实测 `--ckpt-every 20` 时所有检查点都在偶数步 ⇒ 那样会**永远写 A**）。
+    _ckpt_seq = 0
     if _qs_clock:
         P('★★★★★ **准静态钟（1B）已启用**：ΔT = %.3f K（= 1/α_KM，**方案 A**，'
           '用户 2026-10-04 拍板；%s）⇒ 每档每块各 1 根；'
@@ -2661,7 +2676,9 @@ def run(a):
                         N, L, nv, int(getattr(g, 'nreg', nv + 1)), vmap, tstep=tstep)
                     _cp = _ckpt_write(_cdir, _st, keep=int(a.ckpt_keep),
                                       atomic=bool(int(a.ckpt_atomic)),
-                                      milestone=_is_ms)
+                                      milestone=_is_ms, seq=int(_ckpt_seq))
+                    if not _is_ms:
+                        _ckpt_seq += 1
                     if it % max(_ck, 1) == 0 or _is_ms:
                         P('  [ckpt %4d]%s 检查点落盘 %s（%.1f MB）'
                           % (it, ' **里程碑**' if _is_ms else '',
