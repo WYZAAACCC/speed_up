@@ -202,6 +202,42 @@ def check_assertions(T_of_t, t_max=None, n=200000, verbose=True):
     return ok_A, ok_B, info
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# ★★★ 适配层：**与 `linear_cool` 同一个签名**（为"一行换入"准备）
+# ══════════════════════════════════════════════════════════════════════════
+def lpbf_like_linear(T_start, T_end, t_cool, **kw):
+    """**签名与 `windowB_km.linear_cool(T_start, T_end, t_cool)` 逐字相同**。
+
+    ## 为什么要这一层（而不是直接把 `lpbf_thermal` 换进去）
+    引擎的调用点按 `linear_cool(T_start, T_end, t_cool)` 传参，并读
+    `.T_start/.T_end/.t_cool/.band`。**若换入的函数签名不同，调用点就得改** ⇒
+    **改动面变大、回归风险变大**。
+    **⇒ 本层把三参数映射到 LPBF 物理，并**保留**调用点读的那四个属性。**
+
+    ## 三参数怎么映射（**必须显式记账**）
+    | 引擎传入 | 本层怎么用 |
+    |---|---|
+    | `T_start` | → **Rosenthal 的初始温度 `T0`**（引擎的 `T_start` 是 athermal 时钟起点 `M_s−1/α_KM`；<br>⚠ 两者**物理含义不同**，本层取"初始温度"这一含义，并在 `.mapping_note` 里写明）|
+    | `T_end` | → **末温**（`.T_end` 原样透出，供调用点读）|
+    | `t_cool` | → **`t_reheat`（首次再热时刻）** 的**标度**（本层用 LPBF 自己的绝对时标，`t_cool` 只作标度参考）|
+
+    ⚠ **本层尚未做门 0/门 4 回归**（复核清单第 6 条）⇒ **不要在长跑上启用**。
+    """
+    f = lpbf_thermal(z0=kw.pop('z0', 0.0), n_cycle=kw.pop('n_cycle', N_CYCLE), **kw)
+    # 把调用点会读的属性按"引擎语义"重设
+    f.T_start = float(T_start)
+    f.T_end = float(T_end)
+    f.t_cool = float(t_cool)
+    f.band = (min(float(T_end), f.band[0]), max(float(T_start), f.band[1]))
+    f.mapping_note = dict(
+        T_start_engine=float(T_start), T_end_engine=float(T_end), t_cool_engine=float(t_cool),
+        T_start_used_as='Rosenthal 初始温度 T0（**与引擎的 athermal 时钟起点 `M_s−1/α_KM` 含义不同**）',
+        t_cool_used_as='首次再热时刻的**标度参考**（绝对时标仍用 LPBF 的：层间 68.8 s）',
+        lpbf_T_L=T_L, lpbf_T_S=T_S, lpbf_T_BETA=T_BETA, lpbf_M_S=M_S,
+        warned='⚠ 未做门 0/门 4 回归 ⇒ **不得在长跑上启用**')
+    return f
+
+
 if __name__ == '__main__':
     print('=' * 92)
     print('S14：真实 LPBF 热史 T(t) —— 契约与自洽性断言')
