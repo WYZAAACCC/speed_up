@@ -377,7 +377,7 @@ def _engine_sha():
     return json.dumps(h, sort_keys=True)
 
 
-def _ckpt_gather(g, it, t_sim, drv, N, L, nv, nreg, vmap, tstep=None):
+def _ckpt_gather(g, it, t_sim, drv, N, L, nv, nreg, vmap, tstep=None, P0=None):
     """★ **只读地**采集「续跑所需的全部状态」（goal 任务(1) 的 1a–1k）。
 
     **本函数不得修改 `g` 或任何入参** —— 它每步都可能被调用，
@@ -512,6 +512,17 @@ def _ckpt_gather(g, it, t_sim, drv, N, L, nv, nreg, vmap, tstep=None):
 
     # ── 步时统计（便于事后看"哪一段慢"）────────────────────────────
     st['tstep'] = np.asarray(tstep or [], float)
+    # ── ★★★★★ `P0`（F3 位置的**参考基准**）───────────────────────────
+    #   **这是门 1 实测抓出来的一个漏项（2026-10-02）**：
+    #   `P0` 是"第一次 `f3_pos_n` 有限"那一刻被钉下的**路径相关**量
+    #   （`_bk_exp.py` 主循环里 `if P0 is None and np.isfinite(pm): P0 = pm`）。
+    #   续跑时若不回填它，就会在**续跑的起步步**重新钉一个基准
+    #   ⇒ `f3_pos_dx` 整列**差一个常数**（实测差 **0.2456690**，6/6 行）
+    #   ⇒ **物理量（Vt/f_var/nf3/nf2）全对，只有这一列错** ——
+    #     正是 goal 反复警告的"看起来对但结果不对"那一类。
+    #   ★ 快照里本来就有 `f3_pos_p0_m`（`:2378-2381` 的注释正是为它写的），
+    #     检查点同样必须存。
+    st['f3_pos_p0_m'] = np.float64(P0 if P0 is not None else np.nan)
     return st
 
 
@@ -578,6 +589,162 @@ def _ckpt_write(cdir, st, keep=2, atomic=True, milestone=False, seq=0):
                 except Exception:
                     pass
     return final
+
+
+def _ckpt_restore(g, path, strict_prec=True, verbose=True):
+    """★ 从检查点**重建 + 回填**（goal 任务(2)）。
+
+    ## 铁律：**绝不用 `pickle` 恢复整个对象**
+    `windowB_par.ParCtx` 含 `ThreadPoolExecutor`(`windowB_par.py:121`) 与
+    `threading.local`(`:127`)，`dG_of_T`/`T_of_t`/`pf._h_src` 是闭包/绑定方法
+    ⇒ **都不可 pickle**。
+    **⇒ 本函数的做法**：**对象由调用方用同一命令行照常构造**（于是 `wtab`/`atab`/
+    `ncmp`/`Lam`/`K` 这些**可重建**状态与原来**逐位相同**），本函数**只回填
+    路径相关的状态**。
+
+    ## 返回
+    `(drv, meta)`：`drv` 是**驱动层**要覆盖的字典（`_qs_*` + 计数），
+    `meta` 是元信息（`step`/`t_s`/…），供调用方决定循环起点。
+    """
+    import pickle
+    z = np.load(path, allow_pickle=False)
+    got = set(z.files)
+    need = {'phi', 'step', 't_s', 'phi_prec', 'nuc_cfg_pkl', 'nuc_rng_state',
+            'nuc_sites', 'nuc_ok', 'drv_pkl', 'drv_dV'}
+    miss = need - got
+    if miss:
+        raise RuntimeError('检查点缺关键项 %s ⇒ 拒绝恢复（**不做半吊子恢复**）'
+                           % sorted(miss))
+
+    # ── 0) ★ 精度门（goal：**不许静默降精度**）────────────────────────
+    prec = str(np.asarray(z['phi_prec']).item())
+    cur = str(getattr(g, 'phi_prec', 'f64'))
+    if strict_prec and prec != cur:
+        raise RuntimeError(
+            '★ 精度不匹配：检查点是 `%s`，本次是 `%s` ⇒ **拒绝恢复**'
+            '（goal 硬要求：不得静默降精度；要换精度请显式改 `--phi-prec`）'
+            % (prec, cur))
+
+    # ── 1a) ★ 完整 φ（**就地写**，保持对象身份与 dtype）──────────────
+    phi = np.asarray(z['phi'])
+    if phi.shape != g.phi.shape:
+        raise RuntimeError('φ 形状不匹配：检查点 %s vs 本次 %s（N/nv/--laths 必须一致）'
+                           % (phi.shape, g.phi.shape))
+    g.phi[...] = phi
+
+    # ── 1b/1d) ★ `_nuc` 整字典 + RNG state + sites + `dbg['ok']` ─────
+    if getattr(g, '_nuc', None) is None:
+        raise RuntimeError('`g._nuc` 不存在 ⇒ 本次命令行没走引擎形核通道，'
+                           '与检查点不匹配（检查点是从 `use_engine` 的跑里存的）')
+    cfg = pickle.loads(z['nuc_cfg_pkl'].tobytes())          # 含 31 配置键 + dbg
+    if cfg:
+        g._nuc.update(cfg)
+    # ★ 单独再钉一次 `dbg['ok']`（它**驱动动力学**：`:2534` 用奇偶选 attach 端）
+    _dbg = g._nuc.get('dbg')
+    if isinstance(_dbg, dict) and 'nuc_ok' in got:
+        _dbg['ok'] = int(np.asarray(z['nuc_ok']).item())
+    if 'nuc_n_activated' in got:
+        g._nuc['n_activated'] = int(np.asarray(z['nuc_n_activated']).item())
+    # RNG：把位发生器的 state 装回去
+    _rs = z['nuc_rng_state'].tobytes()
+    if _rs:
+        _rng = g._nuc.get('rng')
+        if _rng is None:
+            raise RuntimeError('`_nuc[\'rng\']` 不在 ⇒ 无法恢复 RNG（**拒绝半吊子恢复**）')
+        _rng.bit_generator.state = pickle.loads(_rs)
+    # 位点池
+    _sit = np.asarray(z['nuc_sites'], float)
+    g._nuc['sites'] = [(int(round(_sit[i, 0])), np.array(_sit[i, 1:4], float))
+                       for i in range(_sit.shape[0])]
+
+    # ── 1c) 引擎计时 / 节拍 ─────────────────────────────────────────
+    for _k, _cast in (('t', float), ('T', float),
+                      ('_cnt', int), ('_t_since_reinit', float),
+                      ('_forced_reinit', int), ('_fp_cnt', int)):
+        if _k in got:
+            try:
+                setattr(g, _k, _cast(np.asarray(z[_k]).item()))
+            except Exception:
+                pass
+    if '_need_reinit' in got:
+        g._need_reinit = bool(int(np.asarray(z['_need_reinit']).item()))
+    if 'dG_max' in got:
+        g.dG_max = float(np.asarray(z['dG_max']).item())
+    if 'df' in got and getattr(g, 'df', None) is not None:
+        _df = np.asarray(z['df'])
+        if _df.shape == np.asarray(g.df).shape:
+            g.df[...] = _df
+
+    # ── 1e) ★ 热启动 / 口径状态 ─────────────────────────────────────
+    if 'ae_eps' in got and np.asarray(z['ae_eps']).size:
+        g._ae_eps = np.asarray(z['ae_eps'])
+    _pf = getattr(g, 'pf', None)
+    if _pf is not None:
+        if 'pf_eps0_lag' in got and np.asarray(z['pf_eps0_lag']).size:
+            _pf._eps0_lag = np.asarray(z['pf_eps0_lag'])
+        if 'pf_phi' in got and np.asarray(z['pf_phi']).size:
+            if getattr(_pf, 'phi', None) is not None:
+                _pf.phi[...] = np.asarray(z['pf_phi'])
+
+    # ── 1f) ★ `npref_tab`（`_npref_of()` 拿不到会 **raise**）────────
+    if 'npref_pkl' in got and z['npref_pkl'].size:
+        try:
+            g.npref_tab = pickle.loads(z['npref_pkl'].tobytes())
+        except Exception:
+            pass
+
+    # ── 1g) 可选通道（按开关）────────────────────────────────────────
+    for _k, _attr in (('c', 'c'), ('Gam_mol', 'Gam_mol'), ('Gam', 'Gam'),
+                      ('Gam_derived', '_Gam_derived'), ('psi', 'psi')):
+        _key = 'aux_' + _k
+        if _key in got and np.asarray(z[_key]).size:
+            _v = getattr(g, _attr, None)
+            if _v is not None and np.asarray(_v).shape == np.asarray(z[_key]).shape:
+                _v[...] = np.asarray(z[_key])
+            else:
+                setattr(g, _attr, np.asarray(z[_key]))
+
+    # ── 1h) ★ 模块全局（**不是实例属性** ⇒ 必须显式重设）────────────
+    try:
+        import windowB_surface as _ws
+        if 'g_ufv_mode' in got:
+            _ws.ufv_set_mode(str(np.asarray(z['g_ufv_mode']).item()))
+        if 'g_bbox_mode' in got:
+            _ws.bbox_set_mode(str(np.asarray(z['g_bbox_mode']).item()))
+        g._ufv_mode = getattr(_ws, '_UFV_MODE', getattr(g, '_ufv_mode', '?'))
+        g._bbox_mode = getattr(_ws, '_BBOX_MODE', getattr(g, '_bbox_mode', '?'))
+    except Exception as _e:
+        if verbose:
+            print('   ⚠ [resume] 模块全局重设失败：%s' % _e)
+
+    # ── 1i) ★ 外部注入开关（类内**从不赋值** ⇒ 必须显式设）─────────
+    if 'injected_pkl' in got and z['injected_pkl'].size:
+        try:
+            for _k, _v in pickle.loads(z['injected_pkl'].tobytes()).items():
+                setattr(g, _k, _v)
+        except Exception as _e:
+            if verbose:
+                print('   ⚠ [resume] 外部注入开关重设失败：%s' % _e)
+
+    # ── 2h) `par.grad_mode`（`:1274` 的既有做法）────────────────────
+    if getattr(g, 'par', None) is not None:
+        g.par.grad_mode = getattr(g, '_grad_mode', g.par.grad_mode)
+
+    # ── 1j) ★ 驱动层（返回给调用方去覆盖它的局部变量）──────────────
+    drv = {}
+    if 'drv_pkl' in got and z['drv_pkl'].size:
+        drv.update(pickle.loads(z['drv_pkl'].tobytes()))
+    drv['_qs_dV'] = [float(x) for x in np.asarray(z['drv_dV'], float).ravel()]
+    meta = dict(step=int(np.asarray(z['step']).item()),
+                t_s=float(np.asarray(z['t_s']).item()),
+                phi_prec=prec,
+                # ★ `P0`：F3 位置参考基准（**路径相关**；门 1 实测抓出来的漏项）
+                P0=(float(np.asarray(z['f3_pos_p0_m']).item())
+                    if 'f3_pos_p0_m' in got else None),
+                cmdline=str(np.asarray(z['cmdline']).item()) if 'cmdline' in got else '',
+                engine_sha=(str(np.asarray(z['engine_sha']).item())
+                            if 'engine_sha' in got else ''))
+    return drv, meta
 
 
 def read_series(path):
@@ -1990,7 +2157,105 @@ def run(a):
     except Exception as _e:                                     # pragma: no cover
         P('⚠ 块内界面自检失败（不影响仿真）：%s' % _e)
 
-    for it in range(0, a.steps + 1):
+    # ══════════════════════════════════════════════════════════════════════════
+    # ★★★★★ R581-ckpt（goal 任务(2)）：**从检查点恢复**（`--resume <ckpt>`）
+    #
+    #   ## 为什么放在这里（**这是本设计的关键**）
+    #   上面 981→2145 的全部构造/播种/自检**照常跑完** ⇒ 所有**可重建**的状态
+    #   （`wtab`/`atab`/`ncmp`/`Lam`/`K`/`kv`/`_XYZ`…）与**原跑逐位相同**；
+    #   本段**只覆盖路径相关的状态**（φ / `_nuc` / 计时节拍 / 驱动层准静态钟）。
+    #   ⇒ 这正是 goal 的「**同一命令行重建对象 + 逐项回填**」。
+    #
+    #   ## 语义（写死）
+    #   `--steps` = **绝对总步数** ⇒ 循环从 `ckpt.step + 1` 起，跑到 `--steps`。
+    #   ⚠ 不匹配（N/nv/φ 形状/`--phi-prec`）⇒ **硬失败**，不做半吊子恢复。
+    # ══════════════════════════════════════════════════════════════════════════
+    _it0 = 0
+    _rb_drv = None
+    if str(getattr(a, 'resume', '') or ''):
+        _rpath = str(a.resume)
+        # ★★★★★ 若给的是**目录** ⇒ 自动挑 `step` **最大**的那一帧。
+        #   为什么需要它（**冒烟实测的教训，2026-10-02**）：
+        #   A/B 交替命名下**文件名看不出步号** —— `ckpt_A.npz` 会被 step 0、20、40…
+        #   反复覆盖 ⇒ 手写"用 ckpt_A"**会拿到错的那一帧**（冒烟里就踩了：
+        #   想用 step 10，实际拿到 step 20，被守卫硬失败拦住）。
+        #   ⇒ 权威的步号在**文件内部**的 `step` 键，不在文件名里。
+        if os.path.isdir(_rpath):
+            _cand = []
+            for _f in sorted(os.listdir(_rpath)):
+                if not (_f.startswith('ckpt') and _f.endswith('.npz')):
+                    continue
+                try:
+                    with np.load(os.path.join(_rpath, _f), allow_pickle=False) as _z:
+                        _cand.append((int(np.asarray(_z['step']).item()), _f))
+                except Exception:
+                    pass
+            if not _cand:
+                raise SystemExit('❌ `--resume %s`：目录里没有可用的检查点'
+                                 '（找 `ckpt*.npz`）' % _rpath)
+            _cand.sort()
+            _rpath = os.path.join(_rpath, _cand[-1][1])
+            P('      （目录里有 %d 帧：%s ⇒ **自动选 step 最大**的 `%s`）'
+              % (len(_cand), ', '.join('%s@%d' % (f, s) for s, f in _cand),
+                 _cand[-1][1]))
+        P('   ★ **从检查点续跑**：%s' % _rpath)
+        _rb_drv, _rb_meta = _ckpt_restore(g, _rpath)
+        _it0 = int(_rb_meta['step']) + 1
+        if _it0 > a.steps:
+            raise SystemExit('❌ `--resume` 的检查点已是 step %d，而 `--steps %d` '
+                             '⇒ **没有可跑的步**（`--steps` 是**绝对总步数**，'
+                             '要续跑请传**更大**的 `--steps`）'
+                             % (_rb_meta['step'], a.steps))
+        P('      检查点 step=%d（t_s=%.6g，精度 %s）⇒ **从 step %d 跑到 %d**'
+          % (_rb_meta['step'], _rb_meta['t_s'], _rb_meta['phi_prec'],
+             _it0, a.steps))
+        # ★ 版本哈希对账（goal 判据⑦：复现命令 + seed + 版本哈希）
+        _now_sha = _engine_sha()
+        if _rb_meta.get('engine_sha') and _rb_meta['engine_sha'] != _now_sha:
+            P('   ⚠⚠ **引擎版本与检查点不同**（检查点：%s / 现在：%s）'
+              % (_rb_meta['engine_sha'][:60], _now_sha[:60]))
+            P('      ⇒ 不保证逐位一致（这是**记账**，不是失败）')
+        else:
+            P('      引擎版本哈希一致 ✓')
+        # ── 把驱动层变量**覆盖**掉（它们在 1882-1895 已初始化）──────────
+        if _rb_drv:
+            _qs_T = float(_rb_drv.get('_qs_T', _qs_T))
+            _qs_stage = int(_rb_drv.get('_qs_stage', _qs_stage))
+            _qs_dt = _rb_drv.get('_qs_dt', _qs_dt)
+            _qs_stop = bool(_rb_drv.get('_qs_stop', _qs_stop))
+            _qs_conv = bool(_rb_drv.get('_qs_conv', _qs_conv))
+            _qs_ref = _rb_drv.get('_qs_ref', _qs_ref)
+            _qs_relax = int(_rb_drv.get('_qs_relax', _qs_relax))
+            _qs_V = _rb_drv.get('_qs_V', _qs_V)
+            # ★ `_qs_dV` 是**滑动窗口列表**（顺序敏感）⇒ 必须还原成 list
+            _qs_dV = list(_rb_drv.get('_qs_dV', _qs_dV) or [])
+            _qs_shrink_n = int(_rb_drv.get('_qs_shrink_n', _qs_shrink_n))
+            _qs_shrink_v = _rb_drv.get('_qs_shrink_v', _qs_shrink_v)
+            _qs_shrink_used = int(_rb_drv.get('_qs_shrink_used', _qs_shrink_used))
+            n_ath_ev = int(_rb_drv.get('n_ath_ev', n_ath_ev))
+            n_ath_tgt = int(_rb_drv.get('n_ath_tgt', n_ath_tgt))
+            n_eng_ev = int(_rb_drv.get('n_eng_ev', n_eng_ev))
+            n_fresh_fallback = int(_rb_drv.get('n_fresh_fallback', n_fresh_fallback))
+            _nm = _rb_drv.get('n_mode')
+            if isinstance(_nm, dict):
+                n_mode.clear()
+                n_mode.update(_nm)
+            # ★ 物理时刻：以检查点为准（它是浮点累加量，**不能由 step×dt 重建**）
+            t_sim = float(_rb_meta['t_s'])
+            # ★★★★★ `P0`（F3 位置参考基准）—— **门 1 实测抓出来的漏项**：
+            #   它是"第一次 `f3_pos_n` 有限"那一刻钉下的路径相关量；不回填它，
+            #   `f3_pos_dx` 整列会**差一个常数**（实测 0.2456690，6/6 行），
+            #   而物理量全对 ⇒ 正是"看起来对但结果不对"那一类。
+            _p0 = _rb_meta.get('P0')
+            if _p0 is not None and np.isfinite(_p0):
+                P0 = float(_p0)
+                P('      ★ `P0` 已回填 = %.6g（F3 位置基准；不回填会让 `f3_pos_dx` 差常数）'
+                  % P0)
+            P('      驱动层已回填：T=%.2f K 档=%d 弛豫=%d 收敛=%s 窗口=%d 项 '
+              't_sim=%.6g' % (_qs_T, _qs_stage, _qs_relax, _qs_conv,
+                              len(_qs_dV), t_sim))
+
+    for it in range(_it0, a.steps + 1):
         # ★ R477（1B）：到 T_end **且该档已弛豫收敛** ⇒ 正常收工（不是步数用尽）。
         if _qs_clock and _qs_stop and _qs_conv:
             P('   ★ 准静态钟：T 已到 T_end 且本档收敛 ⇒ 提前结束于 step %d'
@@ -2673,7 +2938,8 @@ def run(a):
                              n_ath_ev=n_ath_ev, n_ath_tgt=n_ath_tgt,
                              n_eng_ev=n_eng_ev, n_fresh_fallback=n_fresh_fallback,
                              n_mode=dict(n_mode)),
-                        N, L, nv, int(getattr(g, 'nreg', nv + 1)), vmap, tstep=tstep)
+                        N, L, nv, int(getattr(g, 'nreg', nv + 1)), vmap, tstep=tstep,
+                        P0=P0)
                     _cp = _ckpt_write(_cdir, _st, keep=int(a.ckpt_keep),
                                       atomic=bool(int(a.ckpt_atomic)),
                                       milestone=_is_ms, seq=int(_ckpt_seq))
@@ -3049,6 +3315,21 @@ def main():
                          '⇒ 给"想往回退一大截"留一条路。')
     ap.add_argument('--ckpt-dir', default='',
                     help='检查点目录（默认 `<outdir>/ckpt`）。')
+    ap.add_argument('--resume', default='',
+                    help='**[默认空 = 不续跑]** 从给定的检查点 `.npz`'
+                         '（**或检查点**目录** ⇒ 自动挑 `step` 最大的一帧**）'
+                         '**原生精度续跑**。'
+                         '语义（**写死**）：`--steps` 仍是**绝对总步数**'
+                         '（不是"再跑多少步"）⇒ 从 `ckpt.step + 1` 跑到 `--steps`。'
+                         '⚠ 要求：**命令行其余部分与存检查点时逐字相同**'
+                         '（N/nv/--laths/物理参数/算子开关/`--phi-prec`）；'
+                         '不匹配 ⇒ **硬失败**（不做半吊子恢复）。'
+                         '⚠ 权威步号在**文件内部**的 `step` 键 —— A/B 交替命名下'
+                         '**文件名看不出步号**（`ckpt_A.npz` 会被反复覆盖）。'
+                         '⚠ **绝不用 `pickle` 恢复整个对象** —— `par` 含 '
+                         '`ThreadPoolExecutor`/`threading.local`，`dG_of_T`/`pf._h_src` '
+                         '是闭包 ⇒ 都不可 pickle；本实现走「**同一命令行重建对象 + '
+                         '逐项回填**」。')
     ap.add_argument('--laths', default='1,1,1,1,1,1')
     # ★★★ R31（目标第 (2) 项 J-4）：**多块播种**。
     #   `--laths 3,3` ⇒ 2 块（变体 1 的 3 根 + 变体 2 的 3 根）。
