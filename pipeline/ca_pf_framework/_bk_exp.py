@@ -2793,6 +2793,24 @@ def run(a):
         pm = mm['f3_pos_n']
         if P0 is None and np.isfinite(pm):
             P0 = pm
+        # ★★★★★ R581-T5R-s78：**插桩**（诊断第 8 条的 `P0` 未恢复之谜，`§17.3`）
+        #   ## 为什么用**环境变量门控**
+        #     只有设了 `T5_P0DBG=1` 才打印 ⇒ **对正常运行零影响**（不设时连判断都不做代价极小），
+        #     且**不改任何判定逻辑** ⇒ **不影响数值路径**（可安全地跑在长跑/短臂上）。
+        #   ## 打什么（§17.3 预先写死）
+        #     `step / P0 / pm / isfinite(pm) / (P0 is None) / 本步是否写检查点`
+        #   ## 判据（§17.4）
+        #     * `pm` 某步变有限、该步 `P0 is None` 却没被钉住 ⇒ **顺序问题**；
+        #     * `pm` 变有限、`P0` 不是 `None` 却写 `nan` ⇒ **写入点读错变量**；
+        #     * `pm` **始终**不有限 ⇒ **真因在 `pm` 的恢复路径**（与 `P0` 无关）。
+        if os.environ.get('T5_P0DBG', '') not in ('', '0'):
+            try:
+                P('      [P0DBG] step=%-6d P0=%-14s pm=%-14s isfin(pm)=%-5s (P0 is None)=%s'
+                  % (it, ('None' if P0 is None else ('%.8g' % P0)),
+                     ('%.8g' % pm) if np.isfinite(pm) else str(pm),
+                     bool(np.isfinite(pm)), P0 is None))
+            except Exception:
+                pass
         nc = [mm['ncomp_%d' % k] for k in range(1, nv + 1)]
         ncb = [mm['ncompbig_%d' % k] for k in range(1, nv + 1)]
         # ★★ Round 10 修：中位数**必须只统计非空场**。
