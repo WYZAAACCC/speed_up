@@ -224,15 +224,29 @@ def lpbf_like_linear(T_start, T_end, t_cool, **kw):
     ⚠ **本层尚未做门 0/门 4 回归**（复核清单第 6 条）⇒ **不要在长跑上启用**。
     """
     f = lpbf_thermal(z0=kw.pop('z0', 0.0), n_cycle=kw.pop('n_cycle', N_CYCLE), **kw)
-    # 把调用点会读的属性按"引擎语义"重设
+    # ── ★★★ 第 64 轮修：`.band` 的**语义分歧**（我上一轮自己识别出的风险）──────────
+    #   ## 分歧是什么
+    #     `linear_cool` 的 `.band` 是**冷却区间**（`lo~hi` 都在 `[T_end, T_start]` 内，
+    #     **不高于 `T_start`**）。而 LPBF 热史的**全温程到 `T_L = 1923 K`**（热循环会重新加热）
+    #     ⇒ 若把全温程塞进 `.band`，调用点见到的是**"冷却区间竟然高于起始温度"**这种自相矛盾的东西，
+    #       拿它做分箱/校验的行为**会变**。
+    #   ## 修法（**保持调用点语义不变**）
+    #     * `.band`  ← **只报冷却区间**（与 `linear_cool` 同语义）⇒ 调用点行为**不变**；
+    #     * `.band_full` ← **新增**，报**全温程**（含再热峰值）⇒ 新信息不丢，但**不污染旧语义**。
+    #   ⇒ 这样"换入"对调用点是**语义兼容**的，而需要全温程的地方显式读 `.band_full`。
+    _full_lo = min(float(T_end), f.band[0])
+    _full_hi = max(float(T_start), f.band[1])
+    f.band_full = (_full_lo, _full_hi)          # ★ 全温程（含再热峰值，最高的到 T_L）
+    f.band = (float(T_end), float(T_start))     # ★ 冷却区间（与 linear_cool 同语义）
     f.T_start = float(T_start)
     f.T_end = float(T_end)
     f.t_cool = float(t_cool)
-    f.band = (min(float(T_end), f.band[0]), max(float(T_start), f.band[1]))
     f.mapping_note = dict(
         T_start_engine=float(T_start), T_end_engine=float(T_end), t_cool_engine=float(t_cool),
         T_start_used_as='Rosenthal 初始温度 T0（**与引擎的 athermal 时钟起点 `M_s−1/α_KM` 含义不同**）',
         t_cool_used_as='首次再热时刻的**标度参考**（绝对时标仍用 LPBF 的：层间 68.8 s）',
+        band_semantics='`.band` = **冷却区间**（与 `linear_cool` 同语义，调用点行为不变）；'
+                       '`.band_full` = **全温程**（含再热峰值，最高到 T_L）',
         lpbf_T_L=T_L, lpbf_T_S=T_S, lpbf_T_BETA=T_BETA, lpbf_M_S=M_S,
         warned='⚠ 未做门 0/门 4 回归 ⇒ **不得在长跑上启用**')
     return f
