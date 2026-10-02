@@ -224,32 +224,77 @@ def lpbf_like_linear(T_start, T_end, t_cool, **kw):
     ⚠ **本层尚未做门 0/门 4 回归**（复核清单第 6 条）⇒ **不要在长跑上启用**。
     """
     f = lpbf_thermal(z0=kw.pop('z0', 0.0), n_cycle=kw.pop('n_cycle', N_CYCLE), **kw)
+    # ── ★★★★★ 第 70 轮修：**时间原点对齐**（§9.3 实测的 +1074 K 错位）──────────────
+    #   ## 错位是什么（§9.3 实测）
+    #     引擎的 `t=0` = **athermal 时钟起点**（`T = T_start`，**已在 M_s 以下**）；
+    #     而 `lpbf_thermal` 的 `t=0` = **激光到达**（`T` 从 `T0` 升起，`rosenthal(0,0)→∞` 截断到 `T_L`）
+    #     ⇒ 实测 **`T_lpbf(0) = 1923 K` vs `T_linear(0) = 849 K` ⇒ 差 +1074 K**。
+    #   ## 修法
+    #     反解 `t_off` 使 `core(t_off) = T_start`，然后返回 `lambda t: core(t + t_off)`。
+    #     **契约 3/4 不受影响**：仍是纯函数、仍无全局状态（`t_off` 是构造期常量）。
+    #   ## ⚠ 反解必须**取冷却段的那个交点**（不是升温段的）
+    #     历史里 `T = T_start` 会出现**两次**：升温段（第一次穿过）与降温段（回落时）。
+    #     引擎的 `t=0` 对应**降温段**那个（因为时钟是"开始冷却"时启动的）。
+    _T_start_eng = float(T_start)
+    t_off = 0.0
+    try:
+        _tmax = 4.0 * f.dbg['t4'] + 5.0 * 68.8
+        _n = 40000
+        _prev = None
+        _lo = None
+        for _i in range(_n + 1):
+            _t = _tmax * _i / _n
+            _T = f(_t)
+            if _prev is not None and _prev >= _T_start_eng > _T:
+                _lo = _tmax * (_i - 1) / _n        # ★ **下降**穿过 ⇒ 取它
+            _prev = _T
+        if _lo is not None:                        # 二分细化
+            _a, _b = _lo, _lo + _tmax / _n
+            for _ in range(60):
+                _m = 0.5 * (_a + _b)
+                if f(_m) > _T_start_eng:
+                    _a = _m
+                else:
+                    _b = _m
+            t_off = 0.5 * (_a + _b)
+    except Exception:
+        t_off = 0.0                                # 反解失败 ⇒ 不偏移（并显式记账）
+
+    _core = f
+
+    def _shifted(t, _c=_core, _o=t_off):
+        """**纯函数**（`_c`/`_o` 都是默认参数的绑定值，不读全局态）。"""
+        return _c(t + _o)
+
+    # 把契约属性搬到新对象上（**属性名一个不少**）
+    _shifted.T_start = _T_start_eng
+    _shifted.T_end = float(T_end)
+    _shifted.t_cool = float(t_cool)
     # ── ★★★ 第 64 轮修：`.band` 的**语义分歧**（我上一轮自己识别出的风险）──────────
-    #   ## 分歧是什么
-    #     `linear_cool` 的 `.band` 是**冷却区间**（`lo~hi` 都在 `[T_end, T_start]` 内，
-    #     **不高于 `T_start`**）。而 LPBF 热史的**全温程到 `T_L = 1923 K`**（热循环会重新加热）
-    #     ⇒ 若把全温程塞进 `.band`，调用点见到的是**"冷却区间竟然高于起始温度"**这种自相矛盾的东西，
-    #       拿它做分箱/校验的行为**会变**。
+    #   `linear_cool` 的 `.band` 是**冷却区间**（不高于 `T_start`）；
+    #   而 LPBF 热史的全温程到 `T_L = 1923 K`（热循环会重新加热）。
     #   ## 修法（**保持调用点语义不变**）
-    #     * `.band`  ← **只报冷却区间**（与 `linear_cool` 同语义）⇒ 调用点行为**不变**；
-    #     * `.band_full` ← **新增**，报**全温程**（含再热峰值）⇒ 新信息不丢，但**不污染旧语义**。
-    #   ⇒ 这样"换入"对调用点是**语义兼容**的，而需要全温程的地方显式读 `.band_full`。
-    _full_lo = min(float(T_end), f.band[0])
-    _full_hi = max(float(T_start), f.band[1])
-    f.band_full = (_full_lo, _full_hi)          # ★ 全温程（含再热峰值，最高的到 T_L）
-    f.band = (float(T_end), float(T_start))     # ★ 冷却区间（与 linear_cool 同语义）
-    f.T_start = float(T_start)
-    f.T_end = float(T_end)
-    f.t_cool = float(t_cool)
-    f.mapping_note = dict(
+    #     * `.band`      ← **只报冷却区间**（与 `linear_cool` 同语义）⇒ 调用点行为**不变**；
+    #     * `.band_full` ← **新增**，报**全温程**（含再热峰值）⇒ 新信息不丢、**不污染旧语义**。
+    _full_lo = min(float(T_end), _core.band[0])
+    _full_hi = max(_T_start_eng, _core.band[1])
+    _shifted.band_full = (_full_lo, _full_hi)
+    _shifted.band = (float(T_end), _T_start_eng)
+    _shifted.peaks = _core.peaks
+    _shifted.dbg = dict(_core.dbg, t_off=t_off,
+                        T_at_0=_shifted(0.0), T_start_target=_T_start_eng,
+                        offset_ok=abs(_shifted(0.0) - _T_start_eng) <= 1.0)
+    _shifted.mapping_note = dict(
         T_start_engine=float(T_start), T_end_engine=float(T_end), t_cool_engine=float(t_cool),
-        T_start_used_as='Rosenthal 初始温度 T0（**与引擎的 athermal 时钟起点 `M_s−1/α_KM` 含义不同**）',
+        T_start_used_as='引擎 t=0 处的温度（**athermal 时钟起点**）⇒ 与 LPBF 历史**反解对齐**',
+        t_off_s=round(t_off, 9),
+        time_origin='★ 已对齐：`_shifted(0) == T_start`（§9.3 的 +1074 K 错位已修）',
         t_cool_used_as='首次再热时刻的**标度参考**（绝对时标仍用 LPBF 的：层间 68.8 s）',
         band_semantics='`.band` = **冷却区间**（与 `linear_cool` 同语义，调用点行为不变）；'
                        '`.band_full` = **全温程**（含再热峰值，最高到 T_L）',
         lpbf_T_L=T_L, lpbf_T_S=T_S, lpbf_T_BETA=T_BETA, lpbf_M_S=M_S,
         warned='⚠ 未做门 0/门 4 回归 ⇒ **不得在长跑上启用**')
-    return f
+    return _shifted
 
 
 if __name__ == '__main__':
