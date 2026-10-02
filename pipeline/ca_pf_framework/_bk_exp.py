@@ -1037,7 +1037,38 @@ def run(a):
         _ok_o, _ratio_o, _ = CL.ordered_ok(_q, MOB, _alpha, _L_lath,
                                            dG_worst=_dG_start)
         _n_law = CL.n_lath_int(_Tend, _alpha)
-        _T_of_t = KM.linear_cool(_Tstart, _Tend, (_Tstart - _Tend) / _q)
+        # ★★★★★ R581-T5R-s68：**S14 的换入点**（新开关 `--therm-hist`，**默认 `linear`**）
+        #   ## 为什么在这里换（而不是改 `KM.linear_cool`）
+        #     `windowB_km.py:138 linear_cool` 的 docstring **自称占位**：
+        #     「真实 LPBF 冷却曲线**不是**线性的……换真实曲线时**只需要换这个函数**（接口 `t → T`）」
+        #     ⇒ 本行**就是**那个"只需要换"的地方。
+        #   ## ★ 默认档位不变 ⇒ 归档路径**逐位不变**
+        #     `--therm-hist linear`（**默认**）走**原来那一行**，一个字都没改
+        #     ⇒ 门 0/门 4 的"默认档逐位相同"（复核清单 **6a**）**结构上成立**。
+        #   ## ⚠⚠ `lpbf` 档**尚未**通过复核清单 6a/6b/6c
+        #     换入的适配层在 `_t5_therm.py`（契约 4 条 + 两条自洽性断言已 PASS），
+        #     但**门 0/门 4 回归、配对对照臂、`lpbf` 档下的续跑逐位**都**未做**。
+        #     ⇒ **在 6a/6b/6c 全过之前，`lpbf` 档不得用于任何结论。**
+        #     口径见 `R581_T5_THERM_FRAME.md §8`。
+        if str(getattr(a, 'therm_hist', 'linear')) == 'lpbf':
+            try:
+                import _t5_therm as _TH
+                _T_of_t = _TH.lpbf_like_linear(_Tstart, _Tend,
+                                               (_Tstart - _Tend) / _q)
+                _df_start = float(KM.drive_of_T(_Tstart, T0_TI64, DS_REF))
+                P('★★★★★ **热史档 = `lpbf`**（S14 换入）：5 次热循环、峰值 %s'
+                  % (tuple(round(p, 1) for p in _T_of_t.peaks),))
+                P('   `.band`（冷却区间）= %s   `.band_full`（全温程）= %s'
+                  % (_T_of_t.band, _T_of_t.band_full))
+                P('   ⚠⚠ **未过复核清单 6a/6b/6c** ⇒ **不得用于任何结论**'
+                  '（见 `R581_T5_THERM_FRAME.md §8`）')
+            except Exception as _e:
+                P('⚠⚠ `--therm-hist lpbf` 装载失败（%s: %s）⇒ **回退到 linear**'
+                  % (type(_e).__name__, str(_e)[:60]))
+                _T_of_t = KM.linear_cool(_Tstart, _Tend, (_Tstart - _Tend) / _q)
+        else:
+            # ★ 归档路径：**与改动前逐字相同**
+            _T_of_t = KM.linear_cool(_Tstart, _Tend, (_Tstart - _Tend) / _q)
         _dG_of_T = (lambda T: KM.drive_of_T(T, T0_TI64, DS_REF))
         _df_start = float(_dG_of_T(_Tstart))
         P('★★★ R29 athermal 形核律：α_KM=%.4e /K  冷速 q=%.4e K/s（%s）'
@@ -3767,6 +3798,14 @@ def main():
                     help='athermal 钟：有序比目标（Δt_grow/Δt_nuc），<1 才有安全余量')
     ap.add_argument('--T-start', type=float, default=0.0, help='0 = 用 M_s')
     ap.add_argument('--T-end', type=float, default=298.0)
+    # ★★★★★ R581-T5R-s68（S14 换入）：**热史档**
+    #   `linear`（**默认**）= 原来的 `KM.linear_cool`，**逐字未改** ⇒ 归档路径逐位不变；
+    #   `lpbf`          = `_t5_therm.lpbf_like_linear`（5 次热循环、峰值按文献温区）。
+    #   ⚠⚠ **`lpbf` 档尚未过复核清单 6a/6b/6c**（门 0/门 4 回归、配对臂、该档下续跑逐位）
+    #      ⇒ **不得用于任何结论**。口径见 `R581_T5_THERM_FRAME.md §8`。
+    #   ⚠ 若 `lpbf` 装载失败，代码会**显式打印并回退到 `linear`**（不静默）。
+    ap.add_argument('--therm-hist', default='linear', choices=('linear', 'lpbf'),
+                    help='热史：linear（默认，归档）| lpbf（S14，未过回归，勿用于结论）')
     # ★★★ R29：`--closed` —— **一条命令**拿到闭环配置（见 `_apply_closed`）。
     ap.add_argument('--closed', action='store_true',
                     help='由 windowB_closure.recommend() 推出并套用全部闭环参数')
