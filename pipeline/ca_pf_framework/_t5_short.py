@@ -58,8 +58,19 @@ def build(a, switches):
              #   ⇒ **收益 ≫ 代价 ⇒ 改成跟随 `--snap-every`。**
              #   ⚠ 只影响**新起**的臂；正在跑的臂不受影响（其 band 仍是每 200 步）。
              '--phi-band-every', str(a.snap_every),
-             # ★★★ R581-T5R-s69：**S14 热史档透传**（默认 `linear` ⇒ 与归档逐字相同）
+             # ★★★ R581-T5R-s112：**S14 热史档透传**（默认 `linear` ⇒ 与归档逐字相同）
              '--therm-hist', str(getattr(a, 'therm_hist', 'linear')),
+             # ★★★★★ R581-T5R-s112：**`--nuc-fresh-every` 透传**（默认不传 ⇒ 引擎自动取 `K = n(T_end)`）
+             #   ## 为什么要它（§111 的方案②）
+             #     `fresh` 通道**只在每 `K` 个事件**尝试一次；长跑到 step 701 才出现事件 #24
+             #     ⇒ **小臂到不了第一个 `K` 周期** ⇒ 拿不到 `fresh_*` 归因计数。
+             #     显式传一个**更小的 K** 可让短诊断臂**更快尝试 `fresh`** ⇒ 拿到**被拒原因**。
+             #   ⚠ **记账**：小臂的 `K` 与长跑不同 ⇒ 它只能回答"**`fresh` 为什么被拒**"，
+             #     **不能**回答"长跑里会不会成功"（后者要靠等长跑自己到事件 47/70）。
+             #   ⚠ 默认 `0` ⇒ **一个参数都不传** ⇒ 长跑/归档路径**逐字不变**。
+             #   ⚠⚠ **s112 留痕（我犯的错，已修）**：第一版我在这里写成 `] + (…)`，
+             #     **与原第 85 行已有的 `] +` 冲突** ⇒ `SyntaxError`（`_t5_short.py` 一度不可用，
+             #     **会影响长跑的恢复**）。修法：**并入原有的 `+` 链**（见下方）。
              '--eng-cadence', '30', '--nthreads', str(a.nthreads),
              '--plate-L', '1000', '--plate-W', '500', '--plate-T', '510',
              '--gamma0', '0.25', '--beta-h', '6.477', '--grow-stack',
@@ -133,6 +144,12 @@ def main():
     #       而 6b 的判据据此报 FAIL。**是判据先失败、我才发现**（若没跑，会以为"还在待测"）。
     ap.add_argument('--therm-hist', default='linear', choices=('linear', 'lpbf'),
                     help='热史：linear（默认，归档）| lpbf（S14，未过 6a/6b/6c 勿用于结论）')
+    # ★★★★★ R581-T5R-s112：**`--nuc-fresh-every`**（`fresh` 通道的调度周期）
+    #   `0`（**默认**）⇒ **不传** ⇒ 引擎自动取 `K = n(T_end) = 23` ⇒ 归档路径逐字不变；
+    #   `>0` ⇒ 显式传给引擎 ⇒ **诊断用**（让短臂更快尝试 `fresh`，拿被拒原因）。
+    #   ⚠ 小臂的 `K` 与长跑不同 ⇒ 只能回答"为什么被拒"，不能回答"长跑里会不会成功"。
+    ap.add_argument('--nuc-fresh-every', type=int, default=0,
+                    help='fresh 通道周期（0=引擎自动取 K=n(T_end)；>0=诊断用）')
     ap.add_argument('--B', type=int, default=5)
     ap.add_argument('--steps', type=int, default=40)
     ap.add_argument('--every', type=int, default=5)
