@@ -3,7 +3,7 @@
 """当前工作全景（一页对齐）—— Ti64 LPBF 晶界 Gibbs 面支线。
 
 本图每一条数字都与代码 / 结果文件逐项核对过，来源：
-  pipeline/RESEARCH_INTENT_FULL.md            P1 / P2 / 防跑偏清单
+  pipeline/RESEARCH_INTENT.md                 研究意图 / 路线 / 硬约束（唯一权威）
   pipeline/gibbs/README.md                    §3 1D 验证 / §4 2D 副本 / §6 待办 / §7 修法A
   pipeline/gibbs/gibbs_physics.py             ΔH_seg / s(T) / Γ(923K) / w_GB 反解
   pipeline/gibbs/results_p3c/g_out.csv        3D 体相↔面守恒耦合

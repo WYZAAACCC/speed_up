@@ -22,6 +22,7 @@ import os
 import sys
 import csv
 import glob
+import json
 import argparse
 
 import numpy as np
@@ -101,11 +102,32 @@ for d in a.dirs:
              S['ang_a_deg'][last], fill_cal[last], S['fill_n'][last],
              int(S['ncomp'][last]), S['gmed'][last]))
     # 守卫汇总
+    # ★ 记账（见台账 B-6）：`ncomp>1` **只对单核**是污染。多核臂里
+    #   `ncomp` 从 `nseed` 递减到 1 正是"多个核 → 合并"的**目标现象**。
+    #   ⇒ 先读 `meta.json` 的 `nseed` 决定怎么报，否则会把正常状态报成告警。
     nb = int(np.nansum(S['box_touch']))
-    ng = int(np.nansum((S['ncomp'] > 1).astype(float)))
     nh = int(np.nansum(S['band_bad']))
-    print('   守卫：盒壁 %d 次；分量>1 %d 次；带病 %d 次；非有限 %d 次'
-          % (nb, ng, nh, int(np.sum(~np.isfinite(S['V'])))))
+    nseed = None
+    _mp = os.path.join(d, 'meta.json')
+    if os.path.exists(_mp):
+        try:
+            with open(_mp) as _f:
+                nseed = json.load(_f).get('nseed')
+        except Exception as _e:                                  # noqa: BLE001
+            print('   ⚠ 读不到 meta.json 的 nseed（%s）⇒ 按单核口径报守卫'
+                  % type(_e).__name__)
+    if nseed is not None and nseed > 1:
+        nsig = S.get('nsig', np.full(n, np.nan))
+        nsup = int(np.nansum((nsig > nseed).astype(float)))
+        print('   守卫（**多核臂 nseed=%d**）：盒壁 %d 次；带病 %d 次；非有限 %d 次；'
+              '`nsig>nseed` %d 次'
+              % (nseed, nb, nh, int(np.sum(~np.isfinite(S['V']))), nsup))
+        print('      （`ncomp` 中位 %.0f —— 多核下 >1 是**正常**的，不作为告警）'
+              % np.nanmedian(S['ncomp']))
+    else:
+        ng = int(np.nansum((S['ncomp'] > 1).astype(float)))
+        print('   守卫（单核）：盒壁 %d 次；分量>1 %d 次；带病 %d 次；非有限 %d 次'
+              % (nb, ng, nh, int(np.sum(~np.isfinite(S['V'])))))
     if nb:
         i = int(np.argmax(S['box_touch'] > 0))
         print('   ⛔ G-1 首次触发于 step %d ⇒ **该步及之后的形貌读数无效**（R24）'
@@ -164,21 +186,88 @@ for d in a.dirs:
             print('   ⇒ 逐分量 **ΔL:ΔW:ΔT = 1 : %.3f : %.3f**（设计 1 : %.3f : %.3f）'
                   % (slW / slL, slT / slL, np.exp(-2.3), np.exp(-3.5)))
         # B-1 平行性
-        al = S['align_deg'][np.isfinite(S['align_deg'])]
-        if al.size:
-            print('   B-1 各分量长轴与 `a` 的夹角：起始 %.2f° → 末态 %.2f° ；最大 %.2f°'
-                  '  ⇒ %s' % (al[0], al[-1], al.max(),
-                              '**通过**（≤20°）' if al.max() <= 20 else '**不通过**'))
+        # ⚠ 本判据经历过两次修正，**两次都是"量具有问题"而不是物理**：
+        #   ① 原来用「**全程最大**中位夹角 ≤20°」⇒ 被单个瞬态绑架
+        #      （`e4_lath6` 起末态 0.11°/0.33°，却因某一步 = 90.00° 判不通过）
+        #      ⇒ 改成**双条件**（末态 ≤20° 且 ≥50% 采样 ≤20°）。
+        #   ② 台账 **B-17**：所用角度是 **PCA 主轴0**，而它在**两个最大奇异值近简并**时
+        #      **没有定义**（SVD 在那个子空间里任选基）。实测 `e5_equi6` σ=[2631.6,2456.3,181.]
+        #      ⇒ σ₂/σ₁=0.93，主轴0/1 给 83.48°/6.52°（**同一平面的两条轴**）；
+        #      `e6_mid6` 的 B-1 因此判错，**重推后由"不通过(48%)"翻转为"通过(68%)"**。
+        #   ⇒ 现在**优先**用 `align_span_deg`（"跨度最大的那条轴"，三标量取 argmax
+        #     ⇒ **不依赖简并**，语义仍是"伸得最长的方向是不是 `a`"）；
+        #     没有该列（旧算例）才退回 `align_deg`，并**显式标注口径**。
+        if 'align_span_deg' in S and np.any(np.isfinite(S['align_span_deg'])):
+            al_all = np.asarray(S['align_span_deg'], float)
+            tag = 'align_span_deg（**跨度最大轴**，不依赖简并）'
+        else:
+            al_all = np.asarray(S['align_deg'], float)
+            tag = ('align_deg（**PCA 主轴0** —— ⚠ 旧口径：近简并时无定义，见 B-17）'
+                   if 'align_deg' in S else None)
+        if tag is not None:
+            mm_ = np.isfinite(al_all)
+            if mm_.any():
+                al = al_all[mm_]
+                i_max = int(np.argmax(np.where(mm_, al_all, -np.inf)))
+                frac20 = float(np.mean(al <= 20.0))
+                last_al = float(al[-1])
+                ok_b1 = (last_al <= 20.0) and (frac20 >= 0.5)
+                print('   B-1 口径：%s' % tag)
+                if 'align_span_deg' in S and np.any(np.isfinite(S['align_span_deg'])):
+                    _verdict = '**通过**' if ok_b1 else '**不通过**'
+                else:
+                    # ⚠ 旧算例没有 `align_span_deg` ⇒ 只能退回**已被证伪**的 PCA 口径。
+                    #   按"守卫要硬失败、不静默给数"的原则，这里**拒绝给判决**，
+                    #   只报数字并指向重推脚本（否则读者会把作废的判决当当前的）。
+                    _verdict = ('⏸ **判决暂缓**：本算例没有 `align_span_deg` 列，'
+                                '只能用**已作废**的 PCA 口径（B-17）⇒ '
+                                '请用 `_r1_b1fix.py %s` 重推'
+                                % os.path.basename(os.path.normpath(d)))
+                print('        中位长轴夹角：起始 %.2f° → 末态 %.2f°；'
+                      '全程最大 %.2f°（step %g）；≤20° 的采样占比 %.0f%%  ⇒ %s'
+                      % (al[0], last_al, al.max(), st[i_max], 100 * frac20,
+                         _verdict))
+                # 简并度（有新列才报）：告诉读者这一行的"主轴角"可不可信
+                if 'align_degen' in S and np.any(np.isfinite(S['align_degen'])):
+                    dg = np.asarray(S['align_degen'], float)
+                    dgv = dg[np.isfinite(dg)]
+                    if dgv.size:
+                        print('        简并度 σ₂/σ₁：末态 %.3f ；**≥0.9 的采样占比 %.0f%%**'
+                              '（这些点上 PCA 主轴角本无定义 ⇒ 旧口径会给出任选的角）'
+                              % (float(dgv[-1]), 100 * float(np.mean(dgv >= 0.9))))
+                print('        （双条件：末态 ≤20° **且** ≥50%% 采样 ≤20°）')
         # B-3 间距
-        # ⚠ 记账：这里是**又一次自己踩的单位坑** —— `Wc` 存的是**米**，`%.0f nm` 直接打就成了 0。
+        # ⚠ 记账（本轮）：`gap_w_nm` 在**早期算例**（`e4_lath6`/`e6_mid6`）里是坏的
+        #   （漏乘 `dx`，报 1.2e10 nm = **12 米**）。`_r1_exp.py:273-278` 已记录该列无效。
+        #   ⇒ 这里加**物理合理性守卫**：间距不可能超过盒子尺寸；超过就拒绝解读。
         if np.any(np.isfinite(S.get('gap_w_nm', np.array([np.nan])))):
             g = S['gap_w_nm'][np.isfinite(S['gap_w_nm'])]
             wc = S['Wc'][np.isfinite(S['Wc'])]
             if g.size and wc.size:
                 wm = float(np.median(wc)) * 1e9          # ← 米 → nm
-                print('   B-3 相邻分量质心沿 `w` 间距：起始 %.0f nm → 末态 %.0f nm ；'
-                      '逐分量宽度中位 %.0f nm ⇒ 间距/宽度 = %.2f'
-                      % (g[0], g[-1], wm, g[-1] / max(wm, 1e-30)))
+                # 盒子尺寸：优先用 meta 里的 `N · dx_nm`（真值），取不到才用兜底
+                box_nm = 1e5
+                if nseed is not None or os.path.exists(_mp):
+                    try:
+                        with open(_mp) as _f:
+                            _m2 = json.load(_f)
+                        _N = _m2.get('N') or _m2.get('Nx')
+                        _dx = _m2.get('dx_nm') or a.dx_nm
+                        if _N and _dx:
+                            box_nm = float(_N) * float(_dx)
+                    except Exception:                            # noqa: BLE001
+                        pass
+                if np.nanmax(np.abs(g)) > box_nm:
+                    print('   B-3 ⛔ **该算例的 `gap_w_nm` 列无效**'
+                          '（最大 %.3g nm = %.3g m，超过盒子 %.3g nm）'
+                          '⇒ 早期版本漏乘 `dx`，**拒绝解读**；'
+                          '如需此量请从 `snap_*.npz` 重算'
+                          % (np.nanmax(np.abs(g)), np.nanmax(np.abs(g)) * 1e-9,
+                             box_nm))
+                else:
+                    print('   B-3 相邻分量质心沿 `w` 间距：起始 %.0f nm → 末态 %.0f nm ；'
+                          '逐分量宽度中位 %.0f nm ⇒ 间距/宽度 = %.2f'
+                          % (g[0], g[-1], wm, g[-1] / max(wm, 1e-30)))
         print('   ⚠ 记账（**模型的结构性限制**）：本模型只有 12 个**离散**变体，'
               '**同变体**的两根板条接触即合并 ⇒ **块内部的低角晶界无法表示**。'
               '所以"块里有几根板条"**不可观测**；可观测的是'
@@ -204,7 +293,14 @@ for d in a.dirs:
         # ★★ **碎片守卫**（第 2 轮记账）：`norm_smooth > 0` 的臂出现过 `ncomp>1`
         #   （最大到 3）。而 `L_cal` 用的是**全体胞**口径 ⇒ 卫星碎片会把 L 拉长。
         #   ⇒ 用 `L_big`（**最大连通分量**的跨度）做一次**独立**回归来交叉核对。
-        sb, r2b, nb = reg(st, S['L_big'], i0)
+        # ⚠ **修 bug（本轮）**：这里原来写的是 `sb, r2b, nb = reg(...)`，
+        #   而 `nb` 在上面已经被用作**盒壁计数**（`nb = int(np.nansum(S['box_touch']))`）
+        #   ⇒ 这一行把盒壁计数**覆盖成回归的第三个返回值**（点数，恒为真）
+        #   ⇒ 下面 `if nb:` 每次都会执行，打出
+        #     「⛔ 但 G-1 已触发」**即使守卫汇总明明是"盒壁 0 次"**。
+        #   实测证据：`_exp/mid192_ns4` 的汇总行写"盒壁 0 次"，紧跟着却报 G-1 已触发。
+        #   ⇒ 改用独立名字 `npts_b`，**不再覆盖守卫计数**。
+        sb, r2b, npts_b = reg(st, S['L_big'], i0)
         fb = float(np.nanmin(S['frac_big'])) if np.any(np.isfinite(S['frac_big'])) else float('nan')
         if np.isfinite(sb) and sb > 0:
             print('   ★ 碎片守卫：`L_big`（最大分量）回归 = %+.4f nm/步（R²=%.4f）'
@@ -212,8 +308,23 @@ for d in a.dirs:
                   % (sb * 1e9, r2b, (W / sb), (W / L), fb))
             if abs((W / sb) - (W / L)) > 0.25 * (W / L):
                 print('      ⚠ **全体口径与最大分量口径差 >25%% ⇒ 形貌读数被碎片污染，低置信度**')
+        # ⚠ 记账（本轮）：`frac_big < 0.95 ⇒ 分裂过` 这个判据**只对单核成立**。
+        #   多核臂放了 `nseed` 个同变体核 ⇒ `frac_big ≈ 1/nseed`
+        #   （实测 `e4_lath6`/`e6_mid6` 的 `frac_big` 最小 **0.165–0.168 ≈ 1/6**），
+        #   这正是"6 个等大核"的**预期值**，却被报成「过程中确实分裂过」。
+        #   ⇒ 多核口径：`frac_big` 应与 `1/nseed` 同量级；只有**显著低于** `1/nseed`
+        #     （例如 < 0.3/nseed）才提示有多余碎片。
         if fb < 0.95:
-            print('      ⚠ `frac_big` 最小值 %.3f < 0.95 ⇒ 过程中确实分裂过' % fb)
+            if nseed is not None and nseed > 1:
+                exp_fb = 1.0 / nseed
+                if fb < 0.3 * exp_fb:
+                    print('      ⚠ `frac_big` 最小 %.3f，**远低于** 1/nseed=%.3f '
+                          '⇒ 有多余的微小分量' % (fb, exp_fb))
+                else:
+                    print('      （`frac_big` 最小 %.3f ≈ 1/nseed=%.3f —— '
+                          '**多核下的预期值**，不是分裂）' % (fb, exp_fb))
+            else:
+                print('      ⚠ `frac_big` 最小值 %.3f < 0.95 ⇒ 过程中确实分裂过' % fb)
         # R21：逐方向胞数（**整段**的净增量，不是每步）
         dL = (S['L_cal'][last] - S['L_cal'][0]) / dx
         dW = (S['W_cal'][last] - S['W_cal'][0]) / dx

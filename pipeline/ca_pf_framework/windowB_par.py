@@ -48,6 +48,8 @@ import time
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
+import windowB_acct as _acct
+
 __all__ = ['ParCtx', 'edges_of']
 
 
@@ -55,6 +57,56 @@ def edges_of(n, nth):
     """把 [0,n) 均分成 nth 段（不小于 1 行），返回 nth+1 个边界。"""
     nth = max(1, min(int(nth), int(n)))
     return [int(round(i * n / nth)) for i in range(nth + 1)]
+
+
+def _np_gradient_edge2(f, dx):
+    r"""与 `np.gradient(f, dx, edge_order=2)`（均匀标量 `dx`、任意维）**逐位相同**的切片实现。
+
+    ## 为什么必须照抄源码而不是"照公式写"
+    `np.gradient` 的边界**不是** `(-1.5 f0 + 2 f1 − 0.5 f2)/dx` 这种"先算分子再除"，
+    而是**先把三个系数各自除以 `dx`**、再逐项相乘相加：
+    ```python
+    a = -1.5 / ax_dx ; b = 2. / ax_dx ; c = -0.5 / ax_dx
+    out[0] = a * f[0] + b * f[1] + c * f[2]
+    ```
+    （numpy 2.5.3 `lib/_function_base_impl.py`，均匀间隔分支）
+    两者的**舍入路径不同** ⇒ 不逐位相同。内部点则是
+    `(f[2:] - f[:-2]) / (2. * ax_dx)`（`2.*dx` 先算好当除数）。
+    ⇒ 本函数**逐行照抄**这三段（含运算次序与括号），只把索引换成切片。
+
+    ## 为什么值得
+    `ParCtx.gradient` 走的是"对带 halo 的子盒调 `np.gradient` 再裁掉 halo"，
+    每次调用要造 halo 副本 + 走 `np.gradient` 的 Python 层（每轴建 4 个 slice 元组、
+    `np.empty_like`、边界再写 2 次）。切片版把这些都省掉。
+    ⚠ 但**旧的等价性口径必须保持**：halo 在**盒边界截断**（不是周期）——
+    本函数在子盒自己的首末用**单边**公式，与 `np.gradient` 在子盒上的行为一致。
+    """
+    nd = f.ndim
+    out = []
+    for ax in range(nd):
+        o = np.empty_like(f)
+        base = [slice(None)] * nd
+
+        def _s(i):
+            t = list(base)
+            t[ax] = i
+            return tuple(t)
+
+        # ---- 内部：二阶中心差分（照抄 `(f[4] - f[2]) / (2. * ax_dx)`）----
+        o[_s(slice(1, -1))] = (f[_s(slice(2, None))] - f[_s(slice(None, -2))]) \
+            / (2. * dx)
+        # ---- 左边界：`a*f[0] + b*f[1] + c*f[2]`，系数各自先除 dx ----
+        a = -1.5 / dx
+        b = 2. / dx
+        c = -0.5 / dx
+        o[_s(0)] = a * f[_s(0)] + b * f[_s(1)] + c * f[_s(2)]
+        # ---- 右边界：`a*f[-3] + b*f[-2] + c*f[-1]` ----
+        a = 0.5 / dx
+        b = -2. / dx
+        c = 1.5 / dx
+        o[_s(-1)] = a * f[_s(-3)] + b * f[_s(-2)] + c * f[_s(-1)]
+        out.append(o)
+    return out
 
 
 class ParCtx(object):
@@ -206,22 +258,67 @@ class ParCtx(object):
             self._leave()
 
     # ------------------------------------------------------------ 逐胞算子
-    def argmin2(self, fields):
+    def argmin2(self, fields, mode='legacy', k_pre=None):
         """winner / runner-up（`np.argmin(axis=0)` + 一次掩模扫描）。
 
            ★ 与 `advance()` 里原来的两段实现**逐位相同**：`np.argmin` 沿 axis=0
-             的次序、以及 runner-up 扫描的 j 次序都没有改变，只是在**空间**上切片。"""
+             的次序、以及 runner-up 扫描的 j 次序都没有改变，只是在**空间**上切片。
+
+           ★★ R578：`mode='copyto'` —— 把 `l[mj] = j` / `best[mj] = pj[mj]`
+             （**布尔花式索引**，每次都要先走 `np.nonzero` 造索引数组）换成
+             `np.copyto(..., where=mj)`（直接按掩模写，不造索引数组）。
+             **逐位相同**（`np.copyto` 的 `where` 语义就是"只在掩模为真的位置赋值"），
+             实测（`_r578_opt3.py`，N=64/nreg=25）**1.265×**，区间 [1.132, 1.444]。
+             ⚠ 每一项都要独立开关、独立逐位对照（goal §3 的要求）⇒ 默认 `'legacy'`。"""
+        _copyto = str(mode).lower() == 'copyto'
+
         def work(lo, hi):
             sub = fields[:, lo:hi]
             nreg = sub.shape[0]
-            k = np.argmin(sub, axis=0)
-            l = np.empty(k.shape, dtype=k.dtype)
-            best = np.full(k.shape, np.inf)
-            for j in range(nreg):
-                pj = sub[j]
-                mj = (k != j) & (pj < best)
-                l[mj] = j
-                best[mj] = pj[mj]
+            if k_pre is None:
+                with _acct.mark('argmin2.winner'):
+                    k = np.argmin(sub, axis=0)
+            else:
+                # ★★★ R581-L5（goal §(7) ①）：**复用调用方已算好的 winner**。
+                #   `advance()` 的 `reg0 = self.region()`（:3783）与本函数的
+                #   `argmin2(self.phi)`（:3820）算的是**同一个 argmin** ——
+                #   两者之间 `self.phi` **没有被修改**（只有 `nreg = self.nreg`
+                #   与 `self.npref_tab = npref` 两句赋值）⇒ 结果**必然逐位相同**。
+                #   分片也相同：`region()` 走 `map0`、本函数走 `map0_two`，
+                #   两边都沿 **axis=1** 切片，而归约轴是 **axis=0**。
+                #   dtype：`region()` 给 int16（R474 放开上限），`np.argmin` 给 intp。
+                #   这里加宽到 intp ⇒ **下游 dtype 与归档路完全一致**；
+                #   值域 nreg ≤ 32760 ⇒ int16 装得下，加宽**不改值**。
+                #   ⚠ 计数回归（**实测**，`_r581_L5check.py` P4/P5，workers=1）：
+                #     `region()` 每步 **3** 次（不是 2 —— `adv.region0` / `finish` / 还有一处），
+                #     `par.argmin` 每步 **3**（每次 region 一次）；
+                #     `argmin2.winner` 由 **1 → 0**（workers=1 时的计数；
+                #     多 worker 时该 tag 的计数 = 空间切片数，同样归 0）。
+                #     ⇒ **每步总 argmin 次数 4 → 3**。
+                #     **这正是本条优化的目的**，不是漏算。
+                #   ★★ 切片轴（**第一版写错，被生产口径 A/B 当场抓到**）：
+                #     `map0_two(work, fields.shape[1])` 沿 **`fields` 的 axis=1** 切，
+                #     而 `k = np.argmin(sub, axis=0)` 的形状是 `fields.shape[1:]`
+                #     ⇒ `k_pre` 的**切片轴是 0**（`k_pre[lo:hi]`），**不是** `k_pre[:, lo:hi]`。
+                #     ⚠ 为什么单元判据（`_r581_L5check.py`，workers=1）没抓到：
+                #       `n<=1` 时 `map0_two` 直接 `fn(0, n0)` ⇒ `k_pre[:, 0:N]` 恰好
+                #       等于整个数组 ⇒ **切片退化、错误被掩盖**。生产（workers=4）
+                #       立刻抛 `ValueError: operands could not be broadcast together
+                #       with shapes (24,96,96) (96,24,96)`。
+                #     ⇒ 教训：**空间切片的判据必须在 workers>1 下跑**（AGENTS P3/P6）。
+                k = k_pre[lo:hi].astype(np.intp, copy=False)
+            with _acct.mark('argmin2.runnerup'):
+                l = np.empty(k.shape, dtype=k.dtype)
+                best = np.full(k.shape, np.inf)
+                for j in range(nreg):
+                    pj = sub[j]
+                    mj = (k != j) & (pj < best)
+                    if _copyto:
+                        np.copyto(l, j, where=mj)
+                        np.copyto(best, pj, where=mj)
+                    else:
+                        l[mj] = j
+                        best[mj] = pj[mj]
             return k, l
         return self.map0_two(work, fields.shape[1], tag='argmin2')
 
@@ -254,23 +351,36 @@ class ParCtx(object):
             return r[halo:halo + (hi - lo)]
         return self.map0(work, n0, tag='upwind_flux_vec(o%d)' % order)
 
-    def gradient(self, phi, dx, edge_order=2):
+    def gradient(self, phi, dx, edge_order=2, mode=None):
         """`np.gradient(phi, dx, edge_order=2)` 的并行版（**盒边界截断** halo）。
 
            ⚠ 与 `upwind_flux_vec` 相反：`np.gradient` 在**整盒**的首末胞用单边差分，
              slab 里若用环绕 halo，边界胞会变成中心差分 ⇒ **不同** ✗。
-             必须把 halo 在盒边界**截断**。"""
+             必须把 halo 在盒边界**截断**。
+
+           ★★ R579（goal §6）：`mode='sliced'` 改用 `_np_gradient_edge2`
+             （**逐行照抄 numpy 的边界公式**，含运算次序）⇒ 与 `np.gradient` **逐位相同**。
+             判据：`_r579_grad.py`（含能失败的负对照）。
+        """
         n0 = phi.shape[0]
         nth = self._segments(n0)
+        # ★ `mode=None` ⇒ 用实例属性（由 `LevelSetMulti.__init__` 按 `grad_mode` 设），
+        #   这样**所有调用点都不用改**（`_geom_k` / `pair_aniso` / `_step_k` / `proj_geom`）。
+        if mode is None:
+            mode = getattr(self, 'grad_mode', 'legacy')
+        _sliced = str(mode).lower() == 'sliced' and edge_order == 2
         if nth <= 1:
-            return np.gradient(phi, dx, edge_order=edge_order)
+            return (_np_gradient_edge2(phi, dx) if _sliced
+                    else np.gradient(phi, dx, edge_order=edge_order))
         ed = edges_of(n0, nth)
 
         def work(i):
             lo, hi = ed[i], ed[i + 1]
             lo2 = max(0, lo - 1)
             hi2 = min(n0, hi + 1)
-            g = np.gradient(phi[lo2:hi2], dx, edge_order=edge_order)
+            sub = phi[lo2:hi2]
+            g = (_np_gradient_edge2(sub, dx) if _sliced
+                 else np.gradient(sub, dx, edge_order=edge_order))
             return [gi[lo - lo2: hi - lo2] for gi in g]
         futs = [self.pool.submit(self._call_guarded, (lambda i=i: work(i)))
                 for i in range(nth)]

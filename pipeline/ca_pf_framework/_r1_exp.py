@@ -39,7 +39,7 @@
 硬守卫（不允许静默）
 --------------------
 | G-1 | 任一向跨度 > `--box-frac`·L | `box_touch=1` ⇒ 该步形貌读数无效（`R24`）|
-| G-2 | 目标变体分成 >1 个连通分量 | `ncomp>1` ⇒ `max−min` 被碎片绑架 |
+| G-2 | **单核**：目标变体分成 >1 个连通分量（`ncomp>1`）<br>**多核**（`nseed>1`）：分量数**本就应 >1**，只有 `nsig > nseed`（显著分量多于放置的核）才算异常 | 单核 `ncomp>1` ⇒ `max−min` 被碎片绑架；多核报告 `nc=` 仅供参考 |
 | G-3 | 界面 `median|∇φ|` 落在 [0.7,1.4] 外 | `band_bad=1` ⇒ 几何测度不可信 |
 | G-4 | `phi` 出现非有限值 | **立即中止并保留现场**（`CRASH_phi.npz`）|
 
@@ -102,11 +102,12 @@ COLS = ['step', 't_s', 'dt', 'ncell', 'V', 'L', 'W', 'T', 'Lb', 'Wb', 'Tb',
         'L_cal', 'W_cal', 'T_cal', 'LW_cal', 'LT_cal', 'WT_cal',
         'LWo', 'LTo', 'WTo', 'LW', 'LT', 'WT', 'LW_pm', 'LT_pm',
         'LA', 'WA', 'TA', 'LWA', 'LTA', 'WTA', 'fill_A', 'A_tot', 'A_a', 'A_w', 'A_n',
-        'fill', 'fill_n', 'ang_a_deg', 'sv0', 'sv1', 'sv2',
+        'fill', 'fill_n', 'ang_a_deg', 'sv0', 'sv1', 'sv2', 'fill_cal',
         'ncomp', 'frac_big', 'L_big', 'nif', 'gmed', 'f_a', 'f_w', 'f_n',
         # ★★ 第 3 轮：**逐分量的"块"量具**（多核算例专用）
         'nc', 'Lc', 'Wc', 'Tc', 'LWc', 'LTc', 'align_deg', 'big_frac', 'gap_w_nm',
-        'nsig', 'debris',
+        'nsig', 'debris', 'ncomp_used', 'align_deg_big', 'align_degen',
+        'align_span_deg',
         # ★★ R1 第 2 轮：**分面弹性能诊断**（P-1，机理判决用）
         'ded_a', 'ded_w', 'ded_n', 'ded_all', 'ed_par_mean',
         'box_touch', 'band_bad', 'ok', 'dG_max', 'nreinit', 'nskip', 'regflip',
@@ -247,7 +248,31 @@ def measure(g, K, a_ax, w_ax, n_hab, box_frac, ed_all=None):
                     al = float(np.degrees(np.arccos(min(1.0, abs(float(u0 @ a_ax))))))
                 except Exception:
                     al = float('nan')
-                comps.append((nci, Li, Wi, Ti, cm, al))
+                # ★★ 记账（台账 B-17）：`al`（PCA 主轴0 与 `a` 的夹角）在
+                #   **两个最大奇异值近简并**时**没有定义** —— SVD 会在那个近简并子空间里
+                #   任选一组正交基。实测 `e5_equi6` 最大分量 σ=[2631.6, 2456.3, 181.]
+                #   ⇒ σ₂/σ₁=0.93、片内两向几乎等长 ⇒ 主轴0/1 给 83.48°/6.52°，
+                #   **本是同一平面的两条轴**。旧 B-1 判据正是用 `al` ⇒ 判决可被任选左右
+                #   （实测 `e6_mid6` 的 B-1 因此判错，重推后翻转）。
+                #   ⇒ 这里**同时**记录两个新量：
+                #     `_degen`  = σ₂/σ₁（简并度；≥0.9 表示 `al` 不可解释）
+                #     `_span`   = **跨度最大的那条轴**与 `a` 的夹角（三标量取 argmax，
+                #                 与 `measure()` 同一算法 ⇒ **不依赖简并**）
+                try:
+                    sv = np.linalg.svd(ici - cm, compute_uv=False)
+                    dg = float(sv[1] / max(sv[0], 1e-30))
+                except Exception:
+                    dg = float('nan')
+                try:
+                    _sp = (float(np.ptp(ici @ a_ax)), float(np.ptp(ici @ w_ax)),
+                           float(np.ptp(ici @ n_hab)))
+                    _k = int(np.argmax(_sp))
+                    _axk = (a_ax, w_ax, n_hab)[_k]
+                    sp_ang = float(np.degrees(np.arccos(
+                        min(1.0, abs(float(_axk @ a_ax))))))
+                except Exception:
+                    sp_ang = float('nan')
+                comps.append((nci, Li, Wi, Ti, cm, al, dg, sp_ang))
             out['nc'] = float(len(comps))
             # ★★ 第 4 轮（**快照解剖驱动的量具修正**）：`nc` 会被水平集甩出的
             #   微小液滴污染（实测 `e4` step125 = 6 大 + 18 碎屑；`e6` = 1 大 + 50 碎屑），
@@ -260,12 +285,29 @@ def measure(g, K, a_ax, w_ax, n_hab, box_frac, ed_all=None):
             out['nsig'] = float(len(_sig))
             out['debris'] = 1.0 - float(sum(_sig)) / max(ncell, 1)
             if comps:
-                out['Lc'] = float(np.median([c[1] for c in comps]))
-                out['Wc'] = float(np.median([c[2] for c in comps]))
-                out['Tc'] = float(np.median([c[3] for c in comps]))
+                # ★★ 记账（R1 自查第 6 个 bug）：逐分量中位量原来对**全部**分量取中位，
+                #   而 `comps` 的门槛只有 8 胞 ⇒ 一旦**碎屑液滴**在**个数**上超过主板
+                #   （实测 `e5_equi6` step 485：`ncomp`=25 而 `nsig`=1 ⇒ **1 大 + 24 碎屑**），
+                #   中位就被碎屑接管：`align_deg` 报到 **85.89°**（碎屑的 PCA 轴无意义），
+                #   `Lc/Wc/Tc` 也被压向各向同性 ⇒ 让"逐分量 ΔL:ΔW:ΔT"看起来 W/T 过快
+                #   （`e4_lath6` 因此给出 1:0.676:0.029 这个明显失真的比值）。
+                #   ⇒ **逐分量中位量一律只在"显著分量"上取**（≥1% 胞，即 `nsig` 的口径）；
+                #     若一个显著分量都没有，才退回全部分量，并**显式标注**。
+                _sigc = [c for c in comps if c[0] >= _thr]
+                _use = _sigc if _sigc else comps
+                out['ncomp_used'] = float(len(_use))
+                out['Lc'] = float(np.median([c[1] for c in _use]))
+                out['Wc'] = float(np.median([c[2] for c in _use]))
+                out['Tc'] = float(np.median([c[3] for c in _use]))
                 out['LWc'] = out['Lc'] / max(out['Wc'], 1e-30)
                 out['LTc'] = out['Lc'] / max(out['Tc'], 1e-30)
-                out['align_deg'] = float(np.nanmedian([c[5] for c in comps]))
+                out['align_deg'] = float(np.nanmedian([c[5] for c in _use]))
+                # ★ 台账 B-17 新增两列：简并度 + **不依赖简并**的"跨度最大轴"夹角
+                out['align_degen'] = float(np.nanmedian([c[6] for c in _use]))
+                out['align_span_deg'] = float(np.nanmedian([c[7] for c in _use]))
+                # 顺便记录**最大分量**自己的主轴夹角（最不该被碎屑影响的那个数）
+                _big = max(comps, key=lambda c: c[0])
+                out['align_deg_big'] = float(_big[5])
                 out['big_frac'] = float(max(c[0] for c in comps)) / max(ncell, 1)
                 # 相邻分量质心在 `w` 上的间距（取最近邻中位数）
                 # ⚠ 记账（第 3 轮自查抓到的单位 bug）：`cms` 来自 `np.argwhere` ⇒ 是**胞号**，
@@ -399,13 +441,19 @@ def main():
     ap.add_argument('--beta-h', type=float, default=3.5)
     ap.add_argument('--beta-w', type=float, default=2.3)
     ap.add_argument('--norm-smooth', type=int, default=0)
+    # ★★ P3 尖点界面能：`facet_lam>0` ⇒ 走 `herring_stiffness_cusp`，
+    #   惯习面同时成为**最低能面**（γ→γ0(1+Λε_c)）与**最刚面**（刚度→γ0Λ/ε_c，很大）。
+    #   `facet_lam=0`（默认）⇒ 退回 `aniso=0.4` 的普通 Herring 形式（**没有奇异面**）。
+    ap.add_argument('--facet-lam', type=float, default=0.0,
+                    help='P3 尖点界面能强度 Λ（0=关闭；建议对照 0.4）')
+    ap.add_argument('--facet-eps', type=float, default=0.05,
+                    help='尖点正则化 ε_c（越小尖点越锐、刚度越大）')
     ap.add_argument('--adv', default='proj2')
     ap.add_argument('--nthreads', type=int, default=8)
     ap.add_argument('--reinit-band', type=float, default=6.0)
     ap.add_argument('--box-frac', type=float, default=0.80)
     ap.add_argument('--max-hours', type=float, default=6.0)
-    ap.add_argument('--seed-scale', type=float, default=1.0,
-                    help='种子整体缩放（机制筛选用：同一长径比在不同 Δx 上都要 ≥2 胞厚）')
+    ap.add_argument('--seed-scale', type=float, default=1.0,                    help='种子整体缩放（机制筛选用：同一长径比在不同 Δx 上都要 ≥2 胞厚）')
     ap.add_argument('--no-elastic', action='store_true',
                     help='★★ **判决实验**：关掉弹性驱动（把 elastic_driving_pair 打成 0）'
                          '⇒ 若 ΔL:ΔW:ΔT 回到设计 1:0.10:0.03，则"长不出板条"的元凶是弹性项；'
@@ -561,8 +609,9 @@ def _run(a, outdir, L, dx):
     meta = dict(case=a.case, shape=shape, seed_scale=a.seed_scale,
                 no_elastic=bool(a.no_elastic), ed_diag=bool(a.ed_diag),
                 nseed=len(centers), N=a.N, dx_nm=a.dx_nm,
-                L_um=L * 1e6, steps=a.steps, kv=K0, variants=vlist,
+                L_um=L * 1e6, steps=a.steps, every=a.every, kv=K0, variants=vlist,
                 beta_h=a.beta_h, beta_w=a.beta_w, norm_smooth=a.norm_smooth,
+                facet_lam=a.facet_lam, facet_eps=a.facet_eps,
                 adv=a.adv, nthreads=a.nthreads, reinit_band=a.reinit_band,
                 reinit_dt=6.0e-7, df=DF, Mob=MOB, gamma=0.15, box_frac=a.box_frac,
                 centers_nm=(centers * 1e9).tolist(), sha256=shas,
@@ -599,7 +648,14 @@ def _run(a, outdir, L, dx):
         Tc = mm['T' if CAL['T'][0] == 'maxmin' else 'Tb'] * CAL['T'][1]
         mm.update(L_cal=Lc, W_cal=Wc, T_cal=Tc,
                   LW_cal=Lc / max(Wc, 1e-30), LT_cal=Lc / max(Tc, 1e-30),
-                  WT_cal=Wc / max(Tc, 1e-30))
+                  WT_cal=Wc / max(Tc, 1e-30),
+                  # ★★ 记账（R1 自查第 4 个 bug）：`fill_cal` 是 **C-5 验收判据**
+                  #   （单核 ≥0.70）用的量，但它原先**只在打印语句里现算**
+                  #   （`V / (L_cal·W_cal·T_cal)`）、**从不落盘**，连 `COLS` 里
+                  #   都没有这一列 ⇒ 判据只能从日志里抠字符。
+                  #   现在在这里算一次、两处共用（避免"同一量算两遍、日后改一处
+                  #   忘了另一处" —— `AGENTS.md` 教训 24）。
+                  fill_cal=float(mm['V'] / max(Lc * Wc * Tc, 1e-30)))
         row = dict(step=step, t_s=t_s, dt=dt,
                    dG_max=float(getattr(g, 'dG_max', float('nan'))),
                    nreinit=int(getattr(g, '_reinit_done', 0)),
@@ -608,18 +664,33 @@ def _run(a, outdir, L, dx):
                    adv_wall=adv_wall,
                    reinit_wall=float(getattr(g, '_reinit_wall_last', float('nan'))),
                    reinit_pairs=int(getattr(g, '_reinit_pairs_last', 0)))
-        row.update({k: mm.get(k, float('nan')) for k in COLS})
-        # ★★ 记账（R1 自查的**第三个** bug）：上面这一行最初写的是 `row.update(...)`，
+        # ★★ 记账（R1 自查的第 3 个 bug，**本行才是真正的修复**）：
+        #   原先写的是 `row.update({k: mm.get(k, float('nan')) for k in COLS})`，
         #   而 `COLS` 里**同时**含"测量量"与"记账量"（`step`/`t_s`/`dt`/`dG_max`/
-        #   `nreinit`/…）⇒ `mm` 里没有后者 ⇒ **把已经填好的正确值覆盖成 NaN**
-        #   ⇒ 实测 `_exp/lath1/series.csv` 的 `step`/`t_s`/`dt`/`dG_max`/… **全是空**
-        #     （几何量完好，但步号丢了 ⇒ 回归只能靠行号重建）。
-        #   ⇒ 改为 `setdefault`：**已填的不许被覆盖**。
+        #   `nreinit`/`nskip`/`regflip`/`adv_wall`/`reinit_wall`/`reinit_pairs`），
+        #   `mm` 里没有后者 ⇒ **把 row 里已经填好的正确值全部覆盖成 NaN**。
+        #   ⚠ 此前只在下面加了一句 `row.setdefault(k, nan)` —— **那是无效修复**：
+        #     键已存在，`setdefault` 什么也不做。实测新算例
+        #     `_exp/mid192_s2_ns4/series.csv`（本轮跑的）的 `step` **仍然全空**
+        #     ⇒ 步号只能靠 `4×行号` 猜，`t_s`/`dG_max`/reinit 记账则彻底丢失。
+        #   ⇒ 正确做法：**只填 `row` 里还没有的键**，已有的绝不覆盖。
+        for k, v in mm.items():
+            if k in COLS and k not in row:
+                row[k] = v
         for k in COLS:
             row.setdefault(k, float('nan'))
         fh.write(','.join(_fmt(row.get(c, float('nan'))) for c in COLS) + '\n')
         for K in sorted(set(vlist)):
-            m2 = measure(g, K, *axes_of(g, K), a.box_frac, ed_all=_ed)
+            # ⚠ **修 bug（本轮自查第 7 个）**：原来写 `measure(g, K, *axes_of(g, K), ...)`，
+            #   但 `axes_of()` 返回的顺序是 **(n_hab, w_ax, a_ax)**（见其定义与第 482 行的
+            #   正确解包 `n_hab, w_ax, a_ax = axes_of(g, K0)`），而 `measure` 的形参顺序是
+            #   **(a_ax, w_ax, n_hab)** ⇒ `*` 展开把 **`a` 与 `n*` 对调了**。
+            #   后果：`pervar.csv` 里每个逐变体行的 `L`/`T` 及其比值 `LT_cal`/`LTo`
+            #   实际是**沿惯习面法向/沿 a** 的量 —— **轴张冠李戴**。
+            #   ✅ 未受影响：`series.csv`（主量测）走的是第 482 行正确绑定的
+            #      `measure(g, K0, a_ax, w_ax, n_hab, ...)` ⇒ 本报告全部主结论不受影响。
+            _nh, _ww, _aa = axes_of(g, K)
+            m2 = measure(g, K, _aa, _ww, _nh, a.box_frac, ed_all=_ed)
             r2 = dict(step=step, variant=K, **{k: m2.get(k, float('nan')) for k in COLS[3:]})
             fh2.write(','.join(_fmt(r2.get(c, float('nan'))) for c in
                                (['step', 'variant'] + COLS[3:])) + '\n')
@@ -639,7 +710,16 @@ def _run(a, outdir, L, dx):
 
     dt = 0.15 * dx / (MOB * DF)
     KW = dict(aniso=0.4, npref=NPF, band_cells=20, mob_beta=a.beta_h,
-              mob_beta_w=a.beta_w, adv_grad=a.adv, norm_smooth=a.norm_smooth)
+              mob_beta_w=a.beta_w, adv_grad=a.adv, norm_smooth=a.norm_smooth,
+              # ★★ P3 尖点界面能（`herring_stiffness_cusp`）。**默认关闭**（=0）——
+              #   这正是 A-3「尖端/棱圆角、长不出平坦惯习面」的成因：
+              #   只开 `aniso=0.4` 时刚度是 `γ0[1+2Λ−3Λ sin²θ]` = θ=0 处 1.8γ0、
+              #   θ=90° 处 0.6γ0，比值仅 3:1，**没有奇异面** ⇒ 面不会长平。
+              #   引擎里那个版本的 docstring 已给出定量理由：
+              #   「孤立单核长跑 aspect **3.49 → 2.23**，而法向厚度反而长了 2.4×
+              #     ⇒ 各向同性 γ 的 Gibbs–Thomson 把薄饼**拉圆**了」。
+              #   ⚠ 这正是本轮 B-1b 独立量到的"速率比随窗口漂移"的**物理机制**。
+              facet_lam=a.facet_lam, facet_eps=a.facet_eps)
     P('dt = %.4e s（标称位移 %.2f nm/步）；Δf = %.3e J/m³；盒 %.1f µm'
       % (dt, 0.15 * a.dx_nm, DF, L * 1e6))
 
@@ -661,8 +741,25 @@ def _run(a, outdir, L, dx):
             fl = []
             if r.get('box_touch'):
                 fl.append('⛔G-1盒壁')
-            if (r.get('ncomp') or 1) > 1:
-                fl.append('⚠G-2分量%d' % r['ncomp'])
+            # ★★ 记账（R1 自查第 5 个 bug）：**G-2 必须按模式区分**。
+            #   原判据 `ncomp > 1` 只对**单核**算例成立（多出的分量 = 碎屑/第二个核）。
+            #   但多核算例（实验 4/5/6/7）里我们**刻意放了 `nseed` 个核**
+            #   ⇒ `ncomp` 从 `nseed` **递减到 1** 正是"多个核 → 合并"的**目标现象**，
+            #   不是污染。实测 `e4_lath6` 113/120 步、`e7_selfac` **27/27** 步都被打上
+            #   `⚠G-2`，而 `e7_selfac` 的 `nsig` 只有 2–3（= 该变体的核数）
+            #   ⇒ 旧判据在这些臂上**恒真、含义反了**。
+            #   ⇒ 单核：`ncomp>1` 才是污染；多核：只有**显著分量数超过放置的核数**
+            #     （`nsig > nseed`，物理上不可能）才算异常。
+            _nc = r.get('ncomp')
+            _ns = r.get('nsig')
+            if a.nseed <= 1:
+                if (_nc or 1) > 1:
+                    fl.append('⚠G-2分量%d' % _nc)
+            else:
+                if _ns is not None and np.isfinite(_ns) and _ns > a.nseed:
+                    fl.append('⚠G-2显著分量%d>核数%d' % (_ns, a.nseed))
+                elif _nc is not None and np.isfinite(_nc):
+                    fl.append('nc=%d' % _nc)          # 仅供参考，不是告警
             if r.get('band_bad'):
                 fl.append('⚠G-3带病')
             P('  [%4d] V=%.4f µm³ | **定标 L/W/T %6.0f/%5.0f/%4.0f nm** | `max−min` %6.0f/%5.0f/%4.0f '
@@ -672,7 +769,8 @@ def _run(a, outdir, L, dx):
                  mm['T_cal'] * 1e9, mm['L'] * 1e9, mm['W'] * 1e9, mm['T'] * 1e9,
                  mm['Lb'] * 1e9, mm['Wb'] * 1e9, mm['Tb'] * 1e9,
                  mm['LW_cal'], mm['LT_cal'], mm['WT_cal'],
-                 mm['V'] / max(mm['L_cal'] * mm['W_cal'] * mm['T_cal'], 1e-30),
+                 mm['V'] / max(mm['L_cal'] * mm['W_cal'] * mm['T_cal'], 1e-30)
+                 if 'fill_cal' not in mm else mm['fill_cal'],
                  mm['ang_a_deg'], 100 * mm['f_a'], 100 * mm['f_w'], 100 * mm['f_n'],
                  mm['gmed'], (time.time() - t_start) / it, ' '.join(fl)))
             if np.isfinite(mm.get('nc', float('nan'))) and mm['nc'] > 1:
@@ -688,13 +786,41 @@ def _run(a, outdir, L, dx):
                   '⇒ 净驱动比 (Δf+Δed_尖)/(Δf+Δed_侧) = **%.3f**'
                   % (K0, mm['ded_a'], mm['ded_w'], mm['ded_n'], mm['ded_all'],
                      (DF + mm['ded_a']) / max(DF + mm['ded_w'], 1e-30)))
+        # ⚠ 记账（自查）：`_extra` 必须**在快照块之前**初始化 ——
+        #   第一版把它放在 `if it % a.snap_every == 0` 的**块内**，而下面
+        #   `--max-hours` 的干净停止也要存快照（`**_extra`）⇒ 若算例在**首个
+        #   `snap_every` 步之前**就触发 max-hours（例如 `--max-hours` 给得很小），
+        #   `_extra` **未定义** ⇒ `NameError` 正好落在"干净停止"那一行，
+        #   会**连最后一个快照一起丢掉**。⇒ 提到块外、每步都先置空。
+        _extra = {}
         if it % a.snap_every == 0 or it == a.steps:
+            #   `region` 的梯度是**网格轴向**的伪法向，不是物理法向。
+            #   ⇒ 在快照里加一个**极小的**界面法向直方图（8×8 = 512 B），
+            #     统计**目标变体 K0** 界面带上 `((n·n*)², (n·w)²)` 的分布。
+            #     有了它就能离线算出 `M̄` 在各方向的**有效值**（A-1 的核心量），
+            #     也能直接检验 B-18 的"为何只劣化 w–n* 一对"。
+            _extra = {}
+            try:
+                _gr = g.par.gradient(g.phi[K0], g.dx, edge_order=2)
+                _gn = np.sqrt(_gr[0] ** 2 + _gr[1] ** 2 + _gr[2] ** 2) + 1e-30
+                _band = np.abs(g.phi[K0]) < 1.5 * g.dx   # 零水平集附近的薄层（原为 `_gn > 0.2`，那选了 95% 的盒子 ⇒ 量错对象）
+                if int(_band.sum()) > 0:
+                    _nx = (_gr[0] / _gn)[_band]
+                    _ny = (_gr[1] / _gn)[_band]
+                    _nz = (_gr[2] / _gn)[_band]
+                    _c2h = (_nx * n_hab[0] + _ny * n_hab[1] + _nz * n_hab[2]) ** 2
+                    _c2w = (_nx * w_ax[0] + _ny * w_ax[1] + _nz * w_ax[2]) ** 2
+                    _H, _, _ = np.histogram2d(_c2h, _c2w, bins=8,
+                                              range=[[0.0, 1.0], [0.0, 1.0]])
+                    _extra['nhist'] = _H.astype(np.int32)
+            except Exception as _e:                                  # noqa: BLE001
+                P('   （快照法向直方图失败：%s）' % _e)
             np.savez_compressed(os.path.join(outdir, 'snap_%05d.npz' % it),
-                                region=g.region(), step=it, t=t_sim)
+                                region=g.region(), step=it, t=t_sim, **_extra)
         if (time.time() - t_start) / 3600.0 > a.max_hours:
             P('⏱ 达到 --max-hours=%.1f，干净停止于 step %d（数据已落盘）' % (a.max_hours, it))
             np.savez_compressed(os.path.join(outdir, 'snap_%05d.npz' % it),
-                                region=g.region(), step=it, t=t_sim)
+                                region=g.region(), step=it, t=t_sim, **_extra)
             break
     P('完成 %d 步，wall %.1f s（构造 %.1f s）' % (nrun, time.time() - t_start,
                                                 time.time() - t_build))

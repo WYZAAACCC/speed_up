@@ -22,6 +22,8 @@ import numpy as np
 from scipy import fft as sfft
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 
+import windowB_acct as acct
+
 
 def upwind_grad(phi, sgn, dx):
     """|∇φ| 的 Godunov 迎风离散（一阶）；sgn 为逐点符号场（+1/−1）：
@@ -42,6 +44,89 @@ def upwind_grad(phi, sgn, dx):
 def _minmod(a, b):
     """minmod 限制器：同号取绝对值小者，异号取 0（保单调）"""
     return 0.5 * (np.sign(a) + np.sign(b)) * np.minimum(np.abs(a), np.abs(b))
+
+
+# ======================================================================
+#  ★★★★★ R581-L6：`upwind_flux_vec` 的**整轴融合 C 核**（可选，**默认关**）
+#
+#  ## 为什么
+#  生产口径记账表（N=96/nv=48/onfly）实测 `op.upwind_flux_vec` = **16.9% 单步**
+#  （其中 `op.ufv.minmod` 12.2%）。Python 版每个轴 ≈ **37 趟 N³**（roll×4 / sub / div /
+#  minmod×2 / where …），三个轴 ≈ 111 趟，绝大多数是**中间临时量**的读写。
+#  融合核把每个轴压成「读 phi（4 个邻居面，顺序流）+ 读 Va + 写 out」。
+#
+#  ## 实测（`_r581_L6fuse.py`，N=96，交错配对 7 轮）
+#  * **2.122×**（0.14169 → 0.06678 s）⇒ 折算省 **8.94%** 单步
+#  * **逐位**：order ∈ {1,2} × V ∈ {一般 / 整轴为 0 / 全 0} 六种组合全部 `neq == 0`
+#    （判据用 **NaN 感知 + 符号位** 三重比较 —— 裸 `!=` 抓不到 ±0 的符号差）
+#  * 两个负对照都有分辨力
+#
+#  ## 构建可复现
+#  `bash _r581_buildc.sh` ⇒ `_r581_ufv.so` + `_r581_ufvc_build.txt`
+#  （gcc 版本 / 逐字命令 / 源码与 .so 的 SHA256）。
+#  ⚠ `-ffp-contract=off` **不可省**：FMA 收缩会改舍入次数 ⇒ 不再逐位。
+#
+#  ## 并行策略（goal 要求实测）
+#  扩展**单线程、不开 OpenMP**。理由：调用方 `upwind_flux_vec` 已经在 4 个 Python
+#  工作线程里跑（`ParCtx` 按轴 0 切 slab + halo），再开 OpenMP 只会**超额订阅**。
+#  实测判据在**生产路径**上做（`_r581_L6prof.sh`），不靠推理。
+#
+#  ## ⚠ 记账（**预期的计数变化**，不是漏算）
+#  C 档下 `op.ufv.body` / `op.ufv.diff` / `op.ufv.minmod` / `op.ufv.where` /
+#  `op._minmod` 这几个 tag 的计数都会变成 **0**（融合核内部不做 Python 级打点）。
+#  替代的活性判据：`par.upwind_flux_vec` / `op.upwind_flux_vec` 仍应 == 每步调用数。
+# ======================================================================
+_UFV_MODE = 'numpy'          # 'numpy'（归档）| 'c'（融合核）
+_UFV_C = None                # 懒加载的扩展模块
+_BBOX_MODE = 'legacy'        # 'legacy'（np.argwhere）| 'axis'（逐轴 any，R581-L4）
+
+
+def ufv_set_mode(mode):
+    """设定 `upwind_flux_vec` 的实现档。'c' 时**先验证扩展可加载**，失败就硬报错
+    （不许静默退回 numpy —— 那是"开关看起来生效、实则没有"）。"""
+    global _UFV_MODE, _UFV_C
+    m = str(mode).lower()
+    if m not in ('numpy', 'c'):
+        raise ValueError("ufv_mode 只支持 'numpy' / 'c'，收到 %r" % (mode,))
+    if m == 'c':
+        import _r581_ufv as _C                     # 载入失败就抛，不吞
+        _UFV_C = _C
+    _UFV_MODE = m
+
+
+def bbox_set_mode(mode):
+    """★ R581-L4：设定 `_bbox_pad` 的实现档（'legacy' | 'axis'）。"""
+    global _BBOX_MODE
+    m = str(mode).lower()
+    if m not in ('legacy', 'axis'):
+        raise ValueError("bbox_mode 只支持 'legacy' / 'axis'，收到 %r" % (mode,))
+    _BBOX_MODE = m
+
+
+def upwind_flux_vec_c(phi, V, dx, order=1):
+    """融合核版 `upwind_flux_vec`。**形状不符时返回 `None`** ⇒ 调用方回退 numpy。
+
+    ⚠ 返回 `None` 是**显式**的（不是静默退回）：只有"V 的某一支不是与 phi 同形状的
+      3D 数组"这一种情形（`ParCtx` 的 slab 路里允许 `v` 退化成标量）。
+    """
+    n = phi.shape
+    for ax in range(3):
+        va = V[ax]
+        if not (isinstance(va, np.ndarray) and va.ndim == 3 and va.shape == n):
+            return None
+    C = _UFV_C
+    ph = np.ascontiguousarray(phi)
+    out = None
+    first = True
+    for ax in range(3):
+        Va = np.ascontiguousarray(V[ax])
+        if not np.any(Va):                         # ★ 与归档**同一个跳过条件**
+            continue
+        if out is None:
+            out = np.empty(n, dtype=np.float64)
+        C.ufv_accum(ph, Va, float(dx), ax, 1 if first else 0, int(order), out)
+        first = False
+    return 0.0 if out is None else out
 
 
 def upwind_grad2(phi, sgn, dx):
@@ -139,7 +224,22 @@ def _bbox_pad(mask, pad=1, wrap=True):
          ⇒ 写回胞需距子盒边界 ≥1，其邻居需距边界 ≥1 ⇒ 写回胞需距边界 ≥2 ⇒ **pad=2**。
       ② `wrap=True`：掩模贴到网格面时，**该轴必须取满整程** —— 否则 `np.roll` 会在
          **子盒**内周期卷绕，而全盒算时是在**整盒**内卷绕，两者不同 ✗。
+
+    ★★★ R581-L4（goal §(6) ②）：`_BBOX_MODE == 'axis'` 时走**逐轴 `any`** 版。
+      ## 为什么
+      归档版用 `np.argwhere(mask)` ⇒ 造一个 `(M,3)` int64 索引数组（M = True 胞数）。
+      N=96 掩模占 20% 时 M≈177k ⇒ **4.2 MB** 的临时索引 + 对它的 6 趟 min/max。
+      逐轴版只做 3 趟 `mask.any(axis=…)` + 长度 N 的 `flatnonzero` ⇒ 无大临时量。
+      ## 实测（`_r581_L4_geom.py`，N=96，掩模占 20%，交错 9 轮）
+      **15.362×**（0.005997 → 0.000390 s）。
+      ## 等价性
+      **18 组（6 掩模 × 3 个 pad）给出的包围盒切片 tuple 完全一致**，
+      其中两组掩模**故意贴到盒面**（考 `wrap` 分支）。
+      ⚠ 记账（天花板）：`_bbox_pad` 只占 `adv.geom.mask_bbox` 的一部分，
+      而后者只占生产单步 **0.80%** ⇒ 本条**折算仅约 0.4% 单步**。如实登记，不夸大。
     """
+    if _BBOX_MODE == 'axis':
+        return _bbox_pad_axis(mask, pad, wrap)
     idx = np.argwhere(mask)
     if idx.size == 0:
         return None
@@ -152,6 +252,31 @@ def _bbox_pad(mask, pad=1, wrap=True):
         _touch = (idx.min(0) == 0) | (idx.max(0) == n - 1)
         lo = np.where(_touch, 0, lo)
         hi = np.where(_touch, n, hi)
+    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+
+
+def _bbox_pad_axis(mask, pad=1, wrap=True):
+    """★ R581-L4：`_bbox_pad` 的**逐轴 `any`** 版（与归档版给出**同一个**包围盒）。
+
+    不造 `(M,3)` 索引数组 ⇒ 少 4 MB 级临时量与 6 趟 min/max。
+    """
+    n = np.asarray(mask.shape)
+    lo = np.empty(3, np.int64)
+    hi = np.empty(3, np.int64)
+    touch = np.zeros(3, bool)
+    for ax in range(3):
+        other = tuple(a for a in range(3) if a != ax)
+        idx = np.flatnonzero(mask.any(axis=other))
+        if idx.size == 0:
+            return None
+        lo[ax] = idx[0]
+        hi[ax] = idx[-1] + 1
+        touch[ax] = (idx[0] == 0) or (idx[-1] == n[ax] - 1)
+    lo = np.maximum(lo - pad, 0)
+    hi = np.minimum(hi + pad, n)
+    if wrap:
+        lo = np.where(touch, 0, lo)
+        hi = np.where(touch, n, hi)
     return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
 
 
@@ -399,21 +524,33 @@ def upwind_flux_vec(phi, V, dx, order=1):
 
     `phi`：(N,N,N) 标量场；`V`：长度 3 的序列（逐胞矢量，可为逐胞 `np.where` 掩模后的场）；
     `order=1` 一阶迎风；`order=2` 二阶 ENO(minmod) 迎风。
+
+    ★ R581-L6：`_UFV_MODE == 'c'` 时走**整轴融合 C 核**（默认关；逐位判据见 `_r581_L6fuse.py`）。
     """
+    if _UFV_MODE == 'c':
+        _r = upwind_flux_vec_c(phi, V, dx, order=order)
+        if _r is not None:
+            return _r
+        # 形状不符（ParCtx slab 路里 V 可能退化成标量）⇒ 显式回退归档路
     acc = 0.0
     for ax in range(3):
         Va = V[ax]
         if not np.any(Va):
             continue
-        dm = (phi - np.roll(phi, 1, axis=ax)) / dx          # D⁻
-        dp = (np.roll(phi, -1, axis=ax) - phi) / dx         # D⁺
+        acct.span_begin('op.ufv.body')
+        with acct.mark('op.ufv.diff'):
+            dm = (phi - np.roll(phi, 1, axis=ax)) / dx          # D⁻
+            dp = (np.roll(phi, -1, axis=ax) - phi) / dx         # D⁺
         if order >= 2:
-            dmm = np.roll(dm, 1, axis=ax)
-            dpp = np.roll(dp, -1, axis=ax)
-            dm = dm + 0.5 * _minmod(dm - dmm, dp - dm)
-            dp = dp - 0.5 * _minmod(dpp - dp, dp - dm)
+            with acct.mark('op.ufv.minmod'):
+                dmm = np.roll(dm, 1, axis=ax)
+                dpp = np.roll(dp, -1, axis=ax)
+                dm = dm + 0.5 * _minmod(dm - dmm, dp - dm)
+                dp = dp - 0.5 * _minmod(dpp - dp, dp - dm)
         # 迎风选边：V>0 ⇒ 信息来自上游(−x) ⇒ 用 D⁻；V<0 ⇒ 用 D⁺
-        acc = acc + np.where(Va > 0, Va * dm, Va * dp)
+        with acct.mark('op.ufv.where'):
+            acc = acc + np.where(Va > 0, Va * dm, Va * dp)
+        acct.span_end('op.ufv.body')
     return acc
 
 
@@ -854,7 +991,11 @@ class LevelSetMulti(object):
                  aniso_elastic=False, C_hex_tab=None, C_cub=None, sigma_ext=None,
                  reinit_iters=100, reinit_dtau=None, reinit_grad='upwind2',
                  dG_of_T=None, T=None, T_of_t=None, reinit_dt=None,
-                 reinit_band_cells=6.0):
+                 reinit_band_cells=6.0, phi_prec='f64',
+                 fft_mode='c2c', eps0_mode='loop', ed_pair_mode='full',
+                 k_loop_mode='full', act_mode='unique', argmin2_mode='legacy',
+                 grad_mode='legacy', pf_phi_mode='materialized', h_chunk=4,
+                 eps0_tile=0, argmin_reuse=False, ufv_c=False, bbox_mode='legacy'):
         # ★★★ W1-2（2026-09-28，**Gate A-1 选项① —— 用户已批准启用**）：pair reinit 的**统计量域**。
         #   **默认 `6.0`（启用）**；显式传 `None` ⇒ 退回"全域"（改动前的旧行为，可复现归档）。
         #   为什么必须改（`_probe_grad_fixpoint.py` 实测）：
@@ -913,11 +1054,36 @@ class LevelSetMulti(object):
         #     `workers<=1` ⇒ 全部算子退回原单线程实现，行为逐位不变。
         from windowB_par import ParCtx
         self.par = ParCtx(workers)
+        self.par.grad_mode = 'legacy'      # ★ R579：构造末尾按 `grad_mode` 覆盖（见下）
         self.nthreads = int(workers or 1)
         # ★★ T3（2026-09-28）：`XYZ`（24 B/胞）**惰性分配** —— 它只在撒晶核时用到，
         #   而生产跑里撒核是稀疏事件（B1 的 athermal 形核），却全程占着内存。
         self._XYZ = None
-        self.phi = np.full((self.nreg, N, N, N), 1e3)
+        # ★★★★★ 2026-10-04（**N15：`phi` 的 dtype —— 解锁 10 µm 盒的唯一杠杆**）
+        #   ## 动机（`R550_MEMORY_ENVELOPE.md` §5，全部实测）
+        #     内存定律 `数组合计(MB) = 9.01·nv·N³/2²⁰ + 311.8·N³/2²⁰`（留一法 0.13%）。
+        #     * `311.8 B/胞` 的固定项 **94% 是 `pf.Lam`**，而仓库 `:1052-1060` **早已实测
+        #       否掉其 float32**（σ 相对误差 RMS 0.70）⇒ **固定项不可省**
+        #       （`_r551` 实测：砍掉 75% 的固定项，`nv_max` 只从 604 → 631，**+4.5%**）。
+        #     * 而 `9.01 B/胞` 的**边际项**里 **`g.phi` 占 89%**（8 B/胞 = float64）
+        #       ⇒ **这一项才是杠杆**。
+        #   ## 实测收益（外推）
+        #     `N=160`（10 µm）、22 GB 预算：
+        #       float64 ⇒ `nv_max ≈ 604` ⇒ 转变分数上限 **15.4%**（C5 做不到）
+        #       **float32 ⇒ 每 nv 35.20 → 19.57 MB ⇒ `nv_max ≈ 1087` ⇒ 上限 ≈ 27.7%**
+        #       （C5 要求"填满" ⇒ 30% ⇒ **基本可达**）
+        #   ## 为什么 `phi` 比 `Lam` 有希望（**这是【推理】，必须过量具**）
+        #     `Lam` 的危险来自 **1.2e10–1.3e11 量级的大数相消**；
+        #     而 `phi` 是**有符号距离函数**，取值 ~1e-4 – 1e3 µm，
+        #     float32 的 ~7 位有效数字对"取 `argmin` 定相"绰绰有余。
+        #   ## ⚠ 默认 `'f64'` ⇒ **逐位不变**
+        #     用户纪律："所有改动必须新开关、默认关、过回归"。
+        #     判据见 `R550_MEMORY_ENVELOPE.md §5.5` 的 **P1–P5**。
+        _phi_dt = (np.float32 if str(phi_prec).lower() in ('f32', 'float32')
+                   else np.float64)
+        self.phi_prec = str(phi_prec)
+        self.phi = np.full((self.nreg, N, N, N), 1e3, dtype=_phi_dt)
+        acct.bmem('build.phi.bytes', self.phi)
         # 体相成分与面上过剩（Gibbs 面的状态量）
         try:
             import sys as _s
@@ -1040,9 +1206,122 @@ class LevelSetMulti(object):
         #     （更大工程），那时本开关应被替换而不是保留。
         #   ⛔ 按 `R8`：**本改动改变全部含 `ed` 的归档读数** ⇒ 引用前必须重跑。
         self.elastic_soft = True
+        # ★★ R562：`ed_pair_mode` —— `elastic_driving_pair` 在 soft 路径下的读出方式。
+        #   'full'  = 旧路：造 `(nreg,N³)` + `nreg` 次 einsum + 2 次 `take_along_axis`
+        #             （下游只用 winner/runner-up 两行 ⇒ **nreg−2 行白算**）
+        #   'gather'= 只 gather 那两行，实测 **4.92×**，且与 'full' **逐位相同**
+        #             （同一个 `einsum('p,p...->...')` 调用形状 ⇒ 归约次序不变）
+        self._ed_pair_mode = str(ed_pair_mode).lower()
+        if self._ed_pair_mode not in ('full', 'gather'):
+            raise ValueError('ed_pair_mode 只支持 full / gather，收到 %r'
+                             % (ed_pair_mode,))
+        # ★★★ R578：`k_loop_mode` —— 推进循环 `for_each(k in …)` 的**遍历集合**。
+        #   'full' = 旧路：`range(nreg)`（**所有场**，含从未出现在 winner/runner-up 里的空场）
+        #   'act'  = 只遍历 `act = unique(karr) ∪ unique(larr)`（**活跃场**）
+        #
+        #   ## 为什么等价（可证，不是近似）
+        #     `_step_k(k)` 的第一件事是
+        #         `vnk = coef * (where(karr==k,1,0) − where(larr==k,1,0))`
+        #         `if not np.any(vnk != 0): return`
+        #     若 `k ∉ act`，则 `karr==k` 与 `larr==k` **逐位全 False** ⇒ 括号内恒 `0.0`
+        #     ⇒ `vnk = coef * 0.0 ≡ ±0.0`（`coef` 实测无 inf/NaN ⇒ 不会出现 `0*inf=NaN`）
+        #     ⇒ `np.any(vnk != 0)` 为 False ⇒ **必然 return，不写任何东西**。
+        #     ⇒ 把 k 限定在 `act` 上，**跳过的是"什么也不做"的调用**。
+        #
+        #   ## 为什么值得做（`_r576_prof.py` 实测，N=64/nv=24）
+        #     `adv.step.vnk` 每步被调 **25 次**（= nreg），而真正活跃的场只有 **4** 个
+        #     ⇒ **21/25 是纯浪费**；该项占单步 **12.6%**（并发和）。
+        #
+        #   ⚠ 默认 `'full'` ⇒ **归档路径一个字节都不变**（由 `_r30_regress.sh` 把关）。
+        self._k_loop_mode = str(k_loop_mode).lower()
+        if self._k_loop_mode not in ('full', 'act'):
+            raise ValueError('k_loop_mode 只支持 full / act，收到 %r' % (k_loop_mode,))
+        # ★★★ R578（goal §3③）：`act` 的计算方式。
+        #   'unique'   = 旧路：`unique(concat(unique(karr), unique(larr)))`（**三次 O(N³ log N) 排序**）
+        #   'bincount' = `flatnonzero(bincount(karr) + bincount(larr))`（**线性计数**）
+        #   两者给出**同一个升序集合**（实测 `np.array_equal` 为真）；
+        #   实测（`_r578_opt3.py`，N=64）**6.12×**，区间 [5.44, 7.14]。
+        self._act_mode = str(act_mode).lower()
+        if self._act_mode not in ('unique', 'bincount'):
+            raise ValueError('act_mode 只支持 unique / bincount，收到 %r' % (act_mode,))
+        # ★★★ R578（goal §3①）：`argmin2` 的 runner-up 扫描写法。
+        #   'legacy' = `l[mj] = j` / `best[mj] = pj[mj]`（布尔花式索引）
+        #   'copyto' = `np.copyto(..., where=mj)`（**逐位相同**，实测 1.265×）
+        self._argmin2_mode = str(argmin2_mode).lower()
+        if self._argmin2_mode not in ('legacy', 'copyto'):
+            raise ValueError('argmin2_mode 只支持 legacy / copyto，收到 %r'
+                             % (argmin2_mode,))
+        # ★★★ R579（goal §6）：`grad_mode` —— `par.gradient` 的实现。
+        #   'legacy' = 归档旧路（对带 halo 的子盒调 `np.gradient`）
+        #   'sliced' = `_np_gradient_edge2`（**逐行照抄 numpy 的 edge_order=2 边界公式**）
+        #   判据（`_r579_grad.py`）：P1 与 `np.gradient` **逐位相同 0.000e+00**；
+        #     P2 `nthreads=4` vs `1` 逐位相同；P3 首末两层单独核也相同；
+        #     P4a 负对照（"先分子后除"）在生产 dx 上给出 **1.598e-16**（有分辨力）；
+        #     P4b 负对照（边界改周期）给出 **8.816e-01**。
+        #   ⚠ 速度：微基准中位 **1.143×**，但区间 [0.487, 2.501]（**在被满载的机器上量的**）
+        #     ⇒ **速度收益未确立**，如实记账（`R579_*.md`）。
+        self._grad_mode = str(grad_mode).lower()
+        if self._grad_mode not in ('legacy', 'sliced'):
+            raise ValueError('grad_mode 只支持 legacy / sliced，收到 %r' % (grad_mode,))
+        # ★ R579：把 `grad_mode` 落到**已经建好的** `ParCtx` 上（`self.par` 在上面就建了）。
+        #   ⚠ 顺序坑：`self.par` 在 `__init__` 早段创建，而 `grad_mode` 在稍后才解析
+        #     ⇒ 必须在这里**显式覆盖一次**；否则开关"看起来生效、实则没有"
+        #     （正是本仓库反复记的那类静默失效）。
+        #   ⚠ 而且 `elastic_driving()` 可能在 `__init__` **之前/之中**被调用过
+        #     ⇒ 本行之后的调用才受开关控制。已在 builder 的路径上核对（`_bk_exp.py` 在
+        #     `LevelSetMulti(...)` 返回后才用）。
+        if getattr(self, 'par', None) is not None:
+            self.par.grad_mode = self._grad_mode
+        # ★★★ R579（goal §4）：`pf_phi_mode` —— `pf.phi`（软指示场，8 B/胞·nv）是否常驻。
+        #   'materialized' = 归档旧路（写进 `pf.phi` 再读）
+        #   'onfly'        = **不物化**：`eps0_fields` 按 `h_chunk` 分块现算软指示场
+        #   ⚠ N=160 实测（`_r579_mem160.py`）：现状 `a = 16.000 B/胞`（`g.phi` 8 + `pf.phi` 8）
+        #     ⇒ 而 C5（10 µm 填 30%，需 nv≈782）要求 `a ≤ 6.8`。
+        #     本开关把 `pf.phi` 那 8 B/胞去掉（只剩 bool 的 1 B/胞）⇒ `a ≈ 9`（f64 φ）。
+        #   ⚠ 逐位等价由 `_r579_pfphi.py` 判定（累积次序与 `eps0_mode='loop'` 同一串运算）。
+        self._pf_phi_mode = str(pf_phi_mode).lower()
+        if self._pf_phi_mode not in ('materialized', 'onfly'):
+            raise ValueError('pf_phi_mode 只支持 materialized / onfly，收到 %r'
+                             % (pf_phi_mode,))
+        self._h_chunk = int(h_chunk)
+        if self._h_chunk < 1:
+            raise ValueError('h_chunk 必须 >= 1，收到 %r' % (h_chunk,))
+        # ★★★★★ R581-L2（goal §(4)）：`eps0_tile` —— `eps0_fields_stream` 的**首轴空间分块**。
+        #   0 = 归档旧路（整场 axpy）。>0 = 每块 `eps0_tile` 个首轴切片。
+        #   为什么需要：生产（onfly, N=96/nv=48）实测 `el.epsh` = **47.5% 单步**，
+        #   其中 1.10 s 是这个函数 —— **不是算子重，是 `e`(48 B/胞) 溢出 cache**，
+        #   288 次整场 axpy 把 `e`/`h` 反复从 DRAM 过 ⇒ ~4.1 GB/步。
+        #   分块后 `e` 的切片留在 L2/L3 ⇒ 微基准 **1.81–1.89×**（42 档组合**全部逐位**）。
+        #   ⚠ 逐位是**结构性**保证：只切外层循环，每个胞沿 `v` 的累加次序一字不变。
+        self._eps0_tile = int(eps0_tile or 0)
+        if self._eps0_tile < 0:
+            raise ValueError('eps0_tile 必须 >= 0，收到 %r' % (eps0_tile,))
+        # ★★★★★ R581-L5（goal §(7) ①）：**复用 `region()` 的 winner**，不再重算一次 argmin。
+        #   为什么是"欠账"：`advance()` 里 `reg0 = self.region()` 与
+        #   `self.par.argmin2(self.phi)` 算的是**同一个 argmin**，两者之间 `self.phi`
+        #   未被修改 ⇒ 结果逐位相同（论证见 `ParCtx.argmin2` 的 docstring）。
+        #   ⇒ 每步的 argmin 次数 **4 → 3**（`region()` 本身仍 3 次/步，
+        #     去掉的是 `argmin2` 内部那次重复的 `np.argmin`）。
+        #   逐位判据 `_r581_L5check.py`（P1/P2 逐位、P3 负对照有分辨力、P4/P5 计数）。
+        self._argmin_reuse = bool(argmin_reuse)
+        # ★★★★★ R581-L6：`upwind_flux_vec` 的实现档（默认 'numpy' = 归档路）。
+        #   ⚠ 它是**模块级**状态（`upwind_flux_vec` 是模块函数、被 `ParCtx` 与
+        #     `advance` 多处直接调用）⇒ 在构造时**显式**设定一次，并在 banner 里自述。
+        ufv_set_mode('c' if ufv_c else 'numpy')
+        self._ufv_mode = _UFV_MODE
+        # ★ R581-L4：`_bbox_pad` 的实现档（默认 'legacy' = 归档路）。
+        bbox_set_mode(bbox_mode)
+        self._bbox_mode = _BBOX_MODE
+        if getattr(self, 'pf', None) is not None:
+            # ⚠ 若 `pf` 已建好，先清掉挂钩（`__init__` 早段就建了 pf）⇒ 默认路径不变。
+            self.pf._h_src = None
+            self.pf._h_chunk = self._h_chunk
+            self.pf._h_slab = self._eps0_tile
+            self.pf._eps0_lag = None       # ★ R580（P1）：诊断缓存也要清
         if C is not None and eps0 is not None:
             from windowB_pf3d import (PF3D, VOIGT, G6 as _G6, _lam_full)   # noqa: F401
-            self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
+            with acct.bcost('build.PF3D'):
+                self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
                            workers=workers, k0_mode=k0_mode,
                            sigma_ext=self.sigma_ext,
                            # ★★ T3（2026-09-28）：level-set 路径只把 `pf.phi` 当**指示场**用
@@ -1057,11 +1336,22 @@ class LevelSetMulti(object):
                            #   ⚠ 陷阱：`|ΔE_el|/E_el` 只有 **1.9e-9**（能量由精确的低 k
                            #   模态主导）⇒ **只看能量判据会放过这个错**。
                            #   这条否掉了原计划里的"Λ 存 complex64"（方向对、但精度不够）。
-                           lam_prec='f64')
+                           lam_prec='f64',
+                           # ★★★ R561–R567（算子优化，**默认 = 旧路，逐位不变**）：
+                           #   `fft_mode='rfft'` ⇒ 弹性走**实数 FFT 半谱**，实测整链
+                           #     **1.71×**，且经 Nyquist 面 Hermite 修正后与 c2c 路
+                           #     等价到 **6.1e-16**（`_r567_nyqfix.py` N1）；
+                           #     顺带 `Lam` 常驻 288 → 144 B/胞。
+                           #   `eps0_mode`：'loop'(旧) / 'einsum'(1.76×，**逐位相同**) /
+                           #     'gemm'(18.1×，2.7e-16)。
+                           #   ⚠ 默认一律 'c2c'/'loop' ⇒ 归档路径**一个字节都不变**。
+                           fft_mode=fft_mode, eps0_mode=eps0_mode)
             # ★ T3：K 表只在建 Lam/_k2 时用到 ⇒ 建完释放（24 B/胞）
             self.pf.K = None
-            self.e0v_eng = np.array([[eps0[v][i, j] for (i, j) in VOIGT]
-                                     for v in range(self.nv)]) * _G6[None, :]
+            with acct.bcost('build.e0v_eng'):
+                self.e0v_eng = np.array([[eps0[v][i, j] for (i, j) in VOIGT]
+                                         for v in range(self.nv)]) * _G6[None, :]
+            acct.bmem('build.e0v_eng.bytes', self.e0v_eng)
             self._G6 = _G6
         if self.aniso_elastic:
             # ★★ 逐变体模量（方案：参考介质 + 极化迭代；已过 AS-1/AS-1b/AS-2）：
@@ -1128,7 +1418,9 @@ class LevelSetMulti(object):
             self.nstar_spread = float((_e.max() - _e.min()) / max(abs(_e.mean()), 1e-30))
 
         if C is not None and eps0 is not None:
-            self.ncmp = self._pair_normals(C, eps0)
+            with acct.bcost('build.ncmp'):
+                self.ncmp = self._pair_normals(C, eps0)
+            acct.bmem('build.ncmp.bytes', self.ncmp)
 
     # ---------- 区域与几何 ----------
     @staticmethod
@@ -1221,19 +1513,41 @@ class LevelSetMulti(object):
     def region(self):
         # ★★ R1（2026-09-29）：空间切片并行（逐位相同；`argmin` 沿 axis=0 的次序不变）。
         #   实测（N=192）：`argmin over 13 fields` 单线程 0.216 s → ×4.1 @16 线程。
+        #
+        # ★★★ R474（2026-10-01，**任务(3)：放开"位置数"上限**）：**int8 → int16**。
+        #   为什么必须改：`int8` 的**有符号**上限是 **127**，而 `region()` 的取值是
+        #   **场号 0..nreg−1**，其中 `nreg = nv + 1`（`nv` = 板条数）。
+        #   ⇒ 实际天花板是 **nv ≤ 119**（还有 `windowB_lath.py` 的显式守卫）。
+        #   实测影响（不是将来问题，是**现在就有**）：
+        #     · `_w2_r464_r464A.log` 启动即打印
+        #       「⚠⚠ **表示上限不足**：nv=8 < 导出的 n=23 ⇒ 块会被截断在 nv 根」；
+        #     · `dry_abA` 运行中 `nreg_used` **长期钉在 24**（= 它的 `nv`）⇒ 一直被截断；
+        #     · 而任务(5) 要"填满 ≥10 µm 盒子"需要 **220–450 根**（`§202`）。
+        #   ⇒ 不改这里就没法做任务(5)。
+        #   ⚠ **数值影响：零**。`argmin` 的**取值**与输出 dtype 无关，而 `nv ≤ 119` 时
+        #     int16 与 int8 存的是**同一个整数** ⇒ 所有下游比较/索引/CSV 列**逐位不变**。
+        #   ⚠ **代价**：`region()` 的内存 ×2（N=192 时 7 MB → 14 MB，可忽略）；
+        #     快照里的 `region` 也 ×2（N=192 时 7 MB → 14 MB/帧）。
+        #   ⚠ **配套改动（同一任务，缺一不可）**：
+        #     · `windowB_lath.py:229` 的 `M+1 > 120` 守卫 → int16 上限；
+        #     · `_bk_exp.py:331/335` 的 `band_fld`（int8 → int16）。
         _p = getattr(self, 'par', None)
         if _p is not None:
-            return _p.argmin(self.phi).astype(np.int8)
-        return np.argmin(self.phi, axis=0).astype(np.int8)
+            return _p.argmin(self.phi).astype(np.int16)
+        return np.argmin(self.phi, axis=0).astype(np.int16)
 
     # ================= 长大中的形核（D18，2026-09-28 用户批准并入）=================
     def nuc_cfg(self, R_nuc, t_nuc, gamma=0.15, n_init=0, p_auto=0.0,
+                shape='disc',
                 harden_f=1.0, sym_gap_cells=2, max_per_step=1, seed=11,
                 var_rule='ed', use_fcrit=False,
+                supercrit=False, sites_refill=False, sites_margin=4,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
+                nfsv_diag=False, periodic_seed=False,
                 elong=1.0, along=None, prefer_end=True, nfsv_strict=True,
                 along_per_variant=False,
                 block_edge=True, align_inplane=True, alt_side=True,
+                stack_pick_dg=False,
                 force_reinit_after_event=None, t_last_reduce=0.0):
         """⚠⚠ **`harden_f=1.0` 是本函数的默认值 ⇒ 阶段③默认不可达**
         （`hardened = f_now >= 1.0` 要求母相胞数恰为 0）。见
@@ -1284,6 +1598,32 @@ class LevelSetMulti(object):
                          gap=int(sym_gap_cells), cap=int(max_per_step),
                          var_rule=str(var_rule),
                          use_fcrit=bool(use_fcrit),
+                         # ★ N13（2026-10-04）：供 `seed_plate` 取最小镜像用。
+                         #   ⚠ **必须由 `seed_plate` 能读到**（它是实例方法、拿不到 `c`）。
+                         #   `False`（默认）⇒ `seed_plate` 不折回 ⇒ 归档逐位不变。
+                         periodic_seed=bool(periodic_seed),
+                         # ★★★★★ R479（2026-10-01）：**超临界判据（任务(2) ②）**。
+                         #   语义见 `PHYSICS_FIRST_SPEC.md §三【改 2】` 与 §6.1：
+                         #       板条能站住 ⟺ `ΔG_v(T) + ed_face > 2γ/t`
+                         #   与旧的 `use_fcrit`（用**位点上、放核前**的 `ed`）的**根本区别**：
+                         #     `ed` 在放核**前**只是"与已有板条的相互作用"（**实测 +1.9e8**，
+                         #     该量可正可负），而放核**后**它含**自身弹性能**（**实测 −2.5e8**）
+                         #     ⇒ **两者符号都不同** ⇒ 用放核前的值判"放下去站不站得住"**无效**
+                         #       （这正是旧 `use_fcrit` 恒为真的原因：`4γ/t = 2.4e6`
+                         #        远小于 `df + max_k ed_k ≳ 1.2e8`，51 倍余量）。
+                         #   ⇒ 本判据做的是**试放**：在**不改任何场**的前提下，构造一个
+                         #     "试放后的 `region`"，用它跑一次弹性求解，再判。
+                         supercrit=bool(supercrit),
+                         # ★ R508：**核的形状**。'disc'（默认，= 归档行为）
+                         #   或 'ellipsoid'。详见 `seed_plate` 里的长注释与
+                         #   `R507_fullclosure`：尖边圆柱的弹性罚比光滑椭球高 52%，
+                         #   把形核窗口从 344 K 压到 80 K，导致 C3 与块厚带无法同时满足。
+                         nuc_shape=str(shape),
+                         # ★ R481（任务(2) ③）：**位点池"持续可用"**。
+                         #   语义与记账见 `nucleate()` 里 `sites_refill` 的长注释。
+                         #   ⚠ **默认 False** ⇒ 归档行为逐位不变（池子用尽即止）。
+                         sites_refill=bool(sites_refill),
+                         sites_margin=int(sites_margin),
                          # ★★★ R11（2026-09-29）：**块的"可表示性"与"界面 regime"**
                          #   两个开关。默认全关 ⇒ 与归档逐位相同。
                          #
@@ -1325,6 +1665,55 @@ class LevelSetMulti(object):
                                  if vgroup is not None else None),
                          nfsv=bool(nfsv), attach=bool(attach),
                          attach_overlap=float(attach_overlap),
+                         # ★ 2026-10-04（**N11**）：拒绝路径的取证开关。
+                         #   `False`（**默认**）⇒ 一个字都不算 ⇒ 归档逐位不变。
+                         #   见 `nucleate()` 里 `nfsv_nofield` 分支的说明。
+                         nfsv_diag=bool(nfsv_diag),
+                         # ★★★★★ 2026-10-04（**N13：播种非周期 vs 动力学周期**）
+                         #   ## 缺陷（读代码 + 实测计数）
+                         #     动力学是**周期**的（`np.roll`，全场各处都用），
+                         #     但**播种**不是：
+                         #       * `seed_plate` 用 `rel = self.XYZ - c` —— **不做最小镜像**；
+                         #       * 两条落位通道（`attach` 在 `:2163`、`fresh/stack` 在 `:2220`）
+                         #         都在**周期折回之后**按**有界盒**判越界：
+                         #           `if np.any(cc < R + 0.3e-6) or np.any(cc > L - R - 0.3e-6)`
+                         #         —— 可 `:2162` 刚刚做过 `cc -= L*floor(cc/L)`（周期折回）
+                         #         ⇒ **先折回、再按有界盒拒绝**，自相矛盾。
+                         #     后果：随机位点里**离盒面 < R+0.3 µm 的那一大片全被丢掉**，
+                         #       而它们在周期盒里**与盒子中心完全等价**。
+                         #   ## 实测代价
+                         #     `_r541` 的 b4 臂：**`oob = 122` 次**、`ok = 13` 次
+                         #     ⇒ 绝大多数落位尝试**死在边界上**（不是死在物理上）。
+                         #     代码自己也记过这件事（`:2209` 的注释：
+                         #       "Round 65 实测的 **90% 越界**"），
+                         #     但当时的修法只改了**扫描距离**，**没动"有界盒"这个根**。
+                         #   ## 为什么这会卡住 C5（填满盒子）
+                         #     `blocks` 的数目直接由"能落位的随机位点数"决定
+                         #     （见 `R525 §4b`：`fresh_blocked` 是上游真卡点）
+                         #     ⇒ 白白丢掉一大半位点 ⇒ **块数上不去 ⇒ 填不满盒子**。
+                         #   ## 修法（**两步，必须配套**）
+                         #     ① `seed_plate` 取**最小镜像**（`rel -= L*round(rel/L)`）；
+                         #     ② 跳过那两条"有界盒"越界拒绝。
+                         #     ⚠ 只做② ⇒ 种子被盒面**截断**（`EXPERT-#1` 记的老问题）
+                         #       ⇒ **两件事必须一起开**（`_per_seed` 与
+                         #       `self._nuc['periodic_seed']` 是**同一个**开关）。
+                         #   ## ⚠⚠ 我第一版在这里写"①无条件加也安全"，**那是错的**
+                         #     我当时只看了**支撑域**（`|rel_i| < L/2 ⇒ round=0`），
+                         #     忘了 `phi[k] = min(phi[k], sdf)` 是**全盒逐格**比较，
+                         #     **`sdf` 的正尾巴也算数**：盒面另一侧（离种子 `L−|rel|`）
+                         #     的格点折回后可能落进 `sdf` 的小正值区间（如 `1e3 → 0.2`）
+                         #     ⇒ `argmin(phi)` 会翻 ⇒ **真的改变结果**。
+                         #     ⇒ 所以①也必须挂开关。（`_r543` 的 T3/T4 就是查这一条：
+                         #       T3 要求"盒内种子逐位不变"，T4 要求"跨面种子必须有区别"。）
+                         #   ⚠ 默认 **False** ⇒ 两条拒绝**照旧**、`seed_plate` **不折回**
+                         #     ⇒ 归档路径**逐位不变**。
+                         #   ⚠ 上面 1304 处的 `self._nuc` 里**已经**写了这个键
+                         #     （`seed_plate` 要从 `self._nuc` 读）⇒ **此处不得重复写**
+                         #     （第一版重复了 ⇒ `SyntaxError: keyword argument repeated`）。
+                         # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` **§200**）：
+                         #   **接线缺口 #3 的修复** —— 把"选块"接上驱动力。
+                         #   默认 `False` ⇒ 归档路径逐位不变。
+                         stack_pick_dg=bool(stack_pick_dg),
                          # ★★★ R12：**核的形状**。原先两条通道都调
                          #   `seed_plate(k, cc, nrm, R, t)` —— **不传 `elong`/`along`
                          #   ⇒ 播的是圆盘**（面内足迹 `πR²`）。
@@ -1447,6 +1836,52 @@ class LevelSetMulti(object):
         dt = ndimage.distance_transform_edt(par) * self.dx
         return (dt >= (R_nuc + gap_cells * self.dx)) & par, par
 
+    def _supercrit_probe(self, kk, cc, nrm, R, t, cover, df, gamma,
+                          shape='disc'):
+        """★ R479：**超临界试放**（真放 + **精确回滚**，净效果 = 不改任何场）。
+
+        判据（`PHYSICS_FIRST_SPEC §6.1`）：板条能站住 ⟺ `ΔG_v(T) + ed_face > 2γ/t`。
+
+        ## ⚠⚠ 本方法的第一版被**它自己的预登记判据否决了**（留痕，不抹掉）
+        第一版**不写场**：只造一个"假如把 `cover` 划给 `kk`"的试放 `region`，
+        跑一次弹性求解就读 `ed`。理由是"`sigma_tensor(idx)` 只认 `region` 不认 `phi`"。
+        **实测（`_r479_supercrit.py` T1）**：
+            试放 `med_ed = −4.074e8`  vs  真放 `med_ed = −3.172e8`  ⇒ **相对差 28.4%**
+            （预登记判据 ≤ 15% ⇒ **FAIL**）
+        **根因**：`seed_plate` 还会把**其它场**写成 `phi[j] = max(phi[j], −sdf)`，
+        那会改**盘外**的 `region` ⇒ 改**近场** σ ⇒ 改这张盘自己的自能
+        ⇒ **试放 `region` 与真 `region` 不是同一个东西**，近似不成立。
+
+        ## 现在的实现：**真放 + 精确回滚**
+        调 `seed_plate(..., undo=bak)`（`undo` 只记"**真正改变了的胞**"的旧值，
+        见 `_seed_undo_note`），跑 `elastic_driving()` 读该盘自己的 `ed`，
+        若判据不过 ⇒ `_seed_undo_apply(bak)` **精确还原**（无近似）。
+        ⚠ 代价：每个候选位点多一次 `seed_plate` + 一次 `elastic_driving`
+        （全场 FFT 求解，`_r439` 实测 N=96 量级 **~0.6 s**）+ 一次 undo 记账。
+        ⚠ **几何全部由调用方传入**（`cc`/`nrm`/`R`/`t`），**不从 `cover` 反推** ——
+        反推会对不上 `seed_plate` 的构造（第一版就踩了这个）。
+
+        返回 `(ok, med_ed, fcrit, n_cover)`。
+        """
+        pf = getattr(self, 'pf', None)
+        nc = int(cover.sum())
+        if pf is None or nc == 0:
+            return True, float('nan'), float('nan'), nc
+        fcrit = 2.0 * float(gamma) / max(float(t), 1e-30)
+        bak = []
+        try:
+            self.seed_plate(kk, cc, nrm, R, t, undo=bak, shape=shape)
+            ed = self.elastic_driving()
+            med = float(np.median(ed[kk][cover]))
+        except Exception:
+            self._seed_undo_apply(bak)
+            raise
+        finally:
+            # ★ 无论成功失败都必须还原（净效果 = 不改场）
+            self._seed_undo_apply(bak)
+        return bool(float(df) + med > fcrit), med, fcrit, nc
+
+
     def nucleate(self, ed, R_nuc=None, t_nuc=None, n_fresh=0, n_stack=0,                 f_now=0.0, drive_min=None, df=0.0):
         """**每步调用一次**：按三阶段规则新增核。返回本轮新种下的 `[(k, mode)]`。
 
@@ -1460,7 +1895,32 @@ class LevelSetMulti(object):
         t = c['t'] if t_nuc is None else float(t_nuc)
         rng = c['rng']
         nv = self.nreg - 1
+        # ★ N13（2026-10-04）：本调用内联一次，供两条落位通道（`attach` 与
+        #   `fresh/stack`）共用。
+        #   ⚠⚠ **第一版把它写在了 `nuc_cfg` 里**（那里也有一个 `c = self._nuc`）
+        #     ⇒ 真实算例当场崩 `NameError: name '_per_seed' is not defined`
+        #     （`_r544` 两臂双双 rc=1，`_r543` 那个量具**覆盖不到** `nucleate` 路径）。
+        #     ⇒ 教训：**同名局部变量在两处出现，不等于两处都绑定了**
+        #       （本仓 §3.3 教训 24 的同类）。
+        _per_seed = bool((getattr(self, '_nuc', None) or {})
+                         .get('periodic_seed', False))
         out = []
+        # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` **§189.6**）：**潜在崩溃修复**。
+        #   `_dbg` 原先**只在 `if n_stack > 0:` 分支里**绑定（`:1669`），
+        #   而函数末尾的记账（`:1974`）**无条件**读它：
+        #       `if out: _dbg['n_events'] = _dbg.get('n_events', 0) + len(out)`
+        #   ⇒ 只要**调用方传 `n_stack=0`、且 `fresh` 通道成功种下一片**
+        #     （`out` 非空），就会 `UnboundLocalError: cannot access local variable '_dbg'`。
+        #   ## 为什么归档从未撞上
+        #     归档全部路径都传 `n_stack=1`（`_bk_exp.py` 的
+        #     `n_fresh=(1 if nuc_init>0 else 0), n_stack=1`）⇒ `if n_stack > 0` 恒真
+        #     ⇒ `_dbg` 恒被绑定。**是"另一条合法调用路径"才暴露出来的潜伏 bug**，
+        #     不是新引入的。
+        #   ## 实测（`_r421` 冒烟，臂 smR）
+        #     `--nuc-fresh-every 4` 让第 1 个事件走 `n_stack=0` ⇒ 当场崩在 `:1974`。
+        #   ⇒ 修法：**无条件**在函数开头绑定（`setdefault` 语义不变，
+        #     只是把"何时绑定"提前）⇒ 数值行为**逐位不变**。
+        _dbg = c.setdefault('dbg', dict(att=0, oob=0, cov=0, exc=0, ok=0, nocand=0))
 
         def _along_of(kk):
             """★ R31（P1-17）：该场自己的**真长轴**；取不到就退回全局 `along`。
@@ -1498,8 +1958,49 @@ class LevelSetMulti(object):
 
         # ---------- ① 待机核：按 `argmax_k ed` 激活（Du 2017 的"弹性能变化最小"）
         sites = c.get('sites', [])
-        if sites and n_fresh > 0:
-            # ★★ Round 103 修（`WINDOWB_AUDIT_REGISTER.md` A8）：原来写
+        # ★★★★★ R481（2026-10-01，**任务(2) ③：位点"持续可用"**）。
+        #   ## 病灶（`nuc_cfg` 的 `_nuc_place_initial` + 下面的 `sites.pop(i)`）
+        #     t=0 一次撒 `n = nuc_init` 个位点，**用过即 `pop` 移除**
+        #     ⇒ 池子耗尽后 `if sites and n_fresh > 0` 直接不成立 ⇒ **再也形不了核**，
+        #       而 athermal 律 `n(T) = α_KM(M_s − T)` 还在继续要求新核
+        #       ⇒ **"定律要核、池子没有"** 的静默缺口。
+        #   ## 物理上正确的语义（不是"补货"，是"本来就不该用尽"）
+        #     位点代表**母相里预先存在的异质形核位置**（晶界、位错胞壁）。
+        #     它们是**密度**意义的（单位体积多少个潜在位点），**不随激活而消失** ——
+        #     被激活的只是"这一个位置"，其余位置照旧存在。
+        #     ⇒ 正确实现：**池子见底时按同一分布继续抽**（与 t=0 的抽法逐字相同：
+        #       均匀位点 + 均匀变体），而不是停手。
+        #   ⚠ 记账（这是**模型选择**，不是从文献推出来的率律）：
+        #     真实异质位点的**数密度**与**空间关联**本项目**没有标定**
+        #     ⇒ 本开关只保证"**不会因为池子空而停**"，**不声称**位点密度是物理值。
+        #     与 `§改 3` 的纪律一致：**不自己造定量律**；这里造的是"补齐"而不是"新律"。
+        #   ⚠ `sites_refill=False`（**默认**）⇒ 一个字都不进 ⇒ 归档路径逐位不变。
+        #   ⚠ 只在 `'sites' in c`（即 `--nuc-init > 0` 已经建过池）时生效
+        #     ⇒ **不会**在 `--nuc-init 0` 时凭空打开 `fresh` 通道。
+        if bool(c.get('sites_refill', False)) and n_fresh > 0 and ('sites' in c):
+            _need = int(n_fresh) + int(c.get('sites_margin', 4))
+            _pad = c['R'] + 2 * self.dx
+            _gen = 0
+            _cap_gen = 4 * _need + 8
+            while len(sites) < _need and _gen < _cap_gen:
+                # ★ N13 第 ④ 处（2026-10-04）：**回填的位点也在按有界盒缩范围**。
+                #   `_pad = R + 2dx`（本算例 = 250 + 125 = **375 nm**）
+                #   ⇒ 新位点被压在 `[0.375, 3.625] µm` 里
+                #   ⇒ 允许体积只有 `((4−0.75)/4)³ = **50.8%**` ⇒ **丢掉一半**。
+                #   而这与 `seed_plate`/`oob` 是**同一个"有界盒"假设的第 4 次体现**
+                #   ⇒ `periodic_seed=True` 时改为**铺满整盒**（周期盒里处处等价）。
+                #   ⚠ 默认 `False` ⇒ 与原写法**逐位相同**（同一行代码、同一 `rng` 调用序）。
+                _lo, _span = ((0.0, self.L) if _per_seed
+                              else (_pad, self.L - 2 * _pad))
+                sites.append((int(rng.integers(1, self.nreg)),
+                              rng.random(3) * _span + _lo))
+                _gen += 1
+            if _gen:
+                _c7 = c.setdefault('dbg', dict(att=0, oob=0, cov=0,
+                                               exc=0, ok=0, nocand=0))
+                _c7['sites_refilled'] = _c7.get('sites_refilled', 0) + _gen
+                c['sites'] = sites
+        if sites and n_fresh > 0:            # ★★ Round 103 修（`WINDOWB_AUDIT_REGISTER.md` A8）：原来写
             #   `cl = np.clip(ed[1:], None, None)` —— **两端都是 `None` ⇒ 恒等变换**
             #   （实测 `np.clip([-1,2],None,None) == [-1,2]`），却每步**复制**一整个
             #   `(nv,N³)` 数组（N=96、nv=12 时 ~85 MB），而本函数只用到 3 个数。
@@ -1605,13 +2106,57 @@ class LevelSetMulti(object):
                                                                  endpoint=False)]
                     _placed = False
                     for _cc in _cands:
+                        # ★★★★★ 2026-10-04（**N14：`fresh` 失败的归因**）
+                        #   ## 为什么要加
+                        #     `fresh_blocked = 17`（B=8）一直是"块数上不去"的上游卡点，
+                        #     **但驱动层只报一个总数，不说是哪一步失败的**。
+                        #     本循环里原本有**两处静默 `continue`**：
+                        #       (a) `_cover` 为空 或 `region()[_cover] != 0`
+                        #           （`:1812`，**无计数**）
+                        #       (b) `seed_plate` 抛 `ValueError`（`:1854`，**无计数**）
+                        #     加上已有的 `supercrit`（超临界拒绝），一共**三条**互斥路径。
+                        #   ## 记账（**纯计数，不碰任何数值**）
+                        #     `fresh_cand`    本循环检查过的候选位置数
+                        #     `fresh_covfail` 候选被 (a) 否掉的次数
+                        #     `fresh_exc`     `seed_plate` 抛异常的候选数（(b)）
+                        #     `supercrit`     被超临界判据否掉的次数（原有，语义=**拒绝**）
+                        #     `fresh_blocked` 整个位点都没放成（原有，驱动层也用这个数）
+                        #   ⚠ 这些键**只在 `fresh` 通道真的跑过时**才出现
+                        #     ⇒ 不改变任何动力学；`series.csv` 的列不受影响。
+                        _cd = c.setdefault('dbg', dict(att=0, oob=0, cov=0,
+                                                       exc=0, ok=0, nocand=0))
+                        _cd['fresh_cand'] = _cd.get('fresh_cand', 0) + 1
                         _rel = self.XYZ - _cc
                         _dd = _rel @ _nrm
                         _rp = np.linalg.norm(_rel - _dd[..., None] * _nrm, axis=-1)
                         _cover = (np.abs(_dd) <= t / 2) & (_rp <= R)
                         if (not bool(_cover.any())) or \
                                 (not bool((self.region()[_cover] == 0).all())):
+                            _cd['fresh_covfail'] = _cd.get('fresh_covfail', 0) + 1
                             continue                     # 该候选位置不行 ⇒ 试下一个
+                        # ★★★★★ R479（2026-10-01，**任务(2) ②：超临界判据**）。
+                        #   在**决定放不放**之前做一次"试放"（**不改任何场**，见 `_supercrit_probe`）。
+                        #   为什么必须在这里（而不是用旧 `use_fcrit` 的"位点上的 ed"）：
+                        #     放核**前**的 `ed` 只是"与已有板条的相互作用"（实测 **+1.9e8**，
+                        #     可正可负），放核**后**它含**自身弹性能**（实测 **−2.5e8**）
+                        #     ⇒ **符号都不同** ⇒ 用前者判"放下去站不站得住"**原理上无效**。
+                        #   ⇒ 这是"试放"（trial），不是"回滚"（rollback）：因为不改场，
+                        #     拒绝时**什么都不用撤销**。
+                        #   ⚠ 默认 `supercrit=False` ⇒ **完全不进入** ⇒ 归档行为逐位相同。
+                        if c.get('supercrit', False):
+                            _ok_sc, _med_sc, _fc_sc, _n_sc = self._supercrit_probe(
+                                kk, _cc, _nrm, R, t, _cover, df, c['gamma'],
+                                shape=c.get('nuc_shape', 'disc'))
+                            _c6 = c.setdefault('dbg', dict(att=0, oob=0, cov=0,
+                                                           exc=0, ok=0, nocand=0))
+                            _c6['sc_try'] = _c6.get('sc_try', 0) + 1
+                            _c6['sc_last_df'] = float(df)
+                            _c6['sc_last_ed'] = float(_med_sc)
+                            _c6['sc_last_fcrit'] = float(_fc_sc)
+                            if not _ok_sc:
+                                _c6['supercrit'] = _c6.get('supercrit', 0) + 1
+                                continue                 # 撑不住 ⇒ **试下一个候选位置**
+                            _c6['sc_pass'] = _c6.get('sc_pass', 0) + 1
                         try:
                             # ★ R31（P1-17）：`fresh` 原来**不传** elong/along/flat_end
                             #   ⇒ 播的是**圆盘**（足迹只有长条板的 1/5）。开了
@@ -1621,13 +2166,19 @@ class LevelSetMulti(object):
                                                    if c.get('along_per_variant')
                                                    else 1.0),
                                             along=_along_of(kk),
-                                            flat_end=bool(c.get('along_per_variant')))
+                                            flat_end=bool(c.get('along_per_variant')),
+                                            shape=c.get('nuc_shape', 'disc'))
                             _placed = True
                             _any_ok = True
                             out.append((kk, 'fresh'))
                             nfr_done += 1
                             c['n_activated'] = c.get('n_activated', 0) + 1
                         except ValueError:
+                            # ★ N14：这是第二条**静默** `continue` —— 原来一个字都不记。
+                            #   `seed_plate` 在这里抛的典型原因是
+                            #   `elong*R > margin`（有界盒；见 N13）
+                            #   ⇒ **正是"有界盒播种"在 `fresh` 通道上的又一次体现**。
+                            _cd['fresh_exc'] = _cd.get('fresh_exc', 0) + 1
                             continue
                         break
                     if not _placed:
@@ -1637,6 +2188,34 @@ class LevelSetMulti(object):
                         continue
                 if _any_ok and i < len(sites):
                     sites.pop(i)                        # 位点用过即移除（只移一次）
+            # ★★★★★ R481b（2026-10-01，**实测驱动的一次重要更正**）：
+            #   ## 我原来对这个病灶的理解是**错的**（`_r484` 单元测试推翻）
+            #     我原以为病灶是"**池子被用尽**"（`sites.pop` 把位点消耗掉）。
+            #     **实测（`_r484`，`n_init=2`、8 次 `fresh` 调用）**：
+            #       事件数 = `[1, 0, 0, 0, 0, 0, 0, 0]`，**池子剩下 1 个一直不动**
+            #     ⇒ **池子根本没被用尽**，而是**被一个"放不下"的位点卡死**：
+            #       那个位点在几何上永远不合格（落在已转变区里），
+            #       而 `sites.pop(i)` 只在**成功**时执行（`if _any_ok`）
+            #       ⇒ 它**永远留在队里、每次都被重试、每次都失败**。
+            #   ## 物理上正确的语义
+            #     位点代表母相里**预先存在的异质位置**。随着转变推进，
+            #     **旧位点会被长过来的板条吞掉**（变成"放不下"），
+            #     而**母相里仍有新的潜在位点** ⇒ 正确做法是**重抽**，
+            #     不是"再往队尾补几个、让坏的继续堵着"。
+            #   ## 本条做什么
+            #     若本轮**一个位点都没放成**（`not _any_ok`）且开关打开
+            #     ⇒ **把整张位点表按同一分布重抽**（尺寸不变），并计数。
+            #     这既解卡死，又与"位点不消失"的物理一致。
+            #   ⚠ 只在 `sites_refill=True` 时生效 ⇒ 默认路径逐位不变。
+            if (not _any_ok) and bool(c.get('sites_refill', False)) and sites:
+                _pad2 = c['R'] + 2 * self.dx
+                for _ii in range(len(sites)):
+                    sites[_ii] = (int(rng.integers(1, self.nreg)),
+                                  rng.random(3) * (self.L - 2 * _pad2) + _pad2)
+                _c8 = c.setdefault('dbg', dict(att=0, oob=0, cov=0,
+                                               exc=0, ok=0, nocand=0))
+                _c8['sites_resampled'] = _c8.get('sites_resampled', 0) + len(sites)
+                c['sites'] = sites
         c['pending_fresh'] = len(sites)
 
         # ---------- ② sympathetic：母相未硬化时优先**同变体**侧向邻位
@@ -1680,7 +2259,56 @@ class LevelSetMulti(object):
                     #   且 k 每次迭代重抽 ⇒ 第二个事件可落在第一个上、甚至**不同变体把前一个抹掉**。
                     #   `T24/T27` 传 `max_per_step=8` ⇒ 每调用最多 8 个事件，风险实存。
                     reg = self.region()
-                    k = int(ks[rng.integers(0, len(ks))])
+                    # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` **§200**）：
+                    #   **`stack_pick_dg`** —— 选"接到哪个块上"时**看驱动力**，而不是均匀随机。
+                    #   ## 为什么（`§195` 实测）
+                    #     sympathetic 形核**继承源块的命运**：
+                    #     实测 abB 的 4 条"长了"的 `attach` 事件**全部**接在 **V7/V9 的块**上
+                    #     （正在长），而 6 条"不长"的**全部**接在 **V1 的块**上（正在溶）。
+                    #     ⇒ 决定命运的是**源块的外侧面在不在推进**，而现行写法
+                    #       `k = ks[rng.integers(...)]` 是**均匀随机挑一个已有场**，
+                    #       **完全不看驱动力**。
+                    #   ## 物理依据（引擎里**已经在算**这个量）
+                    #     界面的净驱动力 `dG = df + ed`（`ed_0 ≡ 0`）——
+                    #     `_edge_band_force`（`_bk_exp.py`）就是按面法向统计它，
+                    #     落盘成 `series.csv` 的 `dG_tip`/`dG_side`。
+                    #     **但那个量从来没有接到"选块"的逻辑上**（接线缺口 #3）。
+                    #     本开关把它接上：**只把新片接到"外侧面平均 `dG` 最大"的那个块上**。
+                    #   ## 判据（本开关打开时）
+                    #     对每个已有场 `k`，取"**与母相相邻的胞**"（= 自由外侧面），
+                    #     算 `mean(df + ed_k)`；取最大者作源块。
+                    #     一个场若**没有**任何与母相相邻的胞（被完全包住），则**不参选**
+                    #     （它没有自由面可供 sympathetic 形核）。
+                    #   ## 惰性
+                    #     `stack_pick_dg=False`（**默认**）⇒ 走**原来的**
+                    #     `k = int(ks[rng.integers(0, len(ks))])` 一行 ⇒ 归档**逐位不变**。
+                    if c.get('stack_pick_dg', False) and not hardened:
+                        _par = (reg == 0)
+                        if bool(_par.any()):
+                            _nbp = np.zeros_like(_par)
+                            for _ax in (0, 1, 2):
+                                _nbp |= np.roll(_par, 1, axis=_ax)
+                                _nbp |= np.roll(_par, -1, axis=_ax)
+                            _sc = {}
+                            for _kk in ks:
+                                _mk = (reg == _kk) & _nbp
+                                if bool(_mk.any()):
+                                    _sc[_kk] = float(
+                                        np.asarray(ed[_kk], float)[_mk].mean())
+                            if _sc:
+                                # `ed` 已含弹性项；`df` 是化学项（标量，对所有场相同）
+                                k = max(_sc, key=lambda _kk: _sc[_kk] + float(df))
+                                _dbg['dg_pick'] = _dbg.get('dg_pick', 0) + 1
+                                _dbg['dg_pick_val'] = float(_sc[k])
+                                _dbg['dg_pick_ncand'] = len(_sc)
+                            else:
+                                k = int(ks[rng.integers(0, len(ks))])
+                                _dbg['dg_pick_nofree'] = \
+                                    _dbg.get('dg_pick_nofree', 0) + 1
+                        else:
+                            k = int(ks[rng.integers(0, len(ks))])
+                    else:
+                        k = int(ks[rng.integers(0, len(ks))])
                     if hardened:                                # 阶段③：换变体
                         k = int(rng.integers(1, nv + 1))
                     m = (reg == k)
@@ -1704,6 +2332,52 @@ class LevelSetMulti(object):
                                     break
                             if k_new == k:
                                 _dbg['nfsv_nofield'] = _dbg.get('nfsv_nofield', 0) + 1
+                                # ★★★★★ 2026-10-04（**N11：拒绝的取证**；见
+                                #   `R525_TASK5_PARAM_FINDINGS.md §4`）
+                                #   ## 为什么必须取证
+                                #     `_r520c`/`_r529` 实测 `nfsv_nofield = 22 / 21`，
+                                #     而**把 `--laths` 从 `12×6` 抬到 `12×10`
+                                #     （`nv` 72→120，+67%）几乎没动它**（22→21）。
+                                #     ⇒ 我原来的假设（"变体碰撞、场不够"）**已被 A/B 否掉**。
+                                #     ⇒ **不能再猜**：必须把拒绝现场的**占用分布**打出来。
+                                #   ## 打什么（回答"到底哪种情况"）
+                                #     `_v`            —— 源场 `k` 的变体组
+                                #     `nfields`       —— **同变体**的场**总数**
+                                #     `nocc`          —— 其中**被判为"非空"**的个数
+                                #     `occ_sizes`     —— 那些"非空"场的**胞数**（降序前 12）
+                                #                        ⇒ 若出现大量 **1–2 胞**的碎点，
+                                #                          说明是**碎点占着场**（判据过严）
+                                #     `tot_occ`       —— 全 `nv` 个场里"非空"的总数
+                                #                        ⇒ 若 `tot_occ ≪ nv`，
+                                #                          说明**场根本没用完**，
+                                #                          那就**不是容量问题**
+                                #   ## 惰性
+                                #     `nfsv_diag=False`（**默认**）⇒ 一个字都不算
+                                #     ⇒ 归档路径**逐位不变**。
+                                #   ## 代价
+                                #     只在**拒绝路径**上跑，且每个拒绝 120 次
+                                #     `(reg == _j).sum()`（64³ ≈ 2.6e5 胞）
+                                #     ⇒ 每次拒绝约 3e7 次比较，本算例 21 次拒绝 ⇒ **可忽略**。
+                                if c.get('nfsv_diag', False):
+                                    _nf_v, _occ = 0, []
+                                    for _j2 in range(1, nv + 1):
+                                        if _j2 == k or vg.get(_j2) != _v:
+                                            continue
+                                        _nf_v += 1
+                                        _c2 = int((reg == _j2).sum())
+                                        if _c2 > 0:
+                                            _occ.append(_c2)
+                                    _dbg['nfsv_diag_v'] = int(_v)
+                                    _dbg['nfsv_diag_nfields'] = int(_nf_v)
+                                    _dbg['nfsv_diag_nocc'] = int(len(_occ))
+                                    _dbg['nfsv_diag_occ_sizes'] = sorted(
+                                        _occ, reverse=True)[:12]
+                                    _dbg['nfsv_diag_occ_min'] = (min(_occ) if _occ
+                                                                 else 0)
+                                    _dbg['nfsv_diag_tot_occ'] = int(sum(
+                                        1 for _j2 in range(1, nv + 1)
+                                        if bool((reg == _j2).any())))
+                                    _dbg['nfsv_diag_nv'] = int(nv)
                                 # ★★★ R14：**没有空场 ⇒ 必须拒绝该事件，不得回退**。
                                 #   实测（`eng3`，200 步，`prefer_end` 已开）：
                                 #     step 150 时 6 片全在位（✅ 端片优先奏效），
@@ -1867,7 +2541,13 @@ class LevelSetMulti(object):
                                        + _side * (_t_use / 2.0
                                                   - c.get('attach_overlap', 0.0))) * nrm
                             cc = cc - self.L * np.floor(cc / self.L)   # 周期折回
-                            if np.any(cc < R + 0.3e-6) or np.any(cc > self.L - R - 0.3e-6):
+                            # ★ N13：`periodic_seed=True` ⇒ **跳过这条有界盒拒绝**。
+                            #   理由：`cc` 上一步**已经周期折回**，而动力学也是周期的
+                            #   ⇒ 靠近盒面的位点**与盒心完全等价**，没有理由丢。
+                            #   ⚠ 必须在 `seed_plate` 也开了最小镜像的前提下才安全
+                            #     ⇒ 两处共用**同一个** `periodic_seed` 开关。
+                            if not _per_seed and (np.any(cc < R + 0.3e-6)
+                                                  or np.any(cc > self.L - R - 0.3e-6)):
                                 _dbg['oob'] += 1
                                 continue
                             rel = self.XYZ - cc
@@ -1885,6 +2565,7 @@ class LevelSetMulti(object):
                                 continue
                             try:
                                 self.seed_plate(k_new, cc, nrm, R, _t_use,
+                                                shape=c.get('nuc_shape', 'disc'),
                                                 elong=c.get('elong', 1.0),
                                                 along=_along_of(k_new),
                                                 flat_end=True)
@@ -1923,7 +2604,9 @@ class LevelSetMulti(object):
                         for j in range(4):
                             s_ = _s_hi - j * (_s_hi - _s_lo) / 3.0
                             cc = c0 + s_ * v
-                            if np.any(cc < R + 0.3e-6) or np.any(cc > self.L - R - 0.3e-6):
+                            # ★ N13：同 `attach` 通道 —— `periodic_seed=True` 时跳过有界盒拒绝。
+                            if not _per_seed and (np.any(cc < R + 0.3e-6)
+                                                  or np.any(cc > self.L - R - 0.3e-6)):
                                 _dbg['oob'] += 1
                                 continue
                             rel = self.XYZ - cc
@@ -1944,6 +2627,7 @@ class LevelSetMulti(object):
                                 continue
                             try:
                                 self.seed_plate(k, cc, nrm, R, t,
+                                                shape=c.get('nuc_shape', 'disc'),
                                                 elong=c.get('elong', 1.0),
                                                 along=_along_of(k),
                                                 flat_end=True)
@@ -2034,7 +2718,45 @@ class LevelSetMulti(object):
             if j != k:
                 self.phi[j] = np.maximum(self.phi[j], R - r)   # 其它区域让位
 
-    def seed_plate(self, k, center, normal, R, t, elong=1.0, along=None, flat_end=False):
+    def _seed_undo_note(self, k, sdf, undo):
+        """★ R479：把 `seed_plate` 的写入记成**可撤销**的形式（只在 `undo is not None` 时）。
+
+        ## 为什么需要它（以及为什么不能用"备份整个 `phi`"）
+
+        `seed_plate` 的两条写都是**全场**操作（`:2250/:2256` 与 `:2253/:2259`）：
+            `phi[k] = minimum(phi[k], sdf)`   `phi[j] = maximum(phi[j], −sdf)`
+        ⇒ 想回滚就得知道**每一行变前的值**。备份整个 `phi` 在**生产尺寸**下是
+        `(nv+1)·N³·8 B` = **9.2 GB**（N=160、nv=300）⇒ **不可接受**。
+
+        但**真正被改变的胞**只是 `sdf < phi[k]` / `−sdf > phi[j]` 的那些
+        （其余位置 `minimum`/`maximum` 是恒等）⇒ **只记"变了的胞"的旧值**即可。
+        记账代价 = 每个场一次布尔比较 + 一次 `flatnonzero`（与一次 `region()` 同量级）。
+
+        ⚠ **`undo=None`（默认）⇒ 立即返回 ⇒ 归档路径逐位不变。**
+        """
+        if undo is None:
+            return
+        pk = self.phi[k]
+        mk = sdf < pk
+        if mk.any():
+            ii = np.flatnonzero(mk.ravel())
+            undo.append((k, ii, pk.ravel()[ii].copy()))
+        for j in range(self.nreg):
+            if j == k:
+                continue
+            pj = self.phi[j]
+            mj = (-sdf) > pj
+            if mj.any():
+                ii = np.flatnonzero(mj.ravel())
+                undo.append((j, ii, pj.ravel()[ii].copy()))
+
+    def _seed_undo_apply(self, undo):
+        """★ R479：按 `_seed_undo_note` 记下的内容把 `phi` **精确还原**。"""
+        for (j, ii, vals) in undo:
+            self.phi[j].reshape(-1)[ii] = vals
+
+    def seed_plate(self, k, center, normal, R, t, elong=1.0, along=None, flat_end=False,
+                   undo=None, shape='disc'):
         """薄板晶核：法向 normal、半径 R、厚 t。
 
            P3 (2026-09-26): elong/along 支持**长条形**种子（面内椭圆）。
@@ -2048,6 +2770,42 @@ class LevelSetMulti(object):
         n = np.asarray(normal, float)
         n = n / np.linalg.norm(n)
         rel = self.XYZ - c
+        # ★★★★★ 2026-10-04（**N13 第 ① 步**）：**最小镜像**。
+        #   ## 为什么
+        #     动力学是**周期**的（全场用 `np.roll`），而这里原来是
+        #     `rel = XYZ − c` —— **按有界盒**算距离 ⇒ 种子一旦靠近盒面，
+        #     它跨过盒面的那一半就**被截掉**（实测记录：`E6` 的
+        #     `elong*R=1.8 µm > L/2=0.8 µm` ⇒ 初始长/宽只有 **2.72** 而非 6）。
+        #     当时（`EXPERT-#1`）的应对是"**直接拒绝**这种种子"，
+        #     于是**随机位点里靠近盒面的一大片全部被浪费**
+        #     （`_r541` b4 臂实测 `oob = 122` 次 vs `ok = 13` 次）。
+        #   ## 修法
+        #     取**最小镜像**位移：`rel ← rel − L·round(rel/L)`。
+        #     ⇒ 跨盒面的种子自动"接上"另一侧，**几何完整**，
+        #       与周期动力学**自洽**（同一块板条在盒两侧各露一半）。
+        #   ## ⚠⚠ **我第一版说"无条件加也安全"，那是错的**（当场自查纠正）
+        #     我当时的论证是："种子完全在盒内 ⇒ 支撑域内 `|rel_i| < L/2`
+        #     ⇒ `round(rel/L) = 0` ⇒ 逐位不变"。
+        #     **错在只看了"支撑域"**：`seed_plate` 下面两句是
+        #         `phi[k] = np.minimum(phi[k], sdf)` 与 `phi[j] = np.maximum(phi[j], -sdf)`
+        #     —— 它们**在全盒每个格点上**比较，**`sdf` 的正尾巴也算数**。
+        #     盒面另一侧（离种子 `L − |rel|` 处）的格点，折回后距离可能落进
+        #     `sdf` 的**正值小量**区间（例如 `1e3 → 0.2`）⇒ `argmin(phi)` 会翻
+        #     ⇒ **真的改变结果**（而且那正是"周期性接上"的正确行为）。
+        #     ⇒ 所以**必须挂开关**，不能无条件。
+        #   ## ⚠⚠ **第二处自查纠正（跑真算例当场抓出来的）**
+        #     第一版这里写的是 `self._nuc.get('periodic_seed', False)`，
+        #     而 `self._nuc` **只在 `nuc_cfg()` 里才被创建**。
+        #     驱动层的 `_seed_next()` 会**在 `nuc_cfg()` 之前**就调 `seed_plate`
+        #     ⇒ 实测 `AttributeError: 'LevelSetMulti' object has no attribute '_nuc'`
+        #     ⇒ 真实 A/B 两臂**双双崩在启动**（`_r544`）。
+        #     **为什么 `_r543` 没抓到**：那个量具**先调了 `nuc_cfg()` 再播**
+        #     ⇒ **构造顺序与驱动层不同** ⇒ 覆盖不到这条路径。
+        #     （本仓 §3.3 教训 21 的同款："隔离/覆盖"要看**真实调用序**。）
+        #   ⇒ 修法：用 `getattr(self, '_nuc', None)` 兜底 —— **没配核参数就没有开关**。
+        _nc = getattr(self, '_nuc', None) or {}
+        if bool(_nc.get('periodic_seed', False)):
+            rel = rel - self.L * np.round(rel / self.L)
         d = rel @ n
         u = rel - d[..., None] * n
         rperp = np.linalg.norm(u, axis=-1)
@@ -2061,7 +2819,16 @@ class LevelSetMulti(object):
         #   => 长轴半径 = elong*R。若它超过"种子中心到最近域面的距离"，种子会被
         #   盒子截断（实测 E6: elong*R=1.8um > L/2=0.8um => 初始长/宽只有 2.72 而非 6）。
         #   截断后的一切形貌结论都无效 => 这里直接拒绝，不再静默。
-        if elong > 1.0:
+        if elong > 1.0 and not bool((getattr(self, '_nuc', None) or {})
+                                    .get('periodic_seed', False)):
+            # ★ N13（2026-10-04）：**这是同一条缺陷的第三道闸**。
+            #   `_r543` 第一版只改了①最小镜像与②两条 `oob` 拒绝，
+            #   结果 T1/T2/T4 全 FAIL，报的正是**这一句**
+            #   （`elong*R=5e-07 um > margin 5e-08 um`）——
+            #   种子中心离盒面 50 nm，有界盒 margin 只有 50 nm < 半长 500 nm ⇒ 抛。
+            #   ⇒ 它和 `oob` 是**同一个"有界盒"假设**的两次体现
+            #     ⇒ 必须在**同一个开关**下一起放开，否则前面两步白做。
+            #   ⚠ `periodic_seed=False`（默认）⇒ **这句照旧** ⇒ 归档逐位不变。
             _c = np.asarray(center, float)
             _margin = float(min(_c.min(), (self.L - _c).min()))
             if elong * R > _margin:
@@ -2080,12 +2847,38 @@ class LevelSetMulti(object):
             e_per = np.linalg.norm(u - e_par[..., None] * al, axis=-1)
             sdf = np.maximum(np.maximum(np.abs(d) - t / 2, np.abs(e_par) - elong * R),
                              e_per - R)
+            self._seed_undo_note(k, sdf, undo)
             self.phi[k] = np.minimum(self.phi[k], sdf)
             for j in range(self.nreg):
                 if j != k:
                     self.phi[j] = np.maximum(self.phi[j], -sdf)
             return
         sdf = np.maximum(np.abs(d) - t / 2, rperp - R)         # 椭/圆盘 SDF（近似）
+        # ★★★★★ R508（2026-10-01）：**核的形状** —— 尖边圆柱 vs 光滑椭球。
+        #   ## 为什么这是一个"必须做开关"的东西（`R507_fullclosure`）
+        #     `sdf = max(|d|−t/2, rperp−R)` 是 **L∞ 意义上的圆柱** ⇒ **边是尖的**。
+        #     实测（`_r479` 的翻转点二分）：尖边圆盘的弹性自能密度
+        #       **|ed| = 3.1818e8 J/m³**，而**光滑椭球**（`_r470`/`_r474`）是
+        #       **2.0873e8** ⇒ **尖边高出 52%**。
+        #     ⇒ 超临界门槛从 **641.7 K（椭球）抬到 377.7 K（圆盘）**
+        #       ⇒ 形核窗口从 **344 K 压到 80 K**。
+        #   ## 后果（五约束联立，`_r507`）
+        #     · **C3（块内 ≥2 根）** 要 `α_KM ≥ 0.0251`（圆盘口径）；
+        #     · **块厚文献带 (1.0, 6.0) µm** 要 `α_KM ≤ 0.0205`；
+        #     ⇒ **圆盘口径下两者是空集！** 换椭球 ⇒ 交集 `[0.0058, 0.0205]`，
+        #       框架参考 `α_KM = 0.011` **正落在里面** ⇒ 五约束同时成立。
+        #   ## ⚠ 记账（哪条路更物理 —— **不由我定**）
+        #     · 真实马氏体片是**透镜状（lenticular）**的 ⇒ 椭球更接近；
+        #     · 但板条确实有**棱边（ledge）** ⇒ 尖边也不是凭空造的；
+        #     · **可以确定的是**：`max()` 造出来的圆柱是**数值产物**，
+        #       它那 52% 的罚差**没有物理依据** ⇒ 至少必须**两种都做成开关、都报**。
+        #   ## 惰性
+        #     `shape='disc'`（**默认**）⇒ 走上面那一行，**逐位不变**。
+        if shape == 'ellipsoid':
+            _r = np.sqrt((d / max(t / 2, 1e-30)) ** 2 + (rperp / max(R, 1e-30)) ** 2)
+            sdf = (_r - 1.0) * min(t / 2, R)
+        # ★ R479：**先记账再写**（`undo=None` 时是空操作 ⇒ 归档路径逐位不变）
+        self._seed_undo_note(k, sdf, undo)
         self.phi[k] = np.minimum(self.phi[k], sdf)
         for j in range(self.nreg):
             if j != k:
@@ -2628,6 +3421,88 @@ class LevelSetMulti(object):
         """★ 委托给**模块级** `upwind_grad`（单畴/多畴共用一份 ⇒ 不会分叉）"""
         return upwind_grad(phi, sgn, self.dx)
 
+    def facet_project(self):
+        """★★★★★ R69：**周期性面片投影**（保面机制；`BLOCK_SELFAC.md §8 C`）。
+
+        对每个**变体场** `k`：由体内胞（`phi_k < 0`）在 `(n*, a, w)` 三轴上的
+        min/max 构造一个盒子，**再外扩 `0.5Δx`**（否则极端胞心落在开区间边界上，
+        两端各丢一个胞），然后按体积标定统一缩放（绕盒中心），最后**替换** `phi_k`。
+
+        ⚠ 算子已在 `_r68_facet_op.selftest` 中过正对照（解析长方体上幂等：
+        `s=1.000`、体积变化 0.0%）；真实圆化快照上 `f_flat` 0.005 → 0.155。
+        ⚠ 记账：这是**表示层重整**，不是新增物理。
+        """
+        import _r68_facet_op as _FP
+        n_tab = getattr(self, 'npref_tab', None)
+        at, wt = getattr(self, 'atab', None), getattr(self, 'wtab', None)
+        if n_tab is None or at is None or wt is None:
+            return 0
+        # ★★★★★ R73（**用户裁定：块 = 可分辨的板条堆叠 ⇒ 优先保根数**）：
+        #   构造每个场的**排除掩码** —— "与**同变体的另一个场**相邻"的胞（再膨胀 `pad` 层）。
+        #   这些是**低角晶界（F3）**所在的胞：它们是"场与场之间"的界面，
+        #   **不该由盒子表示**；只有**外表面**（面向母相）才该被刻面。
+        #   ⇒ 用"体 − F3 邻域"取跨度 ⇒ 相邻两场的盒子**不再互相侵入** ⇒ `nslab_n` 有望保住。
+        #
+        # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` **§186**）：**上面这条 R73 的做法是错的，
+        #   现改为默认关闭**（`self.facet_excl`，默认 **0**）。
+        #   ## 实测（三个独立量具，`_r410`/`_r411`/`_r412`，全部离线、先过正对照）
+        #     `excl` 恰好是堆叠中一根板条**朝 F3 那一侧**的最外 `pad=2` 层胞
+        #     ⇒ 盒子的那一侧退到体**之内** ⇒ 相邻两场的盒子之间**张开一条缝**。
+        #     缝里的胞对所有 `k≥1` 都 `φ_k > 0`，而 `φ_0 = −min_k φ_k`（`init_parent`）
+        #     **在投影里从不更新** ⇒ `argmin` 在缝里判 `region = 0` ⇒ **一条 β 膜**。
+        #   ## 数（`dry_saSet2`，`t=0`，6 块 × 2 板条）
+        #     * 缝宽（沿 `n*`，单位胞）中位：`body` **+0.04** → `excl=None` **−0.32**（贴合）
+        #       → `excl` **+1.88**（张开 ≈118 nm）；
+        #     * β 膜 = **1451 胞（11.58% 已转变体积）**，其中 **101.0%** 落在缝区间内；
+        #       `excl=None` 只有 192 胞；
+        #     * **F3 面数 1169 → 0**、块数 **6 → 12**（`excl=None`：1195 / 6）；
+        #     * 在 step 0/20/100/400 四个时刻上，`excl=None` **逐项都不差于** `excl`。
+        #   ⇒ 结论：本条自称"**表示层重整，不是新增物理**"，实测它是**凭空造出 11.6% 母相**
+        #     并**抹掉全部块内低角界面** —— 与它自己的声称相反。
+        #   ⚠ 保留 `facet_excl=1` 只为**逐位复现**归档里显式传过 `--facet-proj > 0` 的臂；
+        #     **不得**再把它当作物理上正确的配置。
+        reg_e = self.region()
+        vs = getattr(self, 'vmap', None) or {}
+        pad = 2
+        _use_excl = bool(int(getattr(self, 'facet_excl', 0)))
+        try:
+            import scipy.ndimage as _ndi
+            def _dil(m):
+                return _ndi.binary_dilation(m, iterations=pad)
+        except Exception:                                          # pragma: no cover
+            def _dil(m):
+                return m
+        n_done = 0
+        for k in sorted(n_tab):
+            k = int(k)
+            if k <= 0 or k >= self.nreg:
+                continue
+            try:
+                nh = np.asarray(n_tab[k], float).ravel()
+                av = np.asarray(at[k], float).ravel()
+                wv = np.asarray(wt[k], float).ravel()
+            except Exception:
+                continue
+            if nh.size != 3 or av.size != 3 or wv.size != 3:
+                continue
+            _vk = vs.get(k, vs.get(str(k)))
+            excl = None
+            # ★ §186：**默认不构造 `excl`**（`facet_excl=0`）——见上面的实测。
+            if _use_excl and _vk is not None:
+                # 同变体的**其他**场
+                other = np.zeros_like(reg_e, bool)
+                for _k2, _v2 in vs.items():
+                    if int(_v2) == int(_vk) and int(_k2) != k:
+                        other |= (reg_e == int(_k2))
+                if other.any():
+                    excl = _dil(other)
+            ph, info = _FP.facet_project_one(self.phi[k], self.dx,
+                                             (nh, av, wv), excl=excl)
+            if info.get('ok'):
+                self.phi[k] = ph
+                n_done += 1
+        return n_done
+
     def sussman_reinit(self, phi, iters=None, bbox=None):
         """委托给模块级 `sussman_reinit`。
            EXPERT-#3: 默认改用 self.reinit_iters 并透传 dtau/grad
@@ -2679,8 +3554,13 @@ class LevelSetMulti(object):
            => 界面胞的 eps0 分布是阶梯状 => FFT 谱法解出的 sigma 在界面处有 O(1) 阶梯噪声
            => 驱动 ed 在界面附近被污染。新增 soft 选项：用**平滑指示场**
                h_k = 0.5*(1 - tanh(phi_k / w)),  w = 1.5*dx
-           默认 soft=None => 沿用类属性 self.elastic_soft（**默认 False**，
-           以免改变已归档的全部结论）；显式 soft=True 才启用。"""
+            ⚠⚠ **本段 docstring 原写"首次启用时默认 False"是**过期的**（`§174.5` D-1 修）**：
+            实际的类属性在 `__init__` 的 `:1042` 被设成
+            **`self.elastic_soft = True`**（Round 139，用户批准）——
+            而 `_bk_exp.py` **从不**覆盖它 ⇒ **生产算例一律走 soft 路径**。
+            这条错误的 docstring 曾让 `_r358` v1 误用硬 gather 路径，
+            离线 `ed` 与引擎自记值差 **35.1%**（`§174.1`）。
+            `soft=None` 只是"沿用类属性"，不是"默认关"。"""
         if soft is None:
             soft = bool(getattr(self, 'elastic_soft', False))
         _hard = (lambda v: (self.region() == v + 1))
@@ -2714,20 +3594,11 @@ class LevelSetMulti(object):
         if self.pf is None:
             return out
         if soft:
-            if self.pf.phi.dtype == np.bool_:
-                # ★ T3：布尔指示场装不下"软"剖面 ⇒ 按需一次性转成浮点（默认不走这条路）
-                self.pf.phi = self.pf.phi.astype(np.float64)
-            # AUDIT-#9: 平滑指示场（level-set 的 phi 是 SDF => 0.5*(1-tanh) 是自然选择）
-            # ★ R1（2026-09-29）：12 个场互不相交 ⇒ 按场并行（`tanh` 是超越函数，
-            #   单线程时是 `elastic_driving` 里的一项实打实的开销）。
-            _w = 1.5 * self.dx
-            self.par.for_each([
-                (lambda v=v: self.pf.phi.__setitem__(
-                    v, 0.5 * (1.0 - np.tanh(self.phi[v + 1] / _w))))
-                for v in range(self.nv)], tag='ed.soft_phi')
+            sig = self._soft_sigma()
         else:
             for v in range(self.nv):
                 self.pf.phi[v] = (reg == v + 1)
+            sig = self.pf.sigma_tensor(reg)
         # ★★ T3：走 gather 路径（`region` 已经算过 ⇒ 不必再建 nv 个指示场）
         #
         # ★★★ 2026-09-28（Round 137）**修 `F-2`：`elastic_soft` 原本是一个"死开关"**。
@@ -2748,7 +3619,16 @@ class LevelSetMulti(object):
         #     **先落地"默认逐位不变"的能力，把"启用"留成单独一次显式改动**。
         #   ⚠ 代价记账：`soft=True` 时 `eps0_fields` 是 `6×nv = 72` 次整场乘加
         #     （T3 的记账说这是弹性耗时的大头）⇒ **`soft=True` 会明显变慢**，属预期。
-        sig = self.pf.sigma_tensor(None if soft else reg)
+        #
+        # ★★★ R572 **修一条我自己引入的性能回归**（记账见下）：
+        #   上面这一行原来是 `sig = self.pf.sigma_tensor(None if soft else reg)`。
+        #   R561 把 soft 分支抽成 `_soft_sigma()`（它**内部已经**调了
+        #   `sigma_tensor(None)`），却没删掉这一行 ⇒ **soft 路径每步把最贵的算子
+        #   跑了两遍**（第二遍结果逐位相同、直接覆盖）⇒ `_r572` A/B 实测
+        #   `el.sigma_tensor` **2.00 次/步**（应为 1）。
+        #   ⚠⚠ **`_r30_regress.sh` 抓不到它** —— 回归只比**数值**，而重复调用
+        #     数值完全一样。⇒ **"回归全绿"不等于"没有性能回归"**，这是本轮新记的一条。
+        #   现在：`soft` ⇒ `_soft_sigma()` 里那一次；`hard` ⇒ `else` 分支那一次。各一次。
         # ★ R1（2026-09-29）：12 个场只写 `out[v+1]`（互不相交）⇒ 按场并行。
         self.par.for_each([
             (lambda v=v: out.__setitem__(
@@ -2756,6 +3636,91 @@ class LevelSetMulti(object):
                         + self.sext_e0[v])))
             for v in range(self.nv)], tag='ed.einsum')
         return out
+
+    def _soft_h_at(self, v0, v1, x0=None, x1=None):
+        """★★★ R579（goal §4）：软指示场的**分块**来源（不物化 `pf.phi`）。
+
+        `h_v = 0.5·(1 − tanh(φ_{v+1}/w))`, `w = 1.5·dx` —— **表达式与 `_soft_sigma` 里
+        一字不差**（含 `/ _w` 而不是 `* (1/_w)`，否则最后一位会不同）。
+
+        ⚠ `self.phi` 的第 0 行是母相 ⇒ 变体 `v`（0-based）用 `self.phi[v+1]`。
+
+        ★ R581-L2：`x0/x1` 给定时只算**首轴切片** `[x0:x1]`（`eps0_fields_stream` 的
+          空间分块版要用）。表达式一字不改、只是作用的胞集变小 ⇒ **逐位相同**。
+        """
+        _w = 1.5 * self.dx
+        c = v1 - v0
+        if x0 is None:
+            out = np.empty((c,) + self.phi.shape[1:], dtype=np.float64)
+            for j in range(c):
+                out[j] = 0.5 * (1.0 - np.tanh(self.phi[v0 + j + 1] / _w))
+            return out
+        out = np.empty((c, x1 - x0) + self.phi.shape[2:], dtype=np.float64)
+        for j in range(c):
+            out[j] = 0.5 * (1.0 - np.tanh(self.phi[v0 + j + 1, x0:x1] / _w))
+        return out
+
+    def _soft_sigma(self):
+        """AUDIT-#9 的**软指示场** + 谱法 σ，**唯一实现**（`elastic_driving` 与
+        pair 的 gather 快路共用，避免两处分叉 —— `AGENTS §3.24`）。
+
+        `h_v = 0.5·(1 − tanh(φ_{v+1}/w))`, `w = 1.5·dx`；写进 `self.pf.phi`（**有副作用**），
+        再 `sigma_tensor(None)`（吃软剖面）。
+
+        ★★★ R579（goal §4）：`pf_phi_mode='onfly'` 时**不写** `pf.phi`
+        （那个数组是 `(nv,N³)` float64 = 8 B/胞·nv，N=160 实测 `a` 的一半），
+        改为把 `_soft_h_at` 挂到 `PF3D._h_src` 上，由 `eps0_fields_stream` 分块现算。
+        判据（`_r579_pfphi.py`）：与 `materialized` **逐位相同**。
+
+        ★★★ R580（P1）：上面那条判据**只覆盖了 `g.phi`**，漏了**诊断量** ——
+        真实路径实测 `E_el_J` 在 onfly 下差到 **3.1×**（`R580_VERIFY.md §2–§4`）。
+        根因：物化档的 `E_el()` 读的是**上一次弹性求解开始时**写进 `pf.phi` 的 h，
+        而 onfly 按**调用时刻**的 `g.phi` 现算 ⇒ 晚了一步。
+        现在由 `PF3D.eps0_fields()` 顺手存下那一刻的 ε⁰（`_eps0_lag`，48 B/胞固定），
+        `E_el(lag=True)` 改读它 ⇒ **两个口径重新对齐**。
+        """
+        if self._pf_phi_mode == 'onfly':
+            self.pf._h_src = self._soft_h_at
+            self.pf._h_chunk = int(self._h_chunk)
+            # ★ R581-L2：首轴空间分块（0 = 归档整场路）。逐位判据见 `eps0_fields_stream`。
+            self.pf._h_slab = int(getattr(self, '_eps0_tile', 0))
+            return self.pf.sigma_tensor(None)
+        self.pf._h_src = None
+        self.pf._h_slab = 0                # ★ R581-L2：物化档不走分块路（防开关"看起来生效"）
+        # ★★★ R580（P1）：物化档下诊断直接读 `pf.phi` ⇒ 必须**清掉** onfly 的 ε⁰ 缓存，
+        #   否则"先 onfly 后物化"会读到过期值（AGENTS §7.5 P2 那类静默失效）。
+        self.pf._eps0_lag = None
+        if self.pf.phi.dtype == np.bool_:
+            # ★ T3：布尔指示场装不下"软"剖面 ⇒ 按需一次性转成浮点
+            self.pf.phi = self.pf.phi.astype(np.float64)
+        # ★ R1（2026-09-29）：12 个场互不相交 ⇒ 按场并行（`tanh` 是超越函数）
+        _w = 1.5 * self.dx
+        self.par.for_each([
+            (lambda v=v: self.pf.phi.__setitem__(
+                v, 0.5 * (1.0 - np.tanh(self.phi[v + 1] / _w))))
+            for v in range(self.nv)], tag='ed.soft_phi')
+        return self.pf.sigma_tensor(None)
+
+    def _ed_pair_gather(self, karr, larr, sig):
+        """★★ R562 B5：**只**算 winner / runner-up 两行的弹性驱动。
+
+        旧写法（`elastic_driving()` + 两次 `take_along_axis`）会造 `(nreg,N³)`
+        并做 `nreg` 次 `einsum`，而下游只用其中 **2** 行 ⇒ `nreg−2` 行白算。
+        实测（生产宿主）：**4.92×**（0.0488 → 0.0099 s），且 `max|Δ|/max = 0.000e+00`
+        —— 因为这里用的是**同一个** `np.einsum('p,p...->...')` 调用形状
+        ⇒ 沿 `p` 的归约次序**没有变** ⇒ 逐位相同（判据 `_r568_opverify.py` V3）。
+        """
+        e0p = np.concatenate([np.zeros((1, 6)),
+                              np.asarray(self.e0v_eng, float)], 0)     # 0 = 母相
+        sep = np.concatenate([[0.0], np.asarray(self.sext_e0, float)])
+
+        def _ed(idx):
+            g = np.moveaxis(e0p[idx], -1, 0)          # (6,N,N,N)
+            # ⚠ 第一操作数是 4 维（不是 `elastic_driving` 里的 1 维向量）⇒ 必须写 `p...`。
+            #   与 `einsum('p,p...->...', e0v_eng[v], sig)` 的**归约次序**是否逐位一致，
+            #   由 `_r568_opverify.py` V3 实测判定（不靠推理）。
+            return np.einsum('p...,p...->...', g, sig) + sep[idx]
+        return _ed(np.clip(karr, 0, self.nv)), _ed(np.clip(larr, 0, self.nv))
 
     # ================= ★★ T6：温度的钟（T → 驱动力） =================
     def set_T(self, T, t=None):
@@ -2819,7 +3784,18 @@ class LevelSetMulti(object):
         #     —— 正是 T3 优化掉的东西 ⇒ **`soft=True` 会明显更慢**（预期，非 bug）；
         #     `soft=False`（**默认**）路径与修前**逐位相同**。
         soft = bool(getattr(self, 'elastic_soft', False))
-        if self.aniso_elastic or soft:
+        _pm = str(getattr(self, '_ed_pair_mode', 'full')).lower()
+        if self.aniso_elastic:
+            ed = self.elastic_driving()
+            return (np.take_along_axis(ed, karr[None], 0)[0],
+                    np.take_along_axis(ed, larr[None], 0)[0])
+        if soft:
+            # ★★ R562 B5：`ed_pair_mode='gather'` ⇒ 只算 winner/runner-up 两行。
+            #   `_soft_sigma()` 与 `elastic_driving` 的 soft 分支**同一份实现**
+            #   ⇒ σ 逐位相同；读出用同一个 `einsum('p,p...->...')` ⇒ 也逐位相同。
+            #   默认 'full' ⇒ 走下面那条**与修前完全一样**的路。
+            if _pm == 'gather':
+                return self._ed_pair_gather(karr, larr, self._soft_sigma())
             ed = self.elastic_driving()
             return (np.take_along_axis(ed, karr[None], 0)[0],
                     np.take_along_axis(ed, larr[None], 0)[0])
@@ -2849,7 +3825,24 @@ class LevelSetMulti(object):
                 drag=None, pair_kernel=False, per_field=False, pair_aniso=False,
                 mob_aniso=0.0, pin_min=True, mob_beta=0.0, mob_beta_w=0.0,
                 facet_lam=0.0, facet_eps=0.05, lambda_el=0.0, band_len=None,
-                norm_smooth=0):
+                norm_smooth=0, mob_wulff=False, mob_dip=0.0,
+                mob_iform='exp2', mob_ratio=9.0, el_scale=1.0, facet_proj=0,
+                extend_mode='legacy'):
+        # ★★★★★ R69（`BLOCK_SELFAC.md §8 C` / `R30_AUDIT_LEDGER.md §65`）：
+        #   **周期性面片投影**（保面机制）。动机：实测平坦端面在界面走过 ~5Δx
+        #   就被数值扩散抹掉（`f_flat` 0.172 → 0.005），而**三个来源全部排除**
+        #   （平流格式/延拓带宽/再初始化）⇒ 是"光滑 φ 等值面"表示的**内禀**问题。
+        #   算子 `_r68_facet_op.facet_project_one` **已过正对照**
+        #   （解析长方体上幂等：`s=1.000`、体积变化 **0.0%**）。
+        #   ⚠ 默认 `facet_proj=0` ⇒ **本段不进入，归档路径逐位不变**。
+        #   ⚠ 记账：投影是**表示层的重整**，不是新增物理；其合法性来自
+        #     "零厚度 Gibbs 面本就允许面与面之间是奇异的"这一**建模前提**。
+        if facet_proj and int(facet_proj) > 0:
+            if not hasattr(self, '_fp_cnt'):
+                self._fp_cnt = 0
+            if self._fp_cnt % int(facet_proj) == 0 and self._fp_cnt > 0:
+                self.facet_project()
+            self._fp_cnt += 1
         # ★★★ D17（2026-09-28，用户批准）：**默认平流格式由 `'central'` 改为 `'proj2'`**。
         #   依据（`T19_verify_proj.py`，球 + 常数驱动、已知答案 `R(t)=R0+v·t`；
         #   判定点取**同一物理半径** `R=0.38L` 上插值）：
@@ -2891,14 +3884,60 @@ class LevelSetMulti(object):
         #     ⇒ 重跑任何一个归档脚本都会给出**与报告里不同的数**，而脚本/输出里
         #       **没有任何标识**说明它换过格式 —— 这正是"改一半比不改更危险"。
         #   ⇒ 每个进程**首次**调用时打印一行自述（之后静默），使任何重跑都自我记账。
+        acct.span_begin('adv.total')     # ★ R576：整个函数体（下面所有顶层块的父）
+        # ★ R581-L1：把本步的 `extend_mode` 挂到 self 上，好让下面的 banner 如实自述。
+        self._extend_mode = str(extend_mode).lower()
         if not getattr(self, '_adv_banner_done', False):
             _explicit = 'explicit' if adv_grad != 'proj2' else 'DEFAULT'
             print('[WindowB] 平流格式 adv_grad=%r（%s）；D17 之前默认是 central，'
                   '归档读数需显式传 central 才能复现。' % (adv_grad, _explicit),
                   flush=True)
+            # ★★★ R568：**算子开关自述**（同 A3 的纪律 —— 防"改了格式但输出里没标识"）。
+            _sw = []
+            if getattr(self, 'pf', None) is not None:
+                if getattr(self.pf, '_fft_mode', 'c2c') != 'c2c':
+                    _sw.append('fft=%s' % self.pf._fft_mode)
+                if getattr(self.pf, '_eps0_mode', 'loop') != 'loop':
+                    _sw.append('eps0=%s' % self.pf._eps0_mode)
+            if str(getattr(self, '_ed_pair_mode', 'full')).lower() != 'full':
+                _sw.append('ed_pair=%s' % self._ed_pair_mode)
+            if str(getattr(self, '_k_loop_mode', 'full')).lower() != 'full':
+                _sw.append('k_loop=%s' % self._k_loop_mode)
+            if str(getattr(self, '_act_mode', 'unique')).lower() != 'unique':
+                _sw.append('act=%s' % self._act_mode)
+            if str(getattr(self, '_argmin2_mode', 'legacy')).lower() != 'legacy':
+                _sw.append('argmin2=%s' % self._argmin2_mode)
+            if str(getattr(self, '_grad_mode', 'legacy')).lower() != 'legacy':
+                _sw.append('grad=%s' % self._grad_mode)
+            if str(getattr(self, '_pf_phi_mode', 'materialized')).lower() != 'materialized':
+                _sw.append('pf_phi=%s(chunk=%d)' % (self._pf_phi_mode, self._h_chunk))
+            if str(getattr(self, 'phi_prec', 'f64')).lower() not in ('f64', 'float64'):
+                _sw.append('phi_prec=%s' % self.phi_prec)
+            # ★ R581-L1：`adv.extend` 的 EDT 分支档（legacy/merged/near）。
+            _em = str(getattr(self, '_extend_mode', 'legacy')).lower()
+            if _em != 'legacy':
+                _sw.append('extend=%s' % _em)
+            # ★ R581-L2：ε⁰ 流式装配的首轴分块。
+            if int(getattr(self, '_eps0_tile', 0) or 0) > 0:
+                _sw.append('eps0_tile=%d' % self._eps0_tile)
+            # ★ R581-L5：复用 region() 的 winner（省一次 argmin/步）。
+            if getattr(self, '_argmin_reuse', False):
+                _sw.append('argmin_reuse=1')
+            # ★ R581-L6：`upwind_flux_vec` 的融合 C 核。
+            if str(getattr(self, '_ufv_mode', 'numpy')).lower() == 'c':
+                _sw.append('ufv=C融合核')
+            # ★ R581-L4：`_bbox_pad` 的实现档。
+            if str(getattr(self, '_bbox_mode', 'legacy')).lower() != 'legacy':
+                _sw.append('bbox=%s' % self._bbox_mode)
+            print('[WindowB] 算子开关：%s'
+                  % ('、'.join(_sw) if _sw else
+                     '全部默认（fft=c2c eps0=loop ed_pair=full phi=f64）= 归档旧路'),
+                  flush=True)
             self._adv_banner_done = True
+        acct.span_begin('adv.region0')       # ★ R576：本步**开头**那次 region()（与 finish 里那次分开）
         reg0 = self.region()
         nreg = self.nreg
+        acct.span_end('adv.region0')
         # ★★ T3（2026-09-28）**去空算 + 降内存**（旧实现见 git 历史）：
         #   ① 旧写法为**全部 nreg 个场**算 `|∇φ|`、曲率、刚度并各存一份 (nreg,N,N,N)
         #      ⇒ 3×(13·N³) float64 = **276 MB**（N=96），而下游只用
@@ -2933,9 +3972,15 @@ class LevelSetMulti(object):
         #     实测（N=192）：「winner+runner-up（13 场）」单线程 1.486 s → **×6.8 @16 线程**
         #     —— 它是本步里**加速比最高**的一块（说明它本来不是带宽受限，而是掩模
         #     布尔索引的延迟受限）。
-        karr, larr = self.par.argmin2(self.phi)
-        karr = karr.astype(np.intp)
-        larr = larr.astype(np.intp)
+        karr, larr = self.par.argmin2(
+            self.phi, mode=self._argmin2_mode,
+            # ★★★ R581-L5（goal §(7) ①）：**复用**上面 :3783 那次 `region()` 的 winner。
+            #   两者之间 `self.phi` 未被修改 ⇒ 逐位相同（论证见 `ParCtx.argmin2` 的 docstring）。
+            k_pre=(reg0 if getattr(self, '_argmin_reuse', False) else None))
+
+        with acct.mark('adv.cast_idx'):
+            karr = karr.astype(np.intp)
+            larr = larr.astype(np.intp)
         # ★★★ R-block（2026-09-29）：**F3 面能表 —— 主线程一次性向量化预计算**。
         #
         #   为什么必须这么写（两条，缺一不可）：
@@ -2953,6 +3998,7 @@ class LevelSetMulti(object):
         #      （同一个 `gtab[k][clip(l)]`，同一个 `where(isfinite, ·, gamma0)`）。
         #      ⇒ 不改变任何归约次序 ⇒ **线程数仍不是物理参数**（判据 `_bk_par_identity.py`）。
         self._gc_full = None
+        acct.span_begin('adv.gc_full')      # R576 记账：F3 面能表（N³ gather + where）
         if getattr(self, 'lath', None) is not None:
             _g0 = self.gamma if gamma0 is None else float(gamma0)
             _G = self.lath.gtab[np.clip(karr, 0, self.nreg - 1),
@@ -2982,6 +4028,7 @@ class LevelSetMulti(object):
                 self._gc_full = _G
             else:
                 self._gc_full = np.where(_isF3, _G, _g0)
+        acct.span_end('adv.gc_full')
         if per_field:
             ed = self.elastic_driving()
             # ★★ 按**场**推进（2026-09-25 新增，方案 (a)）—— 见 `_advance_perfield` 的记账。
@@ -2995,48 +4042,65 @@ class LevelSetMulti(object):
                                             herring, facet_lam, facet_eps)
             self._advance_perfield(dt, karr, larr, ed, stiff_f, iface_band,
                                    band_cells, adv_grad)
-            return self._finish_advance(reg0, dt)
-        kap_w = np.zeros(_shape)          # winner 的曲率（按 winner 索引）
-        stk_w = np.ones(_shape)           # winner 的刚度
-        stl_w = np.ones(_shape) if pair_kernel else None
-        act = np.unique(np.concatenate((np.unique(karr), np.unique(larr))))
+            _r576_res = self._finish_advance(reg0, dt)
+            acct.span_end('adv.total')
+            return _r576_res
+        with acct.mark('adv.alloc'):
+            kap_w = np.zeros(_shape)          # winner 的曲率（按 winner 索引）
+            stk_w = np.ones(_shape)           # winner 的刚度
+            stl_w = np.ones(_shape) if pair_kernel else None
+        with acct.mark('adv.unique_act'):
+            if self._act_mode == 'bincount':
+                # ★ R578：线性计数。`karr`/`larr` 由 `argmin2` 产生 ⇒ 值域 [0, nreg) ⇒
+                #   `bincount` 合法（要求非负整数）。`flatnonzero` 给**升序**索引
+                #   ⇒ 与 `np.unique` 的返回**同一个集合、同一个次序**。
+                _c = np.bincount(karr.ravel(), minlength=nreg)
+                _c += np.bincount(larr.ravel(), minlength=nreg)
+                act = np.flatnonzero(_c)
+            else:
+                act = np.unique(np.concatenate((np.unique(karr), np.unique(larr))))
         self._t3_nact = int(act.size)
 
         def _geom_k(k):
-            mw = (karr == k)
-            ml = (larr == k)
-            mk = mw | ml
-            bb = _bbox_pad(mk, 2)
+            with acct.mark('adv.geom.mask_bbox'):
+                mw = (karr == k)
+                ml = (larr == k)
+                mk = mw | ml
+                bb = _bbox_pad(mk, 2)
             if bb is None:
                 return
-            gsub = self.par.gradient(self.phi[k][bb], self.dx, edge_order=2)
-            gnsub = np.sqrt(sum(gi ** 2 for gi in gsub)) + 1e-30
-            kapsub = self.curvature_of(k, grad=gsub, gn=gnsub)
+            with acct.mark('adv.geom.grad'):
+                gsub = self.par.gradient(self.phi[k][bb], self.dx, edge_order=2)
+                gnsub = np.sqrt(sum(gi ** 2 for gi in gsub)) + 1e-30
+            with acct.mark('adv.geom.curv'):
+                kapsub = self.curvature_of(k, grad=gsub, gn=gnsub)
             # ★★ T9：刚度按**面片身份** (k, larr) 逐胞查表（`facet_id_gamma=False` 时退回旧行为）
-            _nref_sub = (self.facet_nref(k, larr[bb], npref)
-                         if getattr(self, 'facet_id_gamma', True) else None)
-            stksub = self._stiff_of(k, gsub, gnsub, npref, aniso,
-                                    (self._gc_full[bb] if self._gc_full is not None
-                                     else gamma0),
-                                    herring, facet_lam, facet_eps,
-                                    nref_cell=_nref_sub)
-            # ★★ T10：把**相干界面弹性能** `γ_el` 按面片身份加到界面上
-            #   （`stk` 是"γ + γ_tt"，量纲 J/m² ⇒ 与 `γ_el` 可直接相加）。
-            #   `lambda_el=0`（默认）⇒ **整段跳过** ⇒ 与 T10 之前逐位相同。
-            #   `lambda_el` 是**敏感度旋钮**：1.0 = 全量计入，0 = 不计。
-            if lambda_el > 0.0 and self._eps0_ref is not None:
-                _gel = self.gel_facet_sub(k, np.asarray(larr[bb]))
-                stksub = stksub + float(lambda_el) * _gel
-            mwb = mw[bb]
-            kap_w[bb][mwb] = kapsub[mwb]
-            if np.ndim(stksub) == 0:
-                stk_w[bb][mwb] = float(stksub)
-                if stl_w is not None:
-                    stl_w[bb][ml[bb]] = float(stksub)
-            else:
-                stk_w[bb][mwb] = stksub[mwb]
-                if stl_w is not None:
-                    stl_w[bb][ml[bb]] = stksub[ml[bb]]
+            with acct.mark('adv.geom.stiff'):
+                _nref_sub = (self.facet_nref(k, larr[bb], npref)
+                             if getattr(self, 'facet_id_gamma', True) else None)
+                stksub = self._stiff_of(k, gsub, gnsub, npref, aniso,
+                                        (self._gc_full[bb] if self._gc_full is not None
+                                         else gamma0),
+                                        herring, facet_lam, facet_eps,
+                                        nref_cell=_nref_sub)
+                # ★★ T10：把**相干界面弹性能** `γ_el` 按面片身份加到界面上
+                #   （`stk` 是"γ + γ_tt"，量纲 J/m² ⇒ 与 `γ_el` 可直接相加）。
+                #   `lambda_el=0`（默认）⇒ **整段跳过** ⇒ 与 T10 之前逐位相同。
+                #   `lambda_el` 是**敏感度旋钮**：1.0 = 全量计入，0 = 不计。
+                if lambda_el > 0.0 and self._eps0_ref is not None:
+                    _gel = self.gel_facet_sub(k, np.asarray(larr[bb]))
+                    stksub = stksub + float(lambda_el) * _gel
+            with acct.mark('adv.geom.scatter'):
+                mwb = mw[bb]
+                kap_w[bb][mwb] = kapsub[mwb]
+                if np.ndim(stksub) == 0:
+                    stk_w[bb][mwb] = float(stksub)
+                    if stl_w is not None:
+                        stl_w[bb][ml[bb]] = float(stksub)
+                else:
+                    stk_w[bb][mwb] = stksub[mwb]
+                    if stl_w is not None:
+                        stl_w[bb][ml[bb]] = stksub[ml[bb]]
 
         # ★★ R1（2026-09-29）：按场并行。**为什么安全**：各 k 的写入位置互不相交 ——
         #   一个胞的 winner 唯一 ⇒ `mwb = (karr[bb]==k)` 对不同的 k 是**不相交**的掩模
@@ -3052,9 +4116,22 @@ class LevelSetMulti(object):
         # 每胞的配对速度（正 = winner 长大）
         # ★ T3：只算 winner/runner-up 两份（旧写法造 (nreg,N,N,N) 再 take_along_axis）
         edk, edl = self.elastic_driving_pair(karr, larr)
+        # ★★★★★ R64（`R30_AUDIT_LEDGER.md` §53 的预登记实验）：**弹性驱动缩放旋钮**。
+        #   动机：§53 实测"角函数的极比从 3 提到 9，引擎实测只从 0.82 动到 1.59"
+        #   ⇒ 角函数端的三条假设（大小 / 形状 / 极比）**全部排除** ⇒
+        #   剩下的主要嫌疑是**弹性驱动 `dG(n)` 的反向补偿**
+        #   （§39 实测 `dG_tip=+4.23e7` vs `dG_side=−2.75e6`，本身强各向异性）。
+        #   判据（先写死）：`el_scale=0` 时若 `v_a/v_w` 跳到 **≳9**
+        #     ⇒ 限速环节是弹性驱动；若仍 ~1.6 ⇒ 限速环节在平流/界面表示。
+        #   ⚠ 默认 `el_scale=1.0` ⇒ **逐位不变**（`_r30_regress.sh` 把关）。
+        if el_scale != 1.0:
+            edk = edk * el_scale
+            edl = edl * el_scale
         stk = stk_w                       # T3：已按 winner 索引（原来是 take_along_axis(stiff,…)）
+        acct.span_begin('adv.take_ph')
         pha = np.take_along_axis(self.phi, karr[None], 0)[0]
         phb = np.take_along_axis(self.phi, larr[None], 0)[0]
+        acct.span_end('adv.take_ph')
         # ---- P0.2 (2026-09-26): 按**配对**选各向异性参考取向 ------------------
         #   (k,0) 类界面 -> npref[k] (变体对母相的惯习面)
         #   (k,l) 类界面 -> ncmp[k,l] (两变体的不变平面, 见 _pair_normals)
@@ -3070,6 +4147,7 @@ class LevelSetMulti(object):
         #   不给 eps0) 时 ncmp=None => 整块被跳过 => **mob_beta 静默不生效**。
         #   现在：ncmp 缺失时退化为"只用 npref"，并在下面 has_pair 分支做保护。
         if _need_ref:
+            acct.span_begin('adv.pair_aniso')
             gd_ = self.par.gradient(pha - phb, self.dx, edge_order=2)
             # ★★★ 2026-09-28（根因报告 ① 的候选修法，**默认关闭**）：`norm_smooth>0`
             #   时把差分场的梯度各分量做一次 `(2m+1)³` 盒式平滑再归一化。
@@ -3124,6 +4202,7 @@ class LevelSetMulti(object):
                 stk = herring_stiffness(c2p, self.gamma if gamma0 is None else gamma0,
                                         aniso, herring)
             self._pair_aniso_used = True
+            acct.span_end('adv.pair_aniso')
         elif pair_aniso:
             self._pair_aniso_used = False
         # ★★ 按配对（pair-canonical）核 —— 本轮修的关键点：
@@ -3185,6 +4264,7 @@ class LevelSetMulti(object):
             #   ⚠ 记账：这**改变了所有用曲率的归档结果**（板条尖端、Gibbs–Thomson、Ostwald）。
             #     回归守卫：T9-D（最薄角 <20°）、T19-C（键/干净阶梯 ≤1.15）、T11-A′/B。
             if getattr(self, 'pair_curvature', True):
+                acct.span_begin('adv.kap_diff')
                 # ★★ 定向：**必须按区域编号** `σ = sign(l−k)`，不能沿用 winner/runner-up 次序 ——
                 #   `karr/larr` 跨界面会互换 ⇒ `∇(φ_karr−φ_larr)` 的方向跨界面翻转
                 #   ⇒ `div(∇d/|∇d|)` **跟着翻号**（实测：外侧 κ<0 ⇒ −γκ>0 ⇒ 反而加速，
@@ -3212,6 +4292,7 @@ class LevelSetMulti(object):
                 #       ⇒ 凸 winner 给 `div=−2/R` ⇒ `κ=(−1)(−2/R)=+2/R` ✓。
                 #     ⇒ 两种情况都给 `κ=+2/R`（winner 凸）⇒ **跨界面连续且符号正确**。
                 kap_cell = _kap_idx if getattr(self, '_pc_legacy', False) else _sg * _kap_idx
+                acct.span_end('adv.kap_diff')
             else:
                 kap_cell = kap_w                  # T3：已按 winner 索引（旧行为）
             # ★★★ A1（2026-09-28）：**旧告警的前提被证伪，改成"条件告警"**。
@@ -3228,6 +4309,7 @@ class LevelSetMulti(object):
             #   ⇒ 默认路径**不是缺陷**。真正的**前提条件**是"两个场的 SDF 在界面附近
             #     互为镜像"（`∇φ_k ≈ −∇φ_l`、`|∇φ_k| ≈ |∇φ_l|`）—— 这里**直接量它**，
             #     只在被违反时告警（避免"每天都在打印一条不成立的告警"）。
+            acct.span_begin('adv.mirror_check')
             if (not getattr(self, '_mirror_checked_step', None)) or True:
                 # ★ A1 记账：**必须每一步都量**（首版只在第一次 `advance` 时量一次，
                 #   而那时种子还没碰撞 ⇒ 测到的是"没有变体-变体界面"的状态）。
@@ -3255,7 +4337,168 @@ class LevelSetMulti(object):
                 else:
                     self._pair_mirror = np.nan
                     self._pair_scale = np.nan
-        dG_cell = (self.df[karr] - self.df[larr]) + (edk - edl) - stk * kap_cell
+            acct.span_end('adv.mirror_check')
+        with acct.mark('adv.vel_law'):
+            dG_cell = (self.df[karr] - self.df[larr]) + (edk - edl) - stk * kap_cell
+        # ★★★★★ R208（`R30_AUDIT_LEDGER.md` **§135.7 的决定性检验**）：
+        #   **逐胞直测速度律三项的量级**，把 `§135.5` 的【推理】（"界面能项 ≤0.88%"）
+        #   升级为**实测**。
+        #
+        #   ## 为什么必须直测
+        #     `§135.5` 是用 `|ed|` 的**中位**与 `stk·κ` 的**上限**（`κ=1/Δx`）比出来的，
+        #     属于量级估计。它支撑着本轮最重要的三条结论（R165 否定结果、
+        #     `§132.5` 量不到 `ncmp`、`§112` 自协调 FAIL）。**结论越重要，越要直测。**
+        #
+        #   ## 口径（**先写死**）
+        #     在**界面胞**上分别取 `|df_k−df_l|`、`|ed_k−ed_l|`、`|stk·κ|` 的中位与分位，
+        #     并给出**比值** `|stk·κ| / |Δed|` 的中位。
+        #     * 变体-变体界面（**F2/F3**，`karr>0 & larr>0`）—— 主战场；
+        #     * 含母相的界面（`karr>0 & larr==0`，**F1**）—— 单列，别混。
+        #
+        #   ⚠ **纯记账**：只读、只统计，**不参与任何分支/数值** ⇒ 默认关时逐位不变
+        #     （由 `_r30_regress.sh` 的逐位回归把关；本块由 `getattr(..., False)` 门控）。
+        self.diag_terms = None
+        acct.span_begin('adv.diag')
+        if getattr(self, 'diag_terms_on', False):
+            try:
+                _dft = self.df[karr] - self.df[larr]
+                _edt = edk - edl
+                _skt = stk * kap_cell
+                _fin = np.isfinite(phb) & np.isfinite(_dft) \
+                    & np.isfinite(_edt) & np.isfinite(_skt)
+                # ★★★ 修（**本轮第 13 个自查错误**）：第一版把 `karr>0 & larr>0`
+                #   当成"变体-变体（F2）"—— **错**：它含**同变体**对（F3）！
+                #   实测后果：`med_ed` = **恰好 0.000e+00**，因为测试几何 `1,1,2,2`
+                #   里同变体界面胞占多数，而**同变体的 `ed` 逐位相同**（`e0v_eng`
+                #   同行）⇒ `ed_k−ed_l ≡ 0` ⇒ 中位数被钉在 0。
+                #   ⇒ 必须用 `self.vmap`（场→变体，`_bk_exp.py:883/1129` 挂上）
+                #     **按变体身份**把 F2 与 F3 分开。
+                _vm = getattr(self, 'vmap', None)
+                _vsplit_ok = False
+                _samev = np.zeros(np.shape(karr), bool)
+                if isinstance(_vm, dict) and len(_vm) > 0:
+                    _var = np.full(self.nreg, -1, int)
+                    for _f, _v in _vm.items():
+                        if 0 <= int(_f) < self.nreg:
+                            _var[int(_f)] = int(_v)
+                    if (_var > 0).any():
+                        _vk = _var[np.clip(karr, 0, self.nreg - 1)]
+                        _vl = _var[np.clip(larr, 0, self.nreg - 1)]
+                        _samev = (_vk == _vl) & (_vk > 0)
+                        _vsplit_ok = True
+                _vv = _fin & (karr > 0) & (larr > 0) & (~_samev)   # **F2 异变体**
+                _f3 = _fin & (karr > 0) & (larr > 0) & _samev      # **F3 同变体**
+                _vb = _fin & (karr > 0) & (larr == 0)              # **F1 含母相**
+
+                def _stats(mask, name):
+                    n = int(mask.sum())
+                    if n < 20:
+                        return dict(name=name, n=n)
+                    a = np.abs(_edt[mask])
+                    b = np.abs(_skt[mask])
+                    c = np.abs(_dft[mask])
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        ratio = np.where(a > 0, b / a, np.nan)
+                    return dict(
+                        name=name, n=n,
+                        med_df=float(np.median(c)),
+                        med_ed=float(np.median(a)),
+                        med_sk=float(np.median(b)),
+                        p90_ed=float(np.percentile(a, 90)),
+                        p90_sk=float(np.percentile(b, 90)),
+                        med_ratio=float(np.nanmedian(ratio)),
+                        p99_ratio=float(np.nanpercentile(ratio, 99))
+                        if n > 100 else float('nan'),
+                        # ★ 退化可见性：`ed` 逐位相同（同变体复制）时的**占比**，
+                        #   避免"中位恰好 0"被误读成"弹性项不存在"（`§135.7`）。
+                        frac_ed0=float((a == 0.0).mean()),
+                        frac_sk0=float((b == 0.0).mean()))
+
+                self.diag_terms = dict(
+                    step=int(getattr(self, 'step', -1)), vmap_split=_vsplit_ok,
+                    # ★ R229（Q-16 定位）：**逐步放开的掩码计数**。
+                    #   动机：`saSet2DT` 全程报 F3 胞数 = 0，而 `_bk_measure` 报
+                    #   `nf3` = 1782 面 ⇒ **两者矛盾**。把中间量都吐出来才能定位
+                    #   是哪一条 `&` 把同变体胞全滤掉了。
+                    #   ⚠ 纯附加字段 ⇒ 不影响任何既有读数。
+                    dbg=dict(
+                        n_vv_raw=int(((karr > 0) & (larr > 0)).sum()),
+                        n_samev=int((((karr > 0) & (larr > 0)) & _samev).sum()),
+                        n_fin_vv=int((_fin & (karr > 0) & (larr > 0)).sum()),
+                        n_fin=int(_fin.sum()),
+                        fin_phb=int(np.isfinite(phb).sum()),
+                        fin_skt=int(np.isfinite(_skt).sum()),
+                        fin_edt=int(np.isfinite(_edt).sum()),
+                        fin_dft=int(np.isfinite(_dft).sum()),
+                        vmap_keys=sorted(int(x) for x in _vm.keys())
+                        if isinstance(_vm, dict) else None,
+                        vmap_vals=sorted(int(v) for v in _vm.values())
+                        if isinstance(_vm, dict) else None,
+                        var_tab=[int(x) for x in _var.tolist()] if _vsplit_ok else None,
+                        # ★ R231（Q-16 定位续）：`karr>0` 时 `larr` 到底取什么值？
+                        #   实测 `(karr>0)&(larr>0)` **恒为 0** ⇒ 必须看 `larr` 的分布。
+                        n_kpos=int((karr > 0).sum()),
+                        karr_uniq=[int(x) for x in np.unique(karr).tolist()][:20],
+                        larr_where_kpos=[[int(v), int(c)] for v, c in
+                                         zip(*np.unique(larr[karr > 0],
+                                                        return_counts=True))][:20]
+                        if (karr > 0).any() else None,
+                        larr_uniq=[[int(v), int(c)] for v, c in
+                                   zip(*np.unique(larr, return_counts=True))][:20],
+                    ),
+                    vv=_stats(_vv, 'F2_异变体'), f3=_stats(_f3, 'F3_同变体'),
+                    vb=_stats(_vb, 'F1_含母相'))
+            except Exception as _e:      # noqa: BLE001  —— 记账绝不能弄崩仿真
+                self.diag_terms = dict(error=repr(_e))
+        # ★★★★★ R238（`§135.6` / 条件③主线）：**逐变体的 `ed` 分布**。
+        #   ## 为什么要它
+        #      `§135.5`/`§142.1` 已定量确认：**界面能项在速度律里很小**，
+        #      而 `df_k − df_l ≡ 0` ⇒ **变体选择几乎完全由 `ed`（弹性自项）决定**。
+        #      ⇒ "自协调"如果有，只能走 **`ed` 经共享应力场** 这条路。
+        #      ⇒ 必须**直接量**每个变体的 `ed` 分布，而不是继续在界面能上打转。
+        #
+        #   ## 口径（**先写死**）
+        #      对每个变体 v：取 **winner 是 v** 的胞（`karr == v`），统计 `edk` 的
+        #      中位/均值/10–90 分位与**胞数**（≈ 该变体占的体积）。
+        #      再给跨变体的汇总：`ed` 中位的**极差**与**标准差**。
+        #      ⇒ 极差/标准差越大 ⇒ 各变体被弹性项**区别对待**越强。
+        #
+        #   ⚠ **纯记账**：只读、只统计，**不参与任何分支/数值**（默认关 ⇒ 逐位不变）。
+        #   ⚠ 记账（Q-16 的澄清）：`karr` = winner、`larr` = runner-up；
+        #     在**变体胞**上 runner-up 就是母相 ⇒ 那里 `larr == 0`。
+        #     实测 `karr > 0` 的胞数 = 6280，而 `6280·Δx³ = 1.53 µm³ = Vt` ✓ 自洽。
+        self.diag_edv = None
+        if getattr(self, 'diag_edv_on', False):
+            try:
+                _vm2 = getattr(self, 'vmap', None)
+                _rec = {}
+                for _f in range(1, self.nreg):
+                    _m = (karr == _f) & np.isfinite(edk)
+                    _n = int(_m.sum())
+                    if _n < 20:
+                        continue
+                    _e = edk[_m]
+                    _rec[str(_f)] = dict(
+                        field=int(_f),
+                        variant=int(_vm2.get(_f, _f)) if isinstance(_vm2, dict) else int(_f),
+                        n=_n, vol_um3=float(_n * self.dx ** 3 * 1e18),
+                        med=float(np.median(_e)), mean=float(_e.mean()),
+                        p10=float(np.percentile(_e, 10)),
+                        p90=float(np.percentile(_e, 90)))
+                _out = dict(step=int(getattr(self, 'step', -1)), per_field=_rec,
+                            n_field=len(_rec))
+                if _rec:
+                    _meds = np.array([v['med'] for v in _rec.values()])
+                    _vols = np.array([v['vol_um3'] for v in _rec.values()])
+                    _out.update(med_spread=float(_meds.max() - _meds.min()),
+                                med_std=float(_meds.std()),
+                                med_mean=float(_meds.mean()),
+                                vol_cv=float(_vols.std() / _vols.mean())
+                                if _vols.mean() > 0 else float('nan'))
+                self.diag_edv = _out
+            except Exception as _e2:     # noqa: BLE001
+                self.diag_edv = dict(error=repr(_e2))
+        acct.span_end('adv.diag')
         # ★★ 记账（2026-09-25，查明 M2"塌缩"的真凶）：把本步驱动力存下来，供
         #   `suggest_dt` 按**总驱动**定 CFL。**只用 Δf 估 dt 会严重低估界面速度** ——
         #   实测 M2：弹性项中位 4.9e8 是 Δf(1e8) 的 ~5 倍 ⇒ 按 Δf 定出的 dt 实际每步
@@ -3263,8 +4506,9 @@ class LevelSetMulti(object):
         # AUDIT-#3 修：原来 dG_max = max|dG_cell| **不含 Mfac** => Mfac 小的界面上
         #   dt 被按"未压制的驱动力"定，最多保守 33 倍（白算机时）。
         #   现在改存"有效驱动"，在 Mfac 应用之后重算（见下面 _dG_max_from_mfac）。
-        self.dG_max = float(np.max(np.abs(dG_cell)))
-        self._dG_cell_ref = dG_cell          # 供 Mfac 应用后重算 dG_max
+        with acct.mark('adv.dg_max'):
+            self.dG_max = float(np.max(np.abs(dG_cell)))
+            self._dG_cell_ref = dG_cell          # 供 Mfac 应用后重算 dG_max
         # ★★★ R45（**P1-25 的直测**）：把 `ed` 与 `dG` **按界面法向分档**取中位数。
         #
         #   为什么必须补：P1-25 的机理（"弹性偏袒侧面、压制尖端"）此前是**反解**出来的
@@ -3279,6 +4523,7 @@ class LevelSetMulti(object):
         #   ⚠ **纯记账**：只读、只统计，不参与任何分支/数值
         #     （由 `_r30_regress.sh` 的逐位回归把关）。
         self.ed_by_face = None
+        acct.span_begin('adv.ed_by_face')
         try:
             _at = getattr(self, 'atab', None)
             _wt = getattr(self, 'wtab', None)
@@ -3297,6 +4542,12 @@ class LevelSetMulti(object):
                 _c2n = np.clip(np.einsum('...i,...i->...', ndir_, _n_c) ** 2, 0, 1)
                 _ifc = np.isfinite(phb) & (karr > 0)
                 _d = {}
+                # ★★★ R49：**把面掩码留下来**，供 `v_by_face`（见下）复用。
+                #   动机：正确的"面速率"预言是 **面积加权平均的乘积**
+                #   `v_face = <M(n)·dG>_face`，**不是** `M(标称法向) × dG 的某个百分位`
+                #   —— 后面这种"先各取代表值再相乘"的写法在 `M(n)` 变化剧烈时
+                #   （tip 的 M/M0=0.90 vs side 的 0.10，差 9 倍）会**系统性偏低**。
+                _d_masks = {}
                 # ★ R45b：**第四档 `oblique`** —— 三档都不满足的**斜法向**界面胞。
                 #   动机（H-ε）：直测显示三个主面的 `dG` 都 ≤0 或很小，而
                 #   `dG_max = 3.6e8` 落在三档之外 ⇒ **长大可能发生在棱/角的斜面上**。
@@ -3306,14 +4557,34 @@ class LevelSetMulti(object):
                 for _tag, _m in (('tip', _c2a > 0.81), ('side', _c2w > 0.81),
                                  ('wide', _c2n > 0.81), ('oblique', _ob)):
                     _mm = _ifc & _m
+                    _d_masks[_tag] = _mm
                     if int(_mm.sum()) >= 20:
-                        _d[_tag] = (float(np.median(edk[_mm])),
-                                    float(np.median(dG_cell[_mm])),
-                                    int(_mm.sum()))
+                        # ★★★ R49：**不止中位数**。R48 的对账暴露了一条口径问题：
+                        #   面运动速率的"朴素预言" `v = M(n)·(ΔG_面/ΔG_max)` 里，
+                        #   `ΔG_面` 到底该取哪个**统计量**没定；而 R46b 已实测
+                        #   **中位数不预测面运动**。要把这条判死，必须在**同一个算例**
+                        #   上同时拿到"面位置速率"与"多个统计量的驱动"。
+                        #   ⇒ 这里把 p90 / max 一并算出（**索引 0/1 仍是中位数，
+                        #   原列语义逐位不变**）。
+                        _dg = dG_cell[_mm]
+                        _ed = edk[_mm]
+                        _d[_tag] = (float(np.median(_ed)),
+                                    float(np.median(_dg)),
+                                    int(_mm.sum()),
+                                    float(np.percentile(_ed, 90)),
+                                    float(np.percentile(_dg, 90)),
+                                    float(np.max(_dg)),
+                                    float(np.percentile(_dg, 99)))
                 # 母相侧同名量（供对照：母相 `ed ≡ 0`）
                 self.ed_by_face = _d or None
+                self._face_masks = _d_masks or None
+            else:
+                self.ed_by_face = None
+                self._face_masks = None
         except Exception:
             self.ed_by_face = None
+            self._face_masks = None
+        acct.span_end('adv.ed_by_face')
         if drag is not None:
             # ★★ 溶质拖曳（P3.3 / 框架 §6.3 [RULE] K5）：**隐式自洽**解
             #     v = M[ΔG − P_drag(v)]，P_drag = P0/(1+v/v*)（双盒闭式，K1 已验）。
@@ -3322,9 +4593,11 @@ class LevelSetMulti(object):
             #     脱钉判据（本模块数值验证）：v>0 ⟺ ΔG>P0 或 M·ΔG>v*。
             from windowB_drag import solve_v
             P0, vstar = drag
-            v_cell, _pin = solve_v(dG_cell, self.M, P0, vstar)
+            with acct.mark('adv.solve_v'):
+                v_cell, _pin = solve_v(dG_cell, self.M, P0, vstar)
         else:
-            v_cell = self.M * dG_cell
+            with acct.mark('adv.v_cell'):
+                v_cell = self.M * dG_cell
         # ---- P0.5 (2026-09-26): 界面**迁移率**各向异性（facet pinning）----------
         #   物理与 D8 正对照（_chk_m8_mobpin.py，真实驱动力 df=1e8 下）：
         #     gamma(n) 通道被驱动力完全淹没（P0.3），而 M(n) 是**动力学**量、
@@ -3345,7 +4618,83 @@ class LevelSetMulti(object):
         #   标定见 LATH_FACET_PLAN §9：位错环形成能 => beta~3.8；板条纵横比反推 => beta~3.0
         #   => 取 beta=3.5（带 [3,6]）。M_min = 3% M0 => 界面不会被冻结（数值安全）。
         _mfac_dt = 1.0                          # AUDIT-#3: 累积的 Mfac（用于重定 dt）
-        if mob_beta > 0.0 and nd_ref_ is not None:
+        # ★★★★★ R61（**P1-31 的实现**）：**Wulff 凸化速度律**（刻面机制）。
+        #   数学（`R30_AUDIT_LEDGER.md` §46）：`φ_t + v(n)|∇φ| = 0` 的渐近形状是
+        #   Wulff 形 `W = {x : x·n ≤ v(n) ∀n}`；`v` 非凸时其支撑函数是**凸包络 `v**`**，
+        #   `v**` 在缺失取向上是**平的** ⇒ **平面刻面**。
+        #   ⚠ E-1（§45）已证：**光让 `v` 非凸没用**（proj2/upwind/central 三种格式
+        #     都给出 `v_a/v_w ≈ 1.6–2.0`，而凸化预言 9.9）⇒ **必须显式凸化**。
+        #   实现：`v**(n) = max_j (x_j · n)`，`x_j` = 极集 `{v(n_j)n_j}` 的**凸包顶点**
+        #     （530 个，**只依赖角函数形式、与场状态无关** ⇒ 构造时算一次）。
+        #   ⚠ 默认 `mob_wulff=False` ⇒ **本分支不进入，归档路径逐位不变**。
+        acct.span_begin('adv.mfac')      # 与下面 `acct.span_end('adv.mfac')` **无条件配对**
+        if mob_wulff and npref is not None:
+            _wt = getattr(self, 'wtab', None)
+            # ⚠ `npref` 是 **dict**（`{变体号: n*}`），不是三元向量
+            #   （第一版按向量处理 ⇒ `float()` 直接报 "not 'dict'"）。
+            if isinstance(npref, dict):
+                _k0 = sorted(npref)[0]
+                _nh = np.asarray(npref[_k0], float).ravel()
+            else:
+                _nh = np.asarray(npref, float).ravel()
+            if _wt is None or _nh.size != 3:
+                # 拿不到宽度轴就无法构造 `a`（`a = w × n*`）⇒ **不启用**（明确放弃，
+                # 不猜）。⚠ 第一版这里写成 `cross(nd_ref_, nd_ref_)`（= 零向量，无意义）
+                # —— 那是个静默的错，已改掉。
+                pass
+            else:
+                _ck = (mob_beta, mob_beta_w, float(mob_dip))
+                if _ck != getattr(self, '_wulff_key', None):
+                    import windowB_wulff as _WL
+                    _wv = np.asarray(_wt[1], float).ravel()
+                    # ⚠ 轴序：`wtab` 给的是**宽度轴 `w`**；长轴 `a = w × n*`
+                    #   （与 `w = n* × a` 同一右手三轴）。第一版把 `w` 当 `a` 传进去，
+                    #   轴序反了 —— 会静默换掉两个方向的定义。
+                    _av = np.cross(_wv, _nh)
+                    # ⚠ `fast_support_factory` 返回 `(函数, 顶点矩阵, 归一顶点)`；
+                    #   要存的是**顶点矩阵**（`x_j`），第一版错存了那个**函数**
+                    #   ⇒ 后面 `np.asarray(...)` 报 "not 'function'"。
+                    _vf, _Vc, _ = _WL.fast_support_factory(
+                        _nh, _av, _wv,
+                        beta_h=float(mob_beta), beta_w=float(mob_beta_w),
+                        dip_c=float(mob_dip))
+                    self._wulff_V = np.asarray(_Vc, float)   # (nverts, 3)
+                    self._wulff_key = _ck
+                _dir = np.asarray(ndir_, float)
+                _sh = _dir.reshape(-1, 3) @ np.asarray(
+                    getattr(self, '_wulff_V', None), float).T
+                _mfac_dt = np.maximum(_sh.max(1), 1e-12).reshape(_dir.shape[:-1])
+                v_cell = v_cell * _mfac_dt
+        elif mob_beta > 0.0 and nd_ref_ is not None and mob_iform == 'ellipse':
+            # ★★★★★ R64（`R30_AUDIT_LEDGER.md` §52）：**椭圆面内极曲线**（凸）。
+            #   为什么：§51 的两难是"极集薄 ⇒ 凸包胖（`r(n*)=109·M(n*)`）"。
+            #   把面内极曲线**直接取成椭圆** ⇒ 极集**本身凸** ⇒ 凸化 = 恒等变换
+            #   ⇒ `h(a)/h(w)` **恰好等于设计比**（实测 ratio=9 给 8.93），
+            #   而 `h(n*)` 与现形式相同（0.999×）⇒ **厚度钉扎分毫不动**。
+            #   形式：`M/M0 = exp(−β_h(n·n*)²) · g(θ)`，
+            #         `g(θ) = AB/√(B²cos²θ + A²sin²θ)`，`A=1`、`B=1/mob_ratio`。
+            #   ⚠ 默认 `mob_iform='exp2'`（现行为）⇒ **本分支不进入，逐位不变**。
+            _wt2 = getattr(self, 'wtab', None)
+            _nh2 = (np.asarray(sorted(npref.values())[0], float).ravel()
+                    if isinstance(npref, dict) else np.asarray(npref, float).ravel())
+            _wv2 = np.asarray(_wt2[1], float).ravel()
+            _av2 = np.cross(_wv2, _nh2)
+            _dir2 = np.asarray(ndir_, float)
+            _s2 = np.einsum('...i,i->...', _dir2, _nh2)
+            _par = _dir2 - _s2[..., None] * _nh2
+            _pn = np.sqrt(np.einsum('...i,...i->...', _par, _par))
+            _okp = _pn > 1e-12
+            _u = np.zeros_like(_par)
+            np.divide(_par, np.where(_okp, _pn, 1.0)[..., None], out=_u,
+                      where=_okp[..., None])
+            _ca = np.einsum('...i,i->...', _u, _av2)
+            _sw = np.einsum('...i,i->...', _u, _wv2)
+            _B = 1.0 / max(float(mob_ratio), 1e-6)
+            _g = 1.0 * _B / np.sqrt(_B ** 2 * _ca ** 2 + _sw ** 2 + 1e-300)
+            _g = np.where(_okp, _g, 1.0)
+            _mfac_dt = np.exp(-mob_beta * np.clip(_s2, -1, 1) ** 2) * _g
+            v_cell = v_cell * _mfac_dt
+        elif mob_beta > 0.0 and nd_ref_ is not None:
             c2b_ = np.clip(np.einsum('...i,...i->...', ndir_, nd_ref_) ** 2, 0.0, 1.0)
             # ★ P2：**第二钉扎轴** w = n_hab x a（板条宽度方向）。
             #   只对"变体-母相"界面加（板条成形主要发生在从母相长大的阶段）；
@@ -3376,6 +4725,7 @@ class LevelSetMulti(object):
             Mfac = 1.0 - mob_aniso * (c2r_ if pin_min else (1.0 - c2r_))
             _mfac_dt = Mfac
             v_cell = v_cell * Mfac
+        acct.span_end('adv.mfac')
 
         # ★★ （本轮修·关键）界面速度的**配对规范形**（跨界面连续化）。
         #    `v_cell` 是"winner 长大为正"的约定 ⇒ 跨过界面时 winner 换成 runner-up
@@ -3385,6 +4735,7 @@ class LevelSetMulti(object):
         #    随后每胞用**同一标量**：φ_karr 取 +V_ab = +sigma·V_c，φ_larr 取 −sigma·V_c。
         # AUDIT-#3: 用**有效驱动**重定 dt（原来用未压制的 dG）
         if not isinstance(_mfac_dt, float):
+            acct.span_begin('adv.dg_max_mfac')
             self.dG_max = float(np.max(np.abs(self._dG_cell_ref * _mfac_dt)))
             # ★★★ R41（**P1-25**）：**诊断**：`dG_max` 是不是被**极少数异常胞**绑架的？
             #   动机：实测端面只推进 **0.38 nm/步**，而按迁移率应推 **16.9 nm/步**
@@ -3397,8 +4748,53 @@ class LevelSetMulti(object):
             self.dG_p999 = float(np.percentile(_ad, 99.9))
             self.dG_p99 = float(np.percentile(_ad, 99.0))
             self.dG_nmax = int(np.count_nonzero(_ad >= 0.99 * self.dG_max))
+            acct.span_end('adv.dg_max_mfac')
+        acct.span_begin('adv.sigma_vcanon')
         sigma = np.where(karr < larr, 1.0, -1.0)
         vcanon = sigma * v_cell
+        acct.span_end('adv.sigma_vcanon')
+        # ★★★ R49：**按面族的"直接可比"速率预言** —— `v_by_face`。
+        #   动机（本轮实测，`_r49_dgacct.py`）：把"面速率"预言写成
+        #       `v = 0.15Δx · M(标称法向) · [dG 的某个统计量 / ΔG_max]`
+        #   时，`tip` 用**中位数**能对上实测（0.26 vs 0.25，差 4%），
+        #   而 `side` **低 2.9 倍**。差别不在 `dG`，在 **`M(n)`**：
+        #   `tip` 的 `M/M0 = 0.90`、`side` 只有 `0.100`（差 9 倍），
+        #   而 `M(n)` 在面上**变化剧烈** ⇒ "先各取代表值再相乘"会**系统性偏低**。
+        #   ⇒ 正确写法是**面积加权平均的乘积**：
+        #       `v_face = <M(n)·dG>_face`（本函数即为它的直测值）
+        #   `_va` = 带符号平均（winner 长大为正）；`_vabs` = `|v|` 平均
+        #   （粗糙面的**面位置**推进看的是后者）。
+        #   ⚠ 纯诊断：只在 `advance` 里多算两组求和，**不改变任何分支/数值**
+        #     （由 `_r30_regress.sh` 的"共有列差异 = 0"把关）。
+        try:
+            _fmk = getattr(self, '_face_masks', None)
+            acct.span_begin('adv.v_by_face')
+            if _fmk:
+                _v = np.abs(v_cell)
+                # ★★★ R49：**必须按界面类别拆开**，否则这个平均值没有意义。
+                #   动机：3 根**同类**板条堆叠时，板条之间的界面是 **F3（同变体）**
+                #   ⇒ 驱动力**逐位为 0**（R30 已实测 `max|Δdf| = max|Δed| = 0.000e+00`）。
+                #   若把 F3 胞与 F1（变体-母相）胞混在一个平均里，`v_*_nabs` 会被
+                #   **冻结的 F3 面**稀释 ⇒ 与"面位置速率"比较时系统性偏低。
+                #   ⇒ 同时给 **F1-only**（`(karr>0) & (larr==0)`，变体-母相）的均值，
+                #     与 **F1 胞占比**（诊断：占比很低时该面族的读数不可用）。
+                _f1 = (karr > 0) & (larr == 0)
+                _vb = {}
+                for _t, _m in _fmk.items():
+                    _n = int(_m.sum())
+                    if _n >= 20:
+                        _m1 = _m & _f1
+                        _n1 = int(_m1.sum())
+                        _vb[_t] = (float(v_cell[_m].mean()),
+                                   float(_v[_m].mean()), _n,
+                                   float(_v[_m1].mean()) if _n1 > 0 else float('nan'),
+                                   _n1)
+                self.v_by_face = _vb or None
+            else:
+                self.v_by_face = None
+        except Exception:
+            self.v_by_face = None
+        acct.span_end('adv.v_by_face')
         # ★★ 记账：和单畴一样，**必须做速度扩展**，而且多畴对带宽更敏感 ——
         #   实测（平界面 + 常数驱动 ΔG，40 步后的 v/MΔf，应 = 1.000）：
         #      无扩展 band=2dx → 0.250 ; band=6dx → 0.750 ; band=12dx → 2.000（乱）
@@ -3412,6 +4808,7 @@ class LevelSetMulti(object):
         #    {karr,larr} 判定配对身份），且被延拓的量必须是**跨界面连续**的规范形
         #    `vcanon`。旧的 `karr == karr[最近界面胞]` 约束把界面的 runner-up 一侧
         #    整个排除 —— 这是本轮用**亚胞射线交点**口径抓到的真 bug（见下）。
+        acct.span_begin('adv.extend')
         if pair_kernel:
             # ★★ 配对口径：界面 = 差分场 d = φ_karr − φ_larr 的小值集，速度沿 d 的
             #    法向延拓 ⇒ 界面两侧拿到**同一个标量速度** ⇒ 差分 d 只**平移**、不被拉陡
@@ -3438,36 +4835,113 @@ class LevelSetMulti(object):
                 & (np.abs(v_cell) > 0)
             # ★ 守卫：`distance_transform_edt(~iface)` 要求 `~iface` 非空（否则索引为垃圾）
             if extend and iface.any() and not iface.all():
-                ind = distance_transform_edt(~iface, return_distances=False,
-                                             return_indices=True)
-                dist = distance_transform_edt(~iface)
+                # ★★★★★ R581-L1（goal §(3) L1）：`--extend-mode` —— `adv.extend` 的 EDT 分支。
+                #   ⚠ 靶子说明（一次自我纠错，留痕）：`pair_kernel=True` 的那一支走
+                #     `extend_along_normal`（PDE 延拓），但本文件 :3703-3705 明写
+                #     `pair_kernel` **默认 False** ⇒ **生产走的是本 EDT 分支**。
+                #     `extend_along_normal` 的候选（`w` 提出循环）也做完了、逐位、1.06–1.23×，
+                #     留档在 `_w2_r581_L1_extend.log`，等 `pair_kernel` 真启用时再用。
+                #
+                #   | 档 | 做了什么 | 实测（`_r581_L1b_edt.py`，**逐位**） |
+                #   |---|---|---|
+                #   | `legacy` | 归档旧路 | 基准 |
+                #   | `merged` | 两次 `distance_transform_edt(~iface)` **合成一次** | **1.56–1.61×** |
+                #   | `near`   | merged + **只在 `dist<=band_cells` 的胞上 gather** | **1.91–2.11×** |
+                #
+                #   ★ 为什么 `merged` 必然逐位：两次调用是**同一个函数、同一个输入、同一份实现**；
+                #     一体调用的 `distances`/`indices` 与分开调用**逐位相同** ——
+                #     已在 4 种掩模（随机 5% / 50% / 单点 / 全 False）上单测过。
+                #   ★ 为什么 `near` 必然逐位：`band = (dist<=band_cells) & same_pair`
+                #     ⇒ `near` 之外的 `coef` 恒为 0（基线也是 0）⇒ 不参与结果；
+                #     带内每个胞走的是**同一串运算**（同样的 `ii` 平坦下标、同样的
+                #     `sigma[ii]*v_at[ii]`）。判据：coef/band 都 `array_equal`。
+                _emode = str(extend_mode).lower()
+                if _emode not in ('legacy', 'merged', 'near'):
+                    raise ValueError('extend_mode 只支持 legacy / merged / near，收到 %r'
+                                     % (extend_mode,))
+                if _emode == 'legacy':
+                    ind = distance_transform_edt(~iface, return_distances=False,
+                                                 return_indices=True)
+                    dist = distance_transform_edt(~iface)
+                else:
+                    dist, ind = distance_transform_edt(~iface, return_distances=True,
+                                                       return_indices=True)
                 v_at = np.where(iface, vcanon, 0.0)
-                kat = karr[tuple(ind)]
-                lat = larr[tuple(ind)]
-                # ★★ 本轮修的真 bug（被亚胞射线交点口径抓到）：旧写法用
-                #   `karr == kat`（"与最近界面胞**同区域**"）。但 `iface` 往往
-                #   **只落在 winner 一侧**（实测：`dx = L/N` 的浮点尾差让
-                #   |φ_winner| = dx 的胞判为带外 ⇒ iface 只剩 winner=0 的胞）
-                #   ⇒ `kat ≡ 0` ⇒ **runner-up 一侧从不被推进**。实测后果（z 剖面）：
-                #   φ_1 只在 z>z0 侧平移、z<z0 侧冻结 ⇒ 差分场 d=φ_k−φ_l 不平移而只被
-                #   **拉陡** ⇒ 射线口径 40 步位移 6.31dx（应 4dx）、单步 0.0909dx
-                #   （应 0.1dx）；而 `region()` 计数法靠"符号翻转"**凑巧**给出 1.0000
-                #   —— 计数法掩盖结构错误的教科书案例（审计 §10 的 0.000 亦须重判）。
-                #   正确掩模按**界面的配对身份**（无序对 {k,l}），两侧一视同仁。
-                same_pair = ((karr == kat) & (larr == lat)) | \
-                            ((karr == lat) & (larr == kat))
-                band = (dist <= band_cells) & same_pair
-                # ★★ T11e（2026-09-28）：**配对符号的来源**（默认不改行为，供判决实验）。
-                #   现写法用**本胞**的 `sigma`；而 `v_at[ind]` 带的已经是**种子胞**的
-                #   规范形（`vcanon = sigma_种子 · v_cell`）⇒ 两者相乘 =
-                #   `sigma_本胞/ sigma_种子 · v_cell`，**跨界面次序翻转时会变号**。
-                #   `pair_sig_from_seed=True` 时改用**种子胞的 sigma**，
-                #   使 `coef` 跨界面**连续**（这正是注释里写的设计意图）。
+                # ★ 记账：`_sig_at` 的**取值位置**是 T11e 的口径开关，不许改语义。
                 if getattr(self, 'pair_sig_from_seed', False):
                     _sig_at = sigma[tuple(ind)]
                 else:
                     _sig_at = sigma
-                coef = np.where(band, _sig_at * v_at[tuple(ind)], 0.0)
+                _pair_sig_seed = bool(getattr(self, 'pair_sig_from_seed', False))
+                # ★ R581-L1：**默认关**的诊断探针（`R581_EXTEND_DIAG=1`）。
+                #   为什么需要：`near` 档的收益 = `(4 − 8·f_near)` ⇒ **f_near 决定胜负**，
+                #   而 f_near 随 N/几何变。实测 N=64 上 `near` 反而慢（0.863×），
+                #   N=128 上快 2.1× ⇒ **必须把 f_near 打出来**，不能靠猜。
+                #   ⚠ 不影响任何数值（只 print）。
+                if os.environ.get('R581_EXTEND_DIAG') and \
+                        not getattr(self, '_r581_diag_done', False):
+                    import sys as _sys
+                    self._r581_diag_done = True    # ★ 只打一次：每步都算会扰动计时
+                    _ne = float((dist <= band_cells).mean())
+                    print('[R581-L1 diag] N=%d iface=%.4f%% near=%.4f%% '
+                          'near_cells=%d' % (self.N, 100.0 * float(iface.mean()),
+                                             100.0 * _ne,
+                                             int((dist <= band_cells).sum())),
+                          file=_sys.stderr, flush=True)
+                if _emode == 'near':
+                    # ---- W2：只在 `near = dist <= band_cells` 的胞上 gather ----
+                    _N = self.N
+                    _N2 = _N * _N
+                    _flat = np.flatnonzero(dist <= band_cells)
+                    band = np.zeros(karr.shape, bool)
+                    coef = np.zeros(karr.shape)
+                    if _flat.size:
+                        _i0 = ind[0].ravel()[_flat]
+                        _i1 = ind[1].ravel()[_flat]
+                        _i2 = ind[2].ravel()[_flat]
+                        _ii = _i0 * _N2 + _i1 * _N + _i2        # 种子胞的平坦下标
+                        _kf = karr.ravel()
+                        _lf = larr.ravel()
+                        _kat = _kf[_ii]
+                        _lat = _lf[_ii]
+                        _kc = _kf[_flat]                        # 本胞的 (k,l)
+                        _lc = _lf[_flat]
+                        _sp = ((_kc == _kat) & (_lc == _lat)) | \
+                              ((_kc == _lat) & (_lc == _kat))
+                        _sel = _flat[_sp]                       # = 平坦化的 `band`
+                        band.ravel()[_sel] = True
+                        if _sel.size:
+                            _jj = _ii[_sp]                      # 种子胞下标（只取带内）
+                            # ★ 与基线**同一串运算** `_sig_at * v_at[tuple(ind)]`：
+                            #   `_sig_at` 按 T11e 的口径取"本胞"或"种子胞"的 sigma。
+                            _sf = _sig_at.ravel()
+                            coef.ravel()[_sel] = \
+                                (_sf[_jj] if _pair_sig_seed else _sf[_sel]) \
+                                * v_at.ravel()[_jj]
+                else:
+                    kat = karr[tuple(ind)]
+                    lat = larr[tuple(ind)]
+                    # ★★ 本轮修的真 bug（被亚胞射线交点口径抓到）：旧写法用
+                    #   `karr == kat`（"与最近界面胞**同区域**"）。但 `iface` 往往
+                    #   **只落在 winner 一侧**（实测：`dx = L/N` 的浮点尾差让
+                    #   |φ_winner| = dx 的胞判为带外 ⇒ iface 只剩 winner=0 的胞）
+                    #   ⇒ `kat ≡ 0` ⇒ **runner-up 一侧从不被推进**。实测后果（z 剖面）：
+                    #   φ_1 只在 z>z0 侧平移、z<z0 侧冻结 ⇒ 差分场 d=φ_k−φ_l 不平移而只被
+                    #   **拉陡** ⇒ 射线口径 40 步位移 6.31dx（应 4dx）、单步 0.0909dx
+                    #   （应 0.1dx）；而 `region()` 计数法靠"符号翻转"**凑巧**给出 1.0000
+                    #   —— 计数法掩盖结构错误的教科书案例（审计 §10 的 0.000 亦须重判）。
+                    #   正确掩模按**界面的配对身份**（无序对 {k,l}），两侧一视同仁。
+                    same_pair = ((karr == kat) & (larr == lat)) | \
+                                ((karr == lat) & (larr == kat))
+                    band = (dist <= band_cells) & same_pair
+                    # ★★ T11e（2026-09-28）：**配对符号的来源**（默认不改行为，供判决实验）。
+                    #   现写法用**本胞**的 `sigma`；而 `v_at[ind]` 带的已经是**种子胞**的
+                    #   规范形（`vcanon = sigma_种子 · v_cell`）⇒ 两者相乘 =
+                    #   `sigma_本胞/ sigma_种子 · v_cell`，**跨界面次序翻转时会变号**。
+                    #   `pair_sig_from_seed=True` 时改用**种子胞的 sigma**，
+                    #   使 `coef` 跨界面**连续**（这正是注释里写的设计意图）。
+                    #   ⚠ `_sig_at` 已在上面按同一口径算好（legacy/merged 共用）。
+                    coef = np.where(band, _sig_at * v_at[tuple(ind)], 0.0)
             else:
                 band = np.zeros(self.phi.shape[1:], bool)
                 for k in range(nreg):
@@ -3475,6 +4949,7 @@ class LevelSetMulti(object):
                                                            <= band_cells * self.dx)
                 band = band & (np.abs(v_cell) > 0)
                 coef = np.where(band, sigma * vcanon, 0.0)
+        acct.span_end('adv.extend')
         # ★★ D17（2026-09-28）**投影型（保几何）平流** —— P1 的结构性修法。
         #   把"法向速度"投影成**矢量**速度场 `V = v_canon·n_orient`，再用
         #   `upwind_flux_vec` 对 `φ_t + V·∇φ = 0` 做迎风通量。
@@ -3486,6 +4961,7 @@ class LevelSetMulti(object):
         #      ⇒ `∇d` 跨界面不翻号 ✓（这是仓库里踩过的坑，不要再改回去）
         #   ③ 两个场共用同一个 `V` ⇒ 差分场 d 只平移（结构性保证）
         _is_proj = (adv_grad in ('proj', 'proj2'))
+        acct.span_begin('adv.proj_geom')
         if _is_proj:
             _vc_ext = sigma * coef
             _dd = np.where(karr < larr, 1.0, -1.0) * (pha - phb)
@@ -3494,6 +4970,7 @@ class LevelSetMulti(object):
             Vvec = [_vc_ext * (_g / _gn) for _g in _gd]
         else:
             Vvec = None
+        acct.span_end('adv.proj_geom')
         # ★★★ R1 任务②（2026-09-29）：**逐场推进改为多核并行**。
         #   为什么这一处是"并行化收益最大、风险最小"的：
         #     ① **天然无依赖**：第 k 个场只读 `self.phi[k]` 与 `Vvec`（只读），
@@ -3514,27 +4991,35 @@ class LevelSetMulti(object):
         #        都在读它）⇒ **已删除**。本循环**只**并行化，**不碰** `dG_max`。
 
         def _step_k(k):
-            vnk = coef * (np.where(karr == k, 1.0, 0.0)
-                          - np.where(larr == k, 1.0, 0.0))
-            if not np.any(vnk != 0):
+            with acct.mark('adv.step.vnk'):
+                vnk = coef * (np.where(karr == k, 1.0, 0.0)
+                              - np.where(larr == k, 1.0, 0.0))
+                _skip = not np.any(vnk != 0)
+            if _skip:
                 return
-            if _is_proj:
-                # ★★ D17：矢量速度 + 迎风通量（两场共用同一个 V）
-                self.phi[k] = self.phi[k] - dt * self.par.upwind_flux_vec(
-                    self.phi[k], Vvec, self.dx,
-                    order=(2 if adv_grad == 'proj2' else 1))
-            elif adv_grad == 'central':
-                g = self.par.gradient(self.phi[k], self.dx, edge_order=2)
-                gmag = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
-                self.phi[k] = self.phi[k] - dt * vnk * gmag
-            else:
-                sgn = np.where(vnk > 0, 1.0, -1.0)
-                gmag = self._upwind_grad(self.phi[k], sgn)
-                self.phi[k] = self.phi[k] - dt * vnk * gmag
+            with acct.mark('adv.step.advphi'):
+                if _is_proj:
+                    # ★★ D17：矢量速度 + 迎风通量（两场共用同一个 V）
+                    self.phi[k] = self.phi[k] - dt * self.par.upwind_flux_vec(
+                        self.phi[k], Vvec, self.dx,
+                        order=(2 if adv_grad == 'proj2' else 1))
+                elif adv_grad == 'central':
+                    g = self.par.gradient(self.phi[k], self.dx, edge_order=2)
+                    gmag = np.sqrt(sum(gi ** 2 for gi in g)) + 1e-30
+                    self.phi[k] = self.phi[k] - dt * vnk * gmag
+                else:
+                    sgn = np.where(vnk > 0, 1.0, -1.0)
+                    gmag = self._upwind_grad(self.phi[k], sgn)
+                    self.phi[k] = self.phi[k] - dt * vnk * gmag
 
-        self.par.for_each([(lambda k=k: _step_k(k)) for k in range(nreg)],
+        # ★ R578：`k_loop_mode='act'` 时只遍历活跃场（等价性见 `__init__` 的长记账）。
+        #   `act` 是上面用 `np.unique` 得到的 numpy 整型数组 ⇒ `int(k)` 归一成 Python int。
+        _k_items = range(nreg) if self._k_loop_mode == 'full' else act
+        self.par.for_each([(lambda k=int(k): _step_k(int(k))) for k in _k_items],
                           tag='advance.k_loop')
-        return self._finish_advance(reg0, dt)
+        _r576_res = self._finish_advance(reg0, dt)
+        acct.span_end('adv.total')
+        return _r576_res
 
     def _finish_advance(self, reg0, dt=None):
         """推进一步的**收尾**（两条推进路径共用，避免两处分叉）：

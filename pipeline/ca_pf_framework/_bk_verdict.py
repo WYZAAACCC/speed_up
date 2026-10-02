@@ -6,10 +6,10 @@ r"""_bk_verdict.py —— **阶段 3 的判决**（判据**先登记**，不许�
 
 | # | 判据 | 阈值 | 依据 |
 |---|---|---|---|
-| **V-1 块结构** | `nslab_n == M` **且** `nf3_col == M-1` **且** `nf3_faces > 0` | 全部测点成立 | ★ **`nf3_col` 单独不够**：它只数"柱里相邻的同变体板条对"，若两根板条之间夹了母相 β，`nf3_col` 仍是 M−1 而 `f3_faces` 会掉到 0 ⇒ **必须两者同时成立**才算"被界面分隔" |
+| **V-1 块结构** | `nslab_n == M` **且** `nf3_faces > 0`（**多变异臂**才再加 `nf3_col == M-1`） | 全部测点成立 | ★ **`nf3_col` 单独不够**：它只数"柱里相邻的同变体板条对"，若两根板条之间夹了母相 β，`nf3_col` 仍是 M−1 而 `f3_faces` 会掉到 0 ⇒ **必须两者同时成立**才算"被界面分隔"。<br>★★ **R50 / P1-28**：`nf3_col` 只比较**变体号** ⇒ 若**所有场同变体**，`nf3_col == nslab_n−1` **恒真、与几何无关** ⇒ 这类臂上**降级为不判**，判决由 `nslab_n == M` 与 `nf3_faces > 0` 承担。中招臂：`_bk_eng` 全族、`_bk_closed` 全族、`dry_mb1s`/`mb1s62`/`mb1Ls` |
 | **V-2 每根都在长** | 每根板条的体积**单调不减**且末值 > 初值 | 全部 k | 用**落盘快照**重测（CSV 只存总量） |
 | **V-3 界面不动** | `max\|Δpos\| < 0.12 Δx`（P-1） | 全程 | §6.6.2 |
-| **V-4 没撞盒壁** | `box_touch == 0` 全程 | 全程 | §9.5（否则几何读数作废） |
+| **V-4 没撞盒壁** | **core 口径** `box_touch_core == 0` 全程（旧 `box_touch` 只报不判） | 全程 | §9.5（否则几何读数作废）；**R40/P1-23**：旧口径把 1 胞孤儿算成撞壁，7 样本误判 3 个 |
 | **V-5 数值健康** | `ncomp_max` 末值 ≤ 2（不碎裂） | 末值 | §9.4 |
 | **V-6 通道是活的** | 与 `gpos`（γ=100）配对：`gpos` 的 \|Δpos\| **显著大于** `dry` | 比 > 3× | 没它，"界面不动"没有意义 |
 
@@ -197,16 +197,68 @@ def main():
         bt = [fnum(x, 'box_touch') for x in rows]
         ncm = [fnum(x, 'ncomp_max') for x in rows]
         ck = []
-        ck.append(('V-1 块结构 (nslab==M & nf3col==M-1 & nf3faces>0)',
-                   bool(M) and all(v == M for v in ns)
-                   and all(v == M - 1 for v in nc) and all(v > 0 for v in nf[1:]),
-                   'nslab%s=%s  nf3col%s=%s  nf3faces=%s'
-                   % ('' if _newcol else '(旧口径)',
-                      sorted(set(ns)), '' if _newcol else '(旧口径)',
-                      sorted(set(nc)), [int(x) for x in nf[:3]])
-                   + ('' if not _newcol else
-                      '   ｜ 旧口径 nslab=%s nf3col=%s'
-                      % (sorted(set(ns_old)), sorted(set(nc_old))))))
+        # ★★★ R50（**P1-28**）：V-1 的第 2 条在"全场同变体"的臂上**恒真**。
+        #   `_same_variant_adjacent()` 只比较 `vmap[a] == vmap[b]`
+        #   ⇒ 若所有场都是同一个变体，**每一对相邻段都计数**
+        #   ⇒ `nf3_col == nslab_n − 1` 与几何无关（哪怕段序随机也成立）。
+        #   实测（`_r50_v1taut.py`）：`_bk_eng` 全族（`eng1`…`eng14`）、
+        #   `_bk_closed` 全族（`cl1*`/`cln11`/…）、`dry_mb1s`/`mb1s62`/`mb1Ls`
+        #   **全部中招**；只有 `dry_mb1`/`dry_mb1L`（`[1,1,1,3,3,3]`）与
+        #   `eng_mb2*/mb3*`（6 变体）有分辨力。
+        #   ⇒ 处置：**单变异臂上把第 2 条降级为"恒真（无分辨力）"，判决只由
+        #     `nslab_n == M` 与 `nf3_faces > 0` 承担**，并在理由里写清楚。
+        #     ⚠ 不删这一条 —— 多变异臂上它仍然有效（`eng_mb2*` 给 0，说明那些臂
+        #       确实**不是** F3 块，这个"负"结论正是靠它得出的）。
+        _la = r['meta'].get('laths')
+        _nvar = len(set(int(x) for x in _la)) if _la else None
+        _taut = (_nvar == 1)
+        _ok_core = (bool(M) and all(v == M for v in ns)
+                    and all(v > 0 for v in nf[1:]))
+        _ok_nf3 = bool(M) and all(v == M - 1 for v in nc)
+        ck.append((
+            'V-1 块结构 (nslab==M & nf3faces>0%s)'
+            % ('' if _taut else ' & nf3col==M-1'),
+            (_ok_core if _taut else (_ok_core and _ok_nf3)),
+            'nslab%s=%s  nf3col%s=%s  nf3faces=%s'
+            % ('' if _newcol else '(旧口径)',
+               sorted(set(ns)), '' if _newcol else '(旧口径)',
+               sorted(set(nc)), [int(x) for x in nf[:3]])
+            + ('' if not _newcol else
+               '   ｜ 旧口径 nslab=%s nf3col=%s'
+               % (sorted(set(ns_old)), sorted(set(nc_old))))
+            + ('   ⚠ **本臂只有 %d 个变体（`laths=%s`）⇒ `nf3_col==M-1` 恒真、'
+               '无分辨力 ⇒ 不参与判决**（P1-28）'
+               % (_nvar, _la) if _taut else
+               ('   ｜ 变体数=%s ⇒ nf3_col 有分辨力' % _nvar
+                if _nvar else '   ｜ ⚠ meta 无 `laths` ⇒ 无法判"恒真"，按有分辨力保守处理'))))
+        # ★★★ R50（**P1-29**）：登记 **V-1′** —— 第 1 条改用**去重场数**。
+        #   为什么另立而不是改 V-1：V-1 是**预先登记**的判据，事后改口径是本仓库
+        #   明令禁止的。所以 V-1 **原样保留并继续打印**，新判据 V-1′ 并列登记。
+        #   依据（实测，`_r50_dedup.py`）：`nslab_n` 是**段数**，柱穿出一根板条
+        #   再穿回来时会**多读** ⇒ `dry_mb1Ls` 3 根读成 5（1.67×）、
+        #   `eng_eng3` 6 根读成 7（1.17×）⇒ **好块也会被 V-1 判 FAIL**。
+        #   `len(set(runs))`（去重场数）**离线可复算**（`runs` 列一直在 CSV 里），
+        #   ⚠ 但它只是**必要**条件：不能排除"某根出现两次而另一根缺席"。
+        _nu = [fnum(x, 'nslab_nu') for x in rows]
+        if not all(np.isfinite(v) for v in _nu):
+            # 归档臂没有该列 ⇒ 从 `runs` 列**现算**（不必重跑）
+            _nu = []
+            for x in rows:
+                rs = str(x.get('runs', '') or '')
+                try:
+                    _nu.append(float(len({int(t) for t in rs.split('/') if t})))
+                except ValueError:
+                    _nu.append(float('nan'))
+        _nuok = all(np.isfinite(v) for v in _nu) and len(_nu) > 0
+        ck.append((
+            "V-1′ 块结构 (去重场数==M & nf3faces>0)",
+            (bool(M) and _nuok and all(int(v) == M for v in _nu)
+             and all(v > 0 for v in nf[1:])),
+            '去重场数=%s (M=%s)  ｜ nslab_n(段数)=%s ｜ nf3faces=%s'
+            % (sorted({int(v) for v in _nu if np.isfinite(v)}), M,
+               sorted(set(ns)), [int(x) for x in nf[:3]])
+            + ('   ⚠ 段数 > M ⇒ 柱**穿出再穿回**同一根（P1-29 的多读），'
+               '这是 V-1 误判的原因' if any(v > (M or 0) for v in ns) else '')))
         if 'per' in r and len(r.get('per', [])) >= 2:
             vols = {}
             for (_st, vd, _a, _b, _c, _d) in r['per']:
@@ -245,8 +297,26 @@ def main():
                    (max(dp) < 0.12) if dp else None,
                    ('max=%.3f Δx（末=%+.3f）' % (max(dp), fnum(rows[-1], 'f3_pos_dx')))
                    if dp else '**无有效测点**：全程没有 F3 面 ⇒ `Δpos` 恒为 nan'))
-        ck.append(('V-4 没撞盒壁 (box_touch==0)', all(v == 0 for v in bt),
-                   'box_touch=%s' % sorted(set(bt))))
+        # ★★★ R49（P1-23 的**判据侧收尾**）：V-4 必须改用 **core 口径**。
+        #   旧 `box_touch` = "**任一**已转变胞落在盒面" ⇒ **一个 1 胞孤儿就置 1**。
+        #   R40（`R30_AUDIT_LEDGER.md` §13）已用**双实现**证明：7 个归档样本里
+        #   **3 个被旧口径误判为"撞壁"**，而 core 口径给 **0/7**
+        #   ⇒ R29 那条"V 段撞壁作废"**已被撤回**。
+        #   ⚠ 那条撤回如果只改结论不改**判据**，下次重跑判决时又会按旧口径
+        #   把算例判死 ⇒ 所以这里把"被判的量"换掉，**旧口径仍打印**（不判）。
+        btc = [fnum(x, 'box_touch_core') for x in rows]
+        _btc_ok = all(np.isfinite(v) for v in btc)
+        if _btc_ok:
+            ck.append(('V-4 没撞盒壁 (core 口径 box_touch_core==0；旧口径只报不判)',
+                       all(v == 0 for v in btc),
+                       'box_touch_core=%s   ｜ 旧 box_touch=%s（含孤儿，**不判**）'
+                       % (sorted(set(btc)), sorted(set(bt)))))
+        else:
+            # 归档臂没有这一列 ⇒ **明说降级**，不用旧口径冒充 core 口径
+            ck.append(('V-4 没撞盒壁 (**无 core 列 ⇒ 退回旧口径，仅作参考**)',
+                       all(v == 0 for v in bt),
+                       'box_touch=%s（⚠ 此臂早于 R40，缺 box_touch_core；'
+                       '旧口径会把孤儿算成撞壁）' % sorted(set(bt))))
         ck.append(('V-5 数值健康 (ncomp_max 末 ≤ 2)',
                    ncm[-1] <= 2, 'ncomp_max: %.0f → %.0f' % (ncm[0], ncm[-1])))
         # ★ V-5b：**显著**碎裂（分量 ≥32 体素）。`ncomp_max` 会把 1–2 体素的

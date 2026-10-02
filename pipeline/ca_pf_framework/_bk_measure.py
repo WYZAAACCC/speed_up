@@ -99,6 +99,55 @@ def _ncomp_sizes(mask):
 MIN_SIG_VOX = 32
 
 
+# ================= ★★★ R146（**P1-43**）：`cov` 的**长度基线** =================
+# ## 为什么必须有一条基线（`R30_AUDIT_LEDGER.md` §100 / §101）
+#
+# `snapshot_coverage` 的分母把每根板条当**理想矩形平板**
+# （`Σ_k V_k/t_k · (M−1)/M`），而种子的**端部是收敛的** ⇒ 端部损失占比 ∝ 周长/面积 ∝ 1/L。
+# **实测**（`_r123_covsurvey.py`，30+ 个臂的 **step-0** 快照）：
+#   `cov(t=0)` 随 `--plate-L` **单调上升**：L=450 ⇒ 0.44；L=1600 ⇒ 1.08（**跨档差 2.4 倍**）。
+# ⇒ **`cov ≥ 0.85` 这个阈值只对校准它的那一档 `L/Δx` 成立**，
+#   跨 `L` 一刀切会**误杀所有短板条构型**。
+#
+# ## 口径（**本节新增**）
+#   `cov_norm = cov / COV_BASE_BY_L(L)`，判据 **`cov_norm ≥ 0.95`**
+#   （"与该 `L` 下能做到的最好相比，损失不超过 5%"）。
+#
+# ⚠ **基线的性质**：**经验值**，来自本仓库已有臂（只取 `nf2(t=0)==0` 的"清洁种子"里
+#   该 `L` 的**最大值**）。生成脚本 `_r124_covcalib.py`；点数少的档（n<3）**不牢**，
+#   `cov_norm` 会打印 `⚠` 提醒。**改 Δx 或改种子参数后必须重新标定。**
+COV_BASE_BY_L = {
+    400e-9: (0.703, 1), 450e-9: (0.442, 1), 600e-9: (0.532, 6),
+    800e-9: (0.638, 3), 1000e-9: (0.735, 5), 1600e-9: (1.079, 20),
+    2000e-9: (0.845, 2),
+}
+# 基线只在**块间真分离**（`nf2(t=0)==0`）的臂上标定 ⇒ 用之前**先查 `nf2`**。
+
+
+def cov_baseline(L):
+    """该 `L` 下的 `cov` 基线。返回 `(base, n, exact)`。
+
+    `exact=False` ⇒ 表里没有正好这个 `L`，用了**最近的**档 ⇒ 结果只作提示。
+    """
+    if not COV_BASE_BY_L:
+        return float('nan'), 0, False
+    if L in COV_BASE_BY_L:
+        b, n = COV_BASE_BY_L[L]
+        return b, n, True
+    k = min(COV_BASE_BY_L, key=lambda x: abs(x - L))
+    b, n = COV_BASE_BY_L[k]
+    return b, n, False
+
+
+def cov_norm(cov, L):
+    """`cov_norm = cov / cov_baseline(L)`；附 `(cov_norm, base, n, exact)`。"""
+    b, n, ex = cov_baseline(L)
+    if not (b == b) or b <= 0:
+        return float('nan'), b, n, ex
+    return cov / b, b, n, ex
+
+
+
 def wide_face_thickness(phi, dx, n_hab, k, band=1.5, cos2_min=0.81,
                         band_cells=2):
     """★★★ R36（`R30_AUDIT_LEDGER.md` **P1-21**）：**宽面厚度** `t_wf`。
@@ -911,13 +960,33 @@ def measure_state(region, dx, n_hab, w_ax, a_ax, vmap, r_col=300e-9,
         out['f3_pos_n'] = float('nan')
         out['f3_std_n'] = float('nan')
 
+    # ★★★★★ R218（`R30_AUDIT_LEDGER.md` **§137.7**）：补**聚合的 `f1_area`**。
+    #   ## 缺口
+    #     `series.csv` 一直只有 `f2_area_m2` / `f3_area_m2`，
+    #     而 **F1（α′/β，含母相）的面积只能在 `f1_faces_<k>` 里逐根读** ⇒
+    #     **"三类界面各占多少"这个最基本的问题答不出来**。
+    #   ## 为什么现在必须补（`§137.5`）
+    #     `§135.4` 报的 "F2 占 74.5%" 分母是 `f2+f3` —— **没有 F1**！
+    #     而 `§137.3` 的胞数比是 F1 **488** : F2 88 : F3 196（F1 占 63%）
+    #     ⇒ **R165 否定结果的头号候选解释**就是"F2 在**总**面积里占比很小"。
+    #     ⇒ 没有聚合计不出来，必须补。
+    #   ## 口径
+    #     **与 `f2_area`/`f3_area` 完全同一套**：按格面计数（`np.roll`，**周期性**）
+    #     再乘 `|n_hab|` 的对应分量、乘 `dx²`。
+    #     ⚠ 保留原来的逐根 `f1_faces_%d`（历史读数可复现）。
+    f1dir = np.zeros(3, np.int64)
     for k in laths:
         mk, m0 = (region == k), (region == 0)
         c = 0
         for axx in (0, 1, 2):
             for sh in (1, -1):
-                c += int((mk & np.roll(m0, sh, axis=axx)).sum())
+                _t = int((mk & np.roll(m0, sh, axis=axx)).sum())
+                c += _t
+                f1dir[axx] += _t
         out['f1_faces_%d' % k] = c
+    out['f1_faces'] = int(f1dir.sum())
+    out['f1_area'] = float((f1dir * np.abs(np.asarray(n_hab, float))).sum()) * dx ** 2
+    out['f1_area_stair'] = float(f1dir.sum()) * dx ** 2
     out['box_touch'] = bool(any(
         np.take(region, 0, axis=ax).max() > 0
         or np.take(region, N - 1, axis=ax).max() > 0 for ax in (0, 1, 2)))
@@ -1166,6 +1235,199 @@ def _selftest():
     ck('C17c 插入 β 膜后总覆盖率必须**掉下来**（vs C16）',
        cvf['cov'] < cv['cov'] - 0.02,
        '带膜 %.3f  vs  对齐 %.3f' % (cvf['cov'], cv['cov']))
+
+    # ================= ★★★ R76（**P1-33/P1-34**）：逐块口径的正/负对照 =========
+    # 为什么必须补（这是 R76 的核心教训）：
+    #   R75 的判决行吃的是**全局** `nslab_n`，而多块构型下它**结构性无效** ——
+    #   柱心 = `allowed`（两个块的**全部**场）的质心 ⇒ 落在**两块之间的空隙**里；
+    #   柱轴只用 `laths[0]` 的 n* ⇒ 块 1（镜面变体）投影弥散。
+    #   实测 R75：全局 `nslab_n = 1` 而逐块口径 **31/31 快照全为 3/3**。
+    #   ⇒ 必须给逐块口径补**正对照**（3 根应读到 3）与**负对照**（并成一片应读到 1），
+    #     否则"3/3"完全可能只是函数恒返回满值（本仓库教训 #19）。
+    def _triad(nv):
+        """由 n* 造一组正交三轴（自足，不 import 重模块）。"""
+        nv = np.asarray(nv, float)
+        nv = nv / np.linalg.norm(nv)
+        t = np.array([0.0, 0.0, 1.0]) if abs(nv[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+        wv = np.cross(nv, t)
+        wv = wv / np.linalg.norm(wv)
+        av = np.cross(wv, nv)
+        return nv, av / np.linalg.norm(av), wv
+
+    # 变体 1 与变体 3 用**不同**的 n*（复刻 R75 的镜像对）——这正是全局柱口径失效的原因
+    nB = np.array([0.4424, 0.4425, 0.7801])
+    nA, aA, wA = _triad(n_hab)
+    nB, aB, wB = _triad(nB)
+    _axvar = {1: (nA, aA, wA), 3: (nB, aB, wB)}
+    # 造 12 个**无迹**的合成 eps0（只为让 `r_selfac` 有定义，不参与块计数）
+    _eps0 = []
+    for _k in range(12):
+        _A = np.diag([1.0, -1.0, 0.0]) * (1.0 + 0.1 * _k)
+        _eps0.append(_A - np.trace(_A) / 3.0 * np.eye(3))
+    _npfvar = {1: nA, 3: nB}
+
+    def _twoblock(merge=False):
+        """2 块 × 3 根；块心沿 y 分开 2500 nm（**复刻 R75 几何**）。
+
+        `merge=True` ⇒ 块 B 的三根**并成一根**（负对照）。
+        """
+        reg = np.zeros((N, N, N), np.int8)
+        centers = {1: c0 + np.array([0.0, -1250e-9, 0.0]),
+                   3: c0 + np.array([0.0, +1250e-9, 0.0])}
+        halves = {1: (nA, aA, wA), 3: (nB, aB, wB)}
+        for v, f0 in ((1, 1), (3, 4)):
+            nv, av, wv = halves[v]
+            amv = dict(n=nv, w=wv, a=av)
+            Mv = 1 if (merge and v == 3) else 3
+            Tv = (6 * T) if (merge and v == 3) else 2 * T
+            for i in range(Mv):
+                off = (i - (Mv - 1) / 2.0) * Tv
+                reg[_synth_slab(N, dx, centers[v] + off * nv,
+                                dict(n=Tv / 2, w=W, a=AL), amv)] = f0 + i
+        return reg
+
+    _vmap2 = {1: 1, 2: 1, 3: 1, 4: 3, 5: 3, 6: 3}
+    _rg = _twoblock(False)
+    b_ok = blocks(_rg, dx, _vmap2, eps0_var=_eps0, npf_var=_npfvar, axes_var=_axvar)
+    ck('C18 两块×3根：nblk_sig == 2（块分离判据）', b_ok['nblk_sig'] == 2,
+       'nblk_sig=%d blk_laths=%s blk_vars=%s'
+       % (b_ok['nblk_sig'], b_ok['blk_laths'], b_ok['blk_vars']))
+    ck('C19 ★**逐块主口径正对照**：blk_nprof == 3/3（沿**每块自己的 n***）',
+       b_ok['blk_nprof'] == '3/3',
+       'blk_nprof=%s   blk_nlath=%s   blk_nruns=%s'
+       % (b_ok['blk_nprof'], b_ok['blk_nlath'], b_ok['blk_nruns']))
+    # ★ 全局柱口径在这个构型上**必须**失效 —— 把"量具缺陷"本身变成一个可证伪的读数
+    _rglob = measure_state(_rg, dx, nA, wA, aA, _vmap2)
+    ck('C19b 同一构型上**全局** `nslab_n` 失效（< 6）—— P1-34 的直接证据',
+       _rglob['nslab_n'] < 6,
+       '全局 nslab_n=%d runs=%s  vs 逐块 3/3（列心=并集质心，落在两块的空隙里）'
+       % (_rglob['nslab_n'], _rglob['runs']))
+    ck('C19c `blk_nlath` 只能当**上界**（它在 C21 的横切构型上照样报满）',
+       True, '见 C21')
+    _rgm = _twoblock(True)
+    b_mg = blocks(_rgm, dx, _vmap2, eps0_var=_eps0, npf_var=_npfvar, axes_var=_axvar)
+    ck('C20 ★**逐块主口径负对照**：块 B 并成 1 根 ⇒ blk_nprof 掉到 3/1',
+       b_mg['blk_nprof'] == '3/1',
+       'blk_nprof=%s   blk_nlath=%s   blk_nruns=%s'
+       % (b_mg['blk_nprof'], b_mg['blk_nlath'], b_mg['blk_nruns']))
+    # ★★ C21 —— **`blk_nprof` 的已知边界**（第一版我把它当"退化对照"，预期写错了，
+    #   实测给出的是**另一条更有用的信息**，记在这里而不是改判据去迁就预期）：
+    #   构造：块 B 的 3 个场**不是沿 n\* 堆叠**，而是把**同一片**沿 w 横切成 3 份
+    #   （3 个场贴着彼此 ⇒ 并集 6-连通、`ids` = 3）。
+    #   **实测**：`blk_nprof` 仍报 **3**（每箱的众数在三个场之间**抖动** ⇒ 三个场
+    #   都当过至少一个箱的众数），而 `blk_nruns` 报 **6**（段数）并触发
+    #   `[blocks] ⚠ 剖面口径与【场数】口径不一致` 告警。
+    #   ⇒ **`blk_nprof` 是「每个场在该块的柱剖面里出没过」的检验，
+    #     不是「这些场沿 n\* 有序堆叠」的检验。**
+    #   ⇒ 判据必须三件一起看：
+    #       `blk_nprof == blk_laths`（在场）+ `blk_nruns == blk_nprof`（剖面无噪声）
+    #       + `f_flat`（端面还在，见 `_r65_corner.py`）。
+    #   ⇒ 这一条同时解释了 R33 的老观察（`mb1s` 真值 3 而段数 5–6）。
+    reg_deg = _twoblock(True)
+    _cB = c0 + np.array([0.0, +1250e-9, 0.0])
+    for i in range(3):
+        off = (i - 1.0) * (2 * W / 3.0)
+        reg_deg[_synth_slab(N, dx, _cB + off * wB,
+                            dict(n=3 * T, w=W / 3.0, a=AL),
+                            dict(n=nB, w=wB, a=aB))] = 4 + i
+    b_dg = blocks(reg_deg, dx, _vmap2, eps0_var=_eps0, npf_var=_npfvar,
+                  axes_var=_axvar)
+    _np_dg = [int(t) for t in b_dg['blk_nprof'].split('/') if t]
+    _nr_dg = [int(t) for t in b_dg['blk_nruns'].split('/') if t]
+    ck('C21 ★`blk_nprof` 的边界（**已知局限，不是 bug**）：'
+       '「在场」≠「沿 n* 堆叠」',
+       (len(_np_dg) == 2 and len(_nr_dg) == 2
+        and _np_dg[1] == 3 and _nr_dg[1] > _np_dg[1]),
+       '横向切 3 份（非沿 n* 堆叠）⇒ blk_nprof=%s（**仍报满**）而 '
+       'blk_nruns=%s（**噪声告警起作用**）⇒ 判据需与 f_flat 合看'
+       % (b_dg['blk_nprof'], b_dg['blk_nruns']))
+
+    # ================= ★★★★★ C22：**`nf2`（异变体界面）的解析自证** =================
+    #   ## 为什么补这一组（`R30_AUDIT_LEDGER.md` **§201**）
+    #     目标第 (3) 项要求「条件③的**每一项**都要先过量具自证与正/负对照」。
+    #     逐项对了一遍 `_selftest` 的清单：**`f2_faces` 被 `measure_state` 算出来了
+    #     （`:948`），但整个自检里没有任何一条断言碰过它**
+    #     （`grep 'f2_faces'` 只命中定义处与注释）。
+    #     ⇒ 而 `nf2` 正是「**块间相互作用**」的直接量具（`_bk_exp.py` 的 CSV 列 `nf2`）。
+    #     ⇒ **有计算、无自证** = 目标原文说的"量具出错会对结论产生极大影响"的典型风险口。
+    #   ## 构造（**解析已知答案**）
+    #     两块**轴对齐**的板条面对面贴着，接触面在 `x = c0x`：
+    #       板 A（场 1，变体 1）：`x ∈ [c0x − d, c0x]`，`|y| ≤ W`，`|z| ≤ AL`
+    #       板 B（场 4，变体 3）：`x ∈ [c0x, c0x + d]`，同 `y/z` 范围
+    #     ⇒ 接触格面数 = `n_y · n_z`，其中 `n_y = #{|y| ≤ W}`、`n_z = #{|z| ≤ AL}`
+    #       （**逐格面计数**，与 `_bk_measure` 的 `np.roll` 周期口径同源）。
+    _amx = dict(n=np.array([1.0, 0.0, 0.0]), w=np.array([0.0, 0.0, 1.0]),
+                a=np.array([0.0, 1.0, 0.0]))
+    _d = 4 * T
+
+    def _twoslab(field_b, sep_nm):
+        """A 恒为场 1（变体 1）；B 的场号与间距可调。`sep_nm > 0` ⇒ 两块分开。"""
+        reg = np.zeros((N, N, N), np.int8)
+        gap = sep_nm * 1e-9
+        reg[_synth_slab(N, dx, c0 + np.array([-(_d / 2 + gap / 2), 0.0, 0.0]),
+                        dict(n=_d / 2, w=W, a=AL), _amx)] = 1
+        reg[_synth_slab(N, dx, c0 + np.array([+(_d / 2 + gap / 2), 0.0, 0.0]),
+                        dict(n=_d / 2, w=W, a=AL), _amx)] = field_b
+        return reg
+
+    #   ⚠⚠ **自纠错（自查错误 #66，`§201`）**：本组第一版把解析预期写成
+    #      `n_y = #{|y| ≤ W}`、`n_z = #{|z| ≤ AL}` ⇒ **380**，而实测 **429**（+12.89%）。
+    #      用**独立手写计数**裁决（`_r449_f2adjudicate.py`）：
+    #        * 手写逐轴逐向数 ⇒ **只有"轴0 向−1"给出 429**，其余方向全 0
+    #          ⇒ `f2_faces` **每次界面只数一次**（我原先"再除以 2"是错的）；
+    #        * 实测各轴占据胞数：x=15、**y=39**、**z=11**
+    #          ⇒ `_amx` 里 `w` 在 **z**、`a` 在 **y** ⇒ 接触截面 = `39 × 11 = **429**`。
+    #      ⇒ **量具是对的，我的预期把 `W`/`AL` 的轴弄反了。**
+    #      ⇒ 判据**不放宽**，改的是**预期式**（并让它由 `_amx` 的轴分配**自动推**，不再手写）。
+    _axn = np.asarray(_amx['n'], float)
+    _axw = np.asarray(_amx['w'], float)
+    _axa = np.asarray(_amx['a'], float)
+    # ⚠⚠ **自纠错（#68）**：`_synth_slab` 里的格坐标是 **`i·dx`**（`:1024`
+    #   `rel = ii[:,None,None]*dx − c[0]`），**不是** `(i+0.5)·dx`。
+    #   第一版我按 `(i+0.5)·dx` 数格心 ⇒ 得 10×38=380，而真值是 **11×39=429**。
+    #   （独立裁决见 `_r449_f2adjudicate.py`：实测 x=15、**y=39**、**z=11**。）
+    _ii = np.arange(N) * dx
+
+    def _ncell(u, half):
+        """沿单位轴 `u`（轴对齐）、以 `c0` 为中心、半宽 `half` 的**格心数**。
+
+        ⚠ 自纠错（#67）：第一版留了一行没用的 `proj = _ii * u[None, :]`
+        且形状不匹配 ⇒ `ValueError`。本函数**只需要非零分量的那个轴**。
+        """
+        ax = int(np.argmax(np.abs(u)))
+        return int((np.abs(_ii - c0[ax]) <= half).sum())
+    # 接触截面 = 两个**面内**方向的格数之积（`n` 是厚度方向，不参与）
+    _n_expect = _ncell(_axw, W) * _ncell(_axa, AL)
+
+    # C22a 正对照：异变体贴着 ⇒ f2_faces > 0
+    _m_f2 = measure_state(_twoslab(4, 0.0), dx, nA, wA, aA, _vmap2)
+    ck('C22a ★`nf2` 正对照：异变体贴着 ⇒ f2_faces > 0',
+       _m_f2['f2_faces'] > 0,
+       'f2_faces=%d  f3_faces=%d  （解析预期 %d）'
+       % (_m_f2['f2_faces'], _m_f2['f3_faces'], _n_expect))
+
+    # C22b 定量：接触面数 == n_y·n_z（|Δ| < 5%）
+    _rel22 = abs(_m_f2['f2_faces'] - _n_expect) / max(_n_expect, 1)
+    ck('C22b ★`nf2` 定量：f2_faces == 解析接触格面数（|Δ| < 5%）',
+       _rel22 < 0.05,
+       '实测 %d vs 解析 %d （%+.2f%%）'
+       % (_m_f2['f2_faces'], _n_expect, 100 * (_m_f2['f2_faces'] / _n_expect - 1)))
+
+    # C22c ★★ **分辨力（最关键的一条）**：把 B 换成**同变体**（场 2，也属变体 1）
+    #   ⇒ 那张接触面是 **F3**，`f2_faces` 必须掉到 **0**，而 `f3_faces` 必须涨上来。
+    #   这条若不过 ⇒ `nf2` 分不清"块间"与"块内" ⇒ **条件③的块间量具整个失效**。
+    _m_f3 = measure_state(_twoslab(2, 0.0), dx, nA, wA, aA, _vmap2)
+    ck('C22c ★★`nf2` 分辨力：同变体贴着 ⇒ f2_faces == 0 且 f3_faces ≥ 解析值',
+       (_m_f3['f2_faces'] == 0) and (_m_f3['f3_faces'] >= 0.95 * _n_expect),
+       '同变体：f2_faces=%d（应 0）  f3_faces=%d（应 ≈%d）'
+       % (_m_f3['f2_faces'], _m_f3['f3_faces'], _n_expect))
+
+    # C22d 负对照：异变体**分开** ⇒ f2_faces == 0
+    _m_sep = measure_state(_twoslab(4, 2 * T * 1e9 / 1e0), dx, nA, wA, aA, _vmap2)
+    ck('C22d `nf2` 负对照：异变体分开 ⇒ f2_faces == 0',
+       _m_sep['f2_faces'] == 0,
+       '间距 %.0f nm ⇒ f2_faces=%d  f1_faces=%d'
+       % (2 * T * 1e9, _m_sep['f2_faces'], _m_sep['f1_faces']))
 
     print('-' * 100)
     print('FAIL = %d %s' % (len(F), F if F else ''))

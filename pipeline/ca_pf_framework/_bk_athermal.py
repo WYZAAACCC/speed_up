@@ -81,6 +81,26 @@ def judge(tag, root, verbose=True):
     M = int((D['meta'] or {}).get('nv', 0)) or int(cl.get('n_law', n_law))
     L_lath = float(cl['geometry']['plate_L_nm']) * 1e-9
     MOB = 1.0e-9                                    # 见 `T16_verify_rve.MOB`
+    # ★★★★★ 2026-10-04（**N7 的第二处**；判定见 `R2_PARAM_VERDICTS.md §0 N7`）
+    #   ## 缺口
+    #     `CL.T_of_k(k) = M_s − k/α_KM` 反演的是 `alpha_km_n_lath`，而后者是
+    #     **C-2 导出的「一个块里堆叠的板条数」**（其 docstring 明写
+    #     「本条**只对"堆叠型块"成立**…平面上并列的块…本轮**不做**」）
+    #     ⇒ **`T_of_k` 的 `k` 是「块内序号」，不是「全盒序号」。**
+    #     而下面的 A-2/A-3 原来用的是**全盒序号**（`n_ev` 与 `i+1`）。
+    #   ## 为什么 `B = 1` 时看不出来
+    #     全盒序号 = 块内序号 ⟺ `B = 1`。
+    #     A-2/A-3 是 Round 5 在 `cln2`/`cl1b` 上标定的，而
+    #     `--nuc-block-target` 是 **R502 才加的**（本轮之前）
+    #     ⇒ 标定那些臂的 `nuc_block_target` **不存在** ⇒ `B = 1`
+    #     ⇒ **又是"唯一用过的那一点恰好对"**（与 N6 同一个模式，见 `R525` §7）。
+    #   ## 推广（**`B = 1` 时逐位不变**，这是可证的）
+    #     第 `k` 根板条的**块内**序号 = `ceil(k / B)`。
+    #     `B = 1` ⇒ `ceil(k/1) = k` ⇒ **与原来的下标完全一致** ✅
+    #   ⚠ `--nuc-block-target 0`（默认）⇒ 本块取 `B = 1` ⇒ **归档判据逐位不变**。
+    _B = int(((D['meta'] or {}).get('exp_args') or {}).get('nuc_block_target', 0) or 0)
+    if _B <= 0:
+        _B = 1
 
     # ---- A-1：导出板条数 ------------------------------------------------
     ck.append(('A-1 导出板条数 n_law == floor(α_KM·(M_s−T_end)) == nv',
@@ -92,8 +112,12 @@ def judge(tag, root, verbose=True):
     ev = nd.get('T_events') or []
     n_ev = len(ev)
     # ---- A-2：事件数 -----------------------------------------------------
-    ck.append(('A-2 形核事件数 == n_law − 1（第 1 片是 t=0 预摆）',
-               n_ev == n_law - 1, '事件数=%d，应为 %d' % (n_ev, n_law - 1)))
+    #   ★ N7 推广：全盒应有 `B·n_law` 根，第 1 根是 `t=0` 预摆 ⇒ 事件数 `= B·n_law − 1`。
+    #     `B = 1` ⇒ 退化成原来的 `n_law − 1`（`_B` 的默认值见上面）。
+    ck.append(('A-2 形核事件数 == B·n_law − 1（第 1 片是 t=0 预摆；B=%d）' % _B,
+               n_ev == _B * n_law - 1,
+               '事件数=%d，应为 %d（B=%d × n_law=%d − 1）'
+               % (n_ev, _B * n_law - 1, _B, n_law)))
 
     # ---- A-3：事件温度 == T_k（时钟步内） --------------------------------
     #   ★★ 下标口径（Round 5 修）：**第 i 次引擎事件造的是第 (i+1) 根板条** ——
@@ -101,20 +125,30 @@ def judge(tag, root, verbose=True):
     #      **`T_{i+1}`**。第一版写成 `T_i` ⇒ 对 `cln2` 报 `|Δ| = 200 K`，
     #      看着像"律错了"，其实是**我的下标错了一格**（`cln2` 的 `α=5e-3`
     #      ⇒ `T_1=673`、`T_2=473`，而实测事件在 472.8 K ⇒ 正是 `T_2`）。
+    #   ★ N7 推广（2026-10-04）：`T_of_k` 要的是**块内**序号 = `ceil((i+1)/B)`。
+    #     实测支持（`_r520c`，B=8、α=0.011、M_s=873）：
+    #       事件 #25（全盒第 26 根）⇒ `ceil(26/8)=4` ⇒ `T_4 = 509.36 K`，
+    #         而日志实测 **T=509.4 K**（`_w2_r520_param.log:2636`）
+    #       事件 #34（全盒第 35 根）⇒ `ceil(35/8)=5` ⇒ `T_5 = 418.45 K`，
+    #         实测 **T=418.5 K**（`:2651`）
+    #     ⇒ 吻合到 **0.04 K**；而用全盒序号会得到 `−1399.7 K`（**负绝对温度**）。
     #   ★ 口径必须**双边**：事件在"第一步 T ≤ T_k"处触发 ⇒ 允许的超调是 `q·dt`
     #     （实测 ≲0.25 K），而**测早了**同样是违反律。
     worst = 0.0
     rows = []
     TOL_K = 1.0
     for i, e in enumerate(ev, start=1):
-        Tk = CL.T_of_k(i + 1, alpha)
+        _lath = i + 1                       # 全盒第几根（第 1 根是 t=0 预摆）
+        _kpb = -(-_lath // _B)              # ceil(_lath / _B) = 块内序号
+        Tk = CL.T_of_k(_kpb, alpha)
         dev = abs(float(e['T']) - Tk)
         worst = max(worst, dev)
-        rows.append('事件%d→第%d根 T=%.2f T_k=%.2f |Δ|=%.2f K'
-                    % (i, i + 1, e['T'], Tk, dev))
+        rows.append('事件%d→全盒第%d根(块内第%d) T=%.2f T_k=%.2f |Δ|=%.2f K'
+                    % (i, _lath, _kpb, e['T'], Tk, dev))
     ok3 = bool(ev) and (worst < TOL_K)
-    ck.append(('A-3 每次事件的温度落在 T_k 的 %g K 内（**双边**，事件 i ↔ 第 i+1 根）'
-               % TOL_K, ok3, '；'.join(rows) if rows else '无事件'))
+    ck.append(('A-3 每次事件的温度落在 T_k 的 %g K 内'
+               '（**双边**；块内序号 = ceil(全盒序号/B)，B=%d）' % (TOL_K, _B),
+               ok3, '；'.join(rows) if rows else '无事件'))
 
     # ---- A-4：实现出来的有序比 ------------------------------------------
     rs = []

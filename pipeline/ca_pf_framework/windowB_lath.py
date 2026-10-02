@@ -161,6 +161,19 @@ def default_omega(M, theta_max_deg=5.0, axis=None, mode='ladder', seed=7):
     * `mode='ladder'`：转角按 **0, @@\\Delta@@, 2@@\\Delta@@, …, @@\\theta_{\\max}@@** 阶梯排布
       ⇒ 相邻板条差 @@\\Delta\\theta@@、首末差 @@\\theta_{\\max}@@
       ⇒ **同一块内出现一串不同的 @@\\theta@@** ⇒ γ 表非平凡（块内"转动梯度"是真实特征）。
+      ⚠ **记账（`R30_AUDIT_LEDGER.md` §129 / P1-45）**：本模式把**总张角**固定成
+        `theta_max_deg` 再**均分**给 `M−1` 个间隔 ⇒ 相邻取向差
+        @@\\Delta\\theta=\\theta_{\\max}/(M-1)@@ **随 M 变**。
+        实测（`_r172_omega_audit.py`）：**相邻同变体对的 γ 跨 M=2…20 变化 7.91 倍**
+        （M=2 时 γ=0.2771=**1.108×γ₀** ⇒ **倒挂**；M=20 时 0.0350=0.140×γ₀）。
+        ⇒ 块内界面能**不是材料常数，而是"你列了几根板条"的副作用**。
+        ⇒ 想扫"M 的影响"而**不**混淆"块内界面能"时，用下面的 `'perstep'`。
+    * `mode='perstep'`：★ **逐界面步长**模式（`§129` 的修法）。
+      `theta_max_deg` **被解释成"每一步的取向差"** `Δθ`（材料性质）⇒
+      @@\\omega_i=(i\\cdot\\Delta\\theta)\\cdot\\mathbf a@@。
+      **⇒ 相邻同变体对的 γ 与 M 无关**（M=2 与 M=20 相同）。
+      ⚠ **退化等价性（内置正对照）**：`perstep` 且 `Δθ = θ_max/(M−1)` 时，
+      结果必须与 `ladder` **逐位相同** ⇒ `_r182_omega_check.py` 的 P-1 判据。
     * `mode='random'`：均匀随机（负对照用）。
 
     `axis` 默认取**长轴 @@\\mathbf a@@**（倾转轴落在板条长度方向）——
@@ -170,11 +183,14 @@ def default_omega(M, theta_max_deg=5.0, axis=None, mode='ladder', seed=7):
         return np.zeros((max(M, 0), 3))
     if mode == 'ladder':
         th = np.linspace(0.0, np.deg2rad(theta_max_deg), M)
+    elif mode == 'perstep':
+        # ★ `§129`：`theta_max_deg` 在这里是**逐界面步长**，不是总张角。
+        th = np.arange(M, dtype=float) * np.deg2rad(theta_max_deg)
     elif mode == 'random':
         rng = np.random.default_rng(seed)
         th = np.deg2rad(theta_max_deg) * rng.random(M)
     else:
-        raise ValueError('mode 必须是 ladder/random，收到 %r' % (mode,))
+        raise ValueError('mode 必须是 ladder/perstep/random，收到 %r' % (mode,))
     u = np.array([1.0, 0.0, 0.0]) if axis is None else np.asarray(axis, float)
     u = u / (np.linalg.norm(u) + 1e-300)
     return th[:, None] * u[None, :]
@@ -199,7 +215,7 @@ class LathTable(object):
     """
 
     def __init__(self, variants, omegas=None, eps0_var=None, npref_var=None,
-                 gamma0=0.15, gamma_m=None, theta_m_deg=None,
+                 gamma0=0.15, gamma_m=None, theta_m_deg=None, f2_lam=0.0,
                  theta_ref_deg=None, label=''):
         self.vmap = [int(v) for v in variants]
         self.M = len(self.vmap)
@@ -210,8 +226,18 @@ class LathTable(object):
         self.label = label
         if self.M < 1:
             raise ValueError('至少要一根板条')
-        if self.M + 1 > 120:
-            raise ValueError('nreg=%d 超过 int8 安全上限（region() 用 int8）'
+        if self.M + 1 > 32760:
+            # ★★★ R474（2026-10-01，任务(3)）：守卫从 **120** 放宽到 **32760**。
+            #   原守卫 `M+1 > 120` 的理由是「`region()` 用 int8」（有符号上限 127）
+            #   ⇒ 实际天花板 **nv ≤ 119**。而任务(5) 要"填满 ≥10 µm 盒子"需要
+            #   **220–450 根**（`NEXT_TASKS_FOR_REVIEW.md §4.1`/`§202`）
+            #   ⇒ **不改就做不了任务(5)**。
+            #   现已把 `region()` 改成 `int16`（`windowB_surface.py:region()`）
+            #   ⇒ 上限提到 **32760**（留 7 的余量，避免贴边）。
+            #   ⚠ **这不是"够用就行"**：`nv` 还要受**内存**约束
+            #     （`phi` 是 `(nv+1, N³)` —— N=160/nv=300 时 f64 就是 9.2 GB），
+            #     所以本条只解除**表示**上限，**内存**上限由任务(4)/(5) 另算。
+            raise ValueError('nreg=%d 超过 int16 安全上限（region() 用 int16）'
                              % (self.M + 1))
         self.omegas = (np.zeros((self.M, 3)) if omegas is None
                        else np.asarray(omegas, float).reshape(self.M, 3))
@@ -242,6 +268,54 @@ class LathTable(object):
                         gamma_rs(self.theta[i + 1, j + 1], self.gamma_m,
                                  self.theta_m_deg))
         self.n_f3 = int(np.isfinite(self.gtab).sum() // 2)
+
+        # ---- ★★★★ R164（**`R30_AUDIT_LEDGER.md` §122**）：**F2 的配对依赖** ----
+        #   ## 缺口（本文件 `:23-25` 自己写着）
+        #     F1/F2 的 γ **不动**（退回标量 `gamma0`）⇒ **V1/V3 界面的能量与 V1/V5 一样**
+        #     ⇒ 这正是 `§112` 测到的「**生长竞争通道没有自协调机制**」的代码原因。
+        #
+        #   ## 补法的物理依据（由**模型自身**的量导出，不是外来参数）
+        #     界面的**共格性**由失配 `Δε = ε_v − ε_w` 决定（`_r1_pairgeo2.py` 的 Hadamard 判据）。
+        #     【实测，66 对】`‖Δε‖_F/scale` 的范围 0.1830–1.7056（中位 1.6776），而
+        #     **同惯习面（同 packet）的那 6 对恰好 = 0.1830 = 全库最小**（小 9 倍）
+        #     ⇒ **同 packet 界面失配极小 ⇒ 共格低能**（且实测 `g3 = 0`，共格判据吻合）。
+        #
+        #   ## 参数化（**λ = 0 ⇒ 逐位不变**，这是硬约束）
+        #     γ_F2(v,w) = γ₀·[(1−λ) + λ·min(1, ‖Δε(v,w)‖_F / Δε_ref)]
+        #     * **λ = 0** ⇒ **不填 `gtab`**（保持 NaN）⇒ 引擎走原标量路径 ⇒ **逐位不变**；
+        #       ⚠ 注意：**不能**在 λ=0 时填成 `γ₀` —— 那会让 `facet_gamma_sub` 返回
+        #       **数组**而不是标量，从而**换掉引擎的代码路径**（本文件 `:280` 的 `bad.all()`）。
+        #     * **λ = 1** ⇒ 最共格的对（`‖Δε‖` 最小）拿到 `γ_lo = 0`，最不相容的退回 `γ₀`。
+        #     ⇒ **packet 形成会被促进**（同惯习面的两个变体贴在一起变便宜）。
+        #
+        #   ⚠ **记账（`§122` 第五节）**：这条补法有一个**方向不显然**的后果 ——
+        #     "促进 packet" 与 "`§94` 的 `k*=6` 六变体自协调"是**两个不同的物理目标**，
+        #     而后者要求"6 个惯习面各取一个" ⇒ **在面内聚集可能反而远离 `r = 0` 那一族**。
+        #     ⇒ **必须做受控对照（λ = 0 / 0.5 / 1），不得预设哪个对。**
+        self.f2_lam = float(f2_lam)
+        self.n_f2 = 0
+        if self.f2_lam > 0.0:
+            if eps0_var is None:
+                raise ValueError('--f2-pair-gamma > 0 需要 `eps0_var`（拿来算失配 Δε）')
+            _E = {i + 1: np.asarray(eps0_var[v - 1], float)
+                  for i, v in enumerate(self.vmap)}
+            self.de_ref = max(
+                (float(np.linalg.norm(_E[i + 1] - _E[j + 1]))
+                 for i in range(self.M) for j in range(i + 1, self.M)
+                 if self.vmap[i] != self.vmap[j]), default=0.0)
+            if self.de_ref > 0:
+                for i in range(self.M):
+                    for j in range(self.M):
+                        if i == j or self.vmap[i] == self.vmap[j]:
+                            continue
+                        d = float(np.linalg.norm(_E[i + 1] - _E[j + 1]))
+                        self.gtab[i + 1, j + 1] = self.gamma0 * (
+                            (1.0 - self.f2_lam)
+                            + self.f2_lam * min(1.0, d / self.de_ref))
+                        self.n_f2 += 1
+                self.n_f2 //= 2
+        else:
+            self.de_ref = float('nan')
 
         # ---- 逐场属性（从变体表复制）----------------------------------
         self.eps0_var = eps0_var
@@ -297,7 +371,13 @@ class LathTable(object):
         L = ['LathTable M=%d nreg=%d  F3 面片对=%d  gamma0(标量,F1/F2)=%.4f'
              % (self.M, self.nreg, self.n_f3, self.gamma0)]
         for (i, j, vi, vj, td, tb, gi) in self.theta_report():
-            tag = ('F3 γ_RS=%.4f' % gi) if np.isfinite(gi) else 'F2(γ 退回标量)'
+            if not np.isfinite(gi):
+                tag = 'F2(γ 退回标量)'
+            elif vi == vj:
+                tag = 'F3 γ_RS=%.4f' % gi
+            else:
+                # ★ R164：F2 被 `--f2-pair-gamma` 填了配对值（`§122`）
+                tag = '**F2 配对 γ=%.4f**' % gi
             L.append('   板条%d(V%d) - 板条%d(V%d): θ=%6.3f° (裸角 %6.3f°)  %s'
                      % (i, vi, j, vj, td, tb, tag))
         return '\n'.join(L)

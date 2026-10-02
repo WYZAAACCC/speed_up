@@ -30,6 +30,8 @@
   ==> 由 (gamma, w90) 反解:  W = 13.18329 gamma / w90 ,  kappa = 1.36547 gamma w90
 """
 import numpy as np
+
+import windowB_acct as acct
 from scipy import fft as sfft
 
 VOIGT = [(0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1)]
@@ -149,9 +151,38 @@ def e_density(C, e0, n):
 
 
 class PF3D(object):
+    """
+    ★★★ R561–R567（算子优化，**全部默认关**）★★★
+    ---------------------------------------------------------------
+    本轮对**弹性热路径**做了逐算子审计（量具：`_r561_opfacct.py` 记账、
+    `_r562_opbench.py` 替身擂台、`_r566_b4iso.py` / `_r567_nyqfix.py` 隔离与修正），
+    在**生产宿主**（WSL + conda `ml`，numpy 2.5.3）上实测：
+
+    | 开关 | 改什么 | 实测加速 | 与旧路的差 |
+    |---|---|---|---|
+    | `eps0_mode='einsum'` | `6×nv` 次整场 `+=` → `einsum('vp,v...->p...')` | **1.76×** | **0.000e+00（逐位）** |
+    | `eps0_mode='gemm'`   | 同上 → BLAS `e0v.T @ phi2d` | **18.1×** | 2.7e-16（1–2 ulp） |
+    | `fft_mode='rfft'`    | `fftn/ifftn`(c2c 全谱) → `rfftn/irfftn`(半谱) | **1.71×**（整链） | **6.1e-16** |
+    | `lam_prec='f32'`    | （旧开关，非本轮） | — | 见 T3 |
+
+    ⚠⚠ **`fft_mode='rfft'` 为什么必须配 Nyquist 修正**（`§R567`，本轮新发现）：
+      `σ = real(ifftn(−Λ ⊙ fftn(ε)))` 里的 `real(...)` **一直在隐式做 Hermite 投影**
+      （`real(ifftn(X)) = ifftn(½(X + conj(X∘mirror)))`）。而 `sh = −Λ⊙Eh` 在
+      **三个 Nyquist 面**（i=N/2 / j=N/2 / m=N/2）上**不是 Hermite 的**——因为
+      `kv[N/2] = −π/dx`，它的负 `+π/dx` **不在格点上**，所以索引镜像给出的 k **向量**
+      不是 `−κ`，于是 `Λ(κ(mirror)) ≠ Λ(κ)`（实测 `|ΔΛ|/max|Λ| = 3.25e-01`）。
+      `irfftn` 用的是**未投影**的半谱 ⇒ 与旧路差 **6.33e-2**（占 max|σ|，够大，不能忽略）。
+      **修法（`§R567` N1 实测 6.1e-16，且非 Nyquist 处逐位为 0 ⇒ 热路径零代价）**：
+          `Λ_eff = Λ(κ)`                          （非 Nyquist 面）
+          `Λ_eff = ½[Λ(κ) + Λ(κ(mirror))]`          （Nyquist 面）
+      于是 `irfftn(−Λ_eff ⊙ rfftn(ε)) ≡ real(ifftn(−Λ ⊙ fftn(ε)))`（到舍入）。
+      顺带收益：`Lam` 常驻 **288 → 144 B/胞**、谱内存减半。
+    """
+
     def __init__(self, N, L, C, eps0, gamma, w90, Lmob, dG=0.0, sigma_ext=None,
                  workers=8, obstacle=False, k0_mode='free', T=None, dG_of_T=None,
-                 phi_dtype=np.float64, lam_prec='f64'):
+                 phi_dtype=np.float64, lam_prec='f64',
+                 fft_mode='c2c', eps0_mode='loop'):
         self.k0_mode = k0_mode
         self.N, self.L, self.dim = N, L, 3
         self.C = C
@@ -196,8 +227,10 @@ class PF3D(object):
         self.sext_e0 = np.array([np.einsum('ij,ij->', self.sigma_ext, self.eps0[v])
                                  for v in range(self.nv)])
         self.kv = 2 * np.pi * np.fft.fftfreq(N, d=self.dx)
-        K = np.stack(np.meshgrid(*[self.kv] * 3, indexing='ij'), -1).reshape(-1, 3)
+        with acct.bcost('build.kgeom'):
+            K = np.stack(np.meshgrid(*[self.kv] * 3, indexing='ij'), -1).reshape(-1, 3)
         self.K = K
+        acct.bmem('build.kgeom.bytes', K)
         # ★★ T3（2026-09-28）：`Lam` 是**常驻最大单项**（(N³,6,6) float64 = **288 B/胞**，
         #   N=96 时 255 MB）。它是 FFT 空间的 Green 算子，量级 O(1)、条件数 O(1)，
         #   用 float32 存的相对误差 ~1e-7（判据要求 <1e-5，见 T3_verify_fastpath 的正对照）
@@ -206,16 +239,81 @@ class PF3D(object):
         #   `E_el()` 是**诊断路径**（不在每步热路径上），它显式升到 float64（有一次性临时量）。
         self.phi_dtype = phi_dtype
         self.phi = np.zeros((self.nv, N, N, N), dtype=phi_dtype)
+        # ★★★ R579（goal §4）：**流式 ε⁰** 的两个挂钩。
+        #   `_h_src = None`（默认）⇒ 走旧的"读 `self.phi`"路 ⇒ **逐位不变**。
+        #   `_h_src = callable(v0, v1) -> (v1-v0,N,N,N)` 时，`eps0_fields()` 改走
+        #   `eps0_fields_stream()` ⇒ **不需要** `pf.phi` 那个 (nv,N³) float64 常驻数组。
+        self._h_src = None
+        self._h_chunk = 4
+        # ★★★ R580（P1）：诊断专用的"弹性求解那一刻的 ε⁰"（`(6,N³)` f64 = 48 B/胞固定）。
+        #   `None` = 还没有过弹性求解 ⇒ 物化路径下那时 `pf.phi` 是全零 bool ⇒ ε⁰ ≡ 0。
+        #   只有 `_h_src is not None`（onfly）时才会被填；默认路径**永远是 None**。
+        self._eps0_lag = None
         # ★★ T3：`Lam` 用低精度存。`lam_prec` 为 'f32' 时存 float32（288→144 B/胞），
         #   `sigma_tensor` 的 einsum 强制 float32 输出（否则 numpy 会把 Lam 升成
         #   float64 临时量，反而多占 255 MB）。`E_el()` 走显式升精度（诊断路径）。
         self._lam32 = (str(lam_prec).lower() in ('f32', 'float32', 'single'))
-        _lam = np.asarray(lambda_packed(C, K, k0_mode=k0_mode))
-        # ★★ T3 记账（本轮踩到）：`lambda_packed` 返回的是 **complex128**！
-        #   首版按 float32 存 ⇒ `np.asarray(..., float32)` **丢掉虚部**（只发一个
-        #   ComplexWarning），实测 `max|Δσ|/max|σ| = 0.50` ✗ —— 而**能量**只差 1.9e-9
-        #   （因为 `E_el` 的二次型对虚部不敏感）⇒ **只看能量会漏掉这个错**。
-        #   正确做法：复数就存 **complex64**（同样是 144 B/胞），实数才用 float32。
+        # ★★ R567：`fft_mode` —— 'c2c'（旧路，逐位不变）/ 'rfft'（实数 FFT 半谱）
+        self._fft_mode = str(fft_mode).lower()
+        if self._fft_mode not in ('c2c', 'rfft'):
+            raise ValueError('fft_mode 只支持 c2c / rfft，收到 %r' % (fft_mode,))
+        self._eps0_mode = str(eps0_mode).lower()
+        if self._eps0_mode not in ('loop', 'einsum', 'gemm'):
+            raise ValueError('eps0_mode 只支持 loop / einsum / gemm，收到 %r'
+                             % (eps0_mode,))
+        self._half = N // 2 + 1
+        self._nyq_n = 0                      # 被 Nyquist 修正的点数（记账用）
+        _Kc = K                              # 全谱 k 网格（float64）
+        # ★★ T3 记账（旧坑，务必保留）：`lambda_packed` 返回的可能是 **complex128**
+        #   ⇒ 按 float32 存会**丢掉虚部**（只发一个 ComplexWarning），实测
+        #   `max|Δσ|/max|σ| = 0.50` ✗ —— 而**能量**只差 1.9e-9（二次型对虚部不敏感）
+        #   ⇒ **只看能量会漏掉这个错**。复数就存 complex64（同样 144 B/胞）。
+        #
+        # ★★★ R574 **修我自己埋的第二条性能坑**：原来这里先无条件算一遍**全谱**
+        #   `lambda_packed(C, K)`，rfft 分支再把它**整个丢掉**、改算半谱
+        #   ⇒ 建引擎时白算一张最大的表。`_r574` D2 实测 c2c→rfft 建表 **+7.4 s**
+        #   （N=64；`lambda_packed` 是 O(N³)，N=160 时这笔浪费是分钟级）。
+        #   ⇒ 现在只有 `c2c` 才算全谱表。
+        if self._fft_mode != 'rfft':
+            with acct.bcost('build.lam.c2c'):
+                _lam = np.asarray(lambda_packed(C, K, k0_mode=k0_mode))
+        if self._fft_mode == 'rfft':
+            # ---- 半谱网格 + Nyquist 面的 Hermite 修正（见类 docstring）----
+            #   rfftn 的半轴 = **最后一个轴**（实测 `_r562` B3）⇒ 半谱形状 (N,N,N//2+1)
+            with acct.bcost('build.lam.rfft_grid'):
+                _idx = np.stack(np.meshgrid(np.arange(N), np.arange(N),
+                                            np.arange(self._half), indexing='ij'),
+                                -1).reshape(-1, 3)
+                _ii, _jj, _mm = _idx[:, 0], _idx[:, 1], _idx[:, 2]
+                _Kh = np.stack(np.meshgrid(self.kv, self.kv, self.kv[:self._half],
+                                           indexing='ij'), -1).reshape(-1, 3)
+                _nyq = (_ii == N // 2) | (_jj == N // 2) | (_mm == N // 2)
+            with acct.bcost('build.lam.rfft_half'):
+                _lam = np.asarray(lambda_packed(C, _Kh, k0_mode=k0_mode))
+            with acct.bcost('build.lam.rfft_nyq'):
+                if _nyq.any():
+                    _mir = (((N - _ii) % N) * N + ((N - _jj) % N)) * N + ((N - _mm) % N)
+                    _lam[_nyq] = 0.5 * (_lam[_nyq]
+                                        + np.asarray(lambda_packed(
+                                            C, _Kc[_mir[_nyq]], k0_mode=k0_mode)))
+                    self._nyq_n = int(_nyq.sum())
+                _lam = np.ascontiguousarray(_lam)
+            # ★★ R570/R571（**冒烟在真实路径上抓到的缺陷**）：`E_el()` 是**全谱**二次型
+            #   `Σ_k q(k)`，半谱求和必须带**配对权重**。`_r571_elcheck.py` 直测（N=32）：
+            #     半轴平面索引 m；「另一半」= m ∈ [N/2+1, N−1]
+            #     ⇒ `Σ_full q = 2·Σ_half q − Σ_{m=0} q − Σ_{m=N/2} q`
+            #     实测 `Σ_half w·q / Σ_full`：w=2 全体 **1.0631**；
+            #       w=1 当 i/j/m 任一=N/2 **1.00047**；
+            #       **w=1 当 m∈{0,N/2} ⇒ 1.00000000** ✅
+            #   ⚠ **`q` 必须用 `Λ_eff`（带 Nyquist 平均的那个），不是未平均的 `Λ_true`**：
+            #     同权重下 `Λ_true` 给 **1.00101**（差 0.1%），`Λ_eff` 给 **1.00000000**。
+            #     这一点与直觉相反（σ 用 Λ_eff 是因为 `real()` 投影；能量用它是因为
+            #     Nyquist 面上 k 与 mirror(k) 互为负 ⇒ `q_eff(k)+q_eff(mk)` 恰好等于
+            #     全谱那一对的和）。**第一版漏了权重 ⇒ `E_el_J` 差 37.7%。**
+            self._wmask = ((_mm == 0) | (_mm == N // 2))
+            del _idx, _ii, _jj, _mm, _Kh, _nyq
+            if '_mir' in dir():
+                del _mir
         if self._lam32:
             self.Lam = np.asarray(_lam, dtype=(np.complex64 if np.iscomplexobj(_lam)
                                                else np.float32))
@@ -223,20 +321,157 @@ class PF3D(object):
             self.Lam = np.asarray(_lam, dtype=(np.complex128 if np.iscomplexobj(_lam)
                                                else np.float64))
         self._lam_cplx = bool(np.iscomplexobj(self.Lam))
+        acct.bmem('build.Lam.bytes', self.Lam)
+        acct.bmem('build.phi.bytes', self.phi)
         # ★ T3：K 只在建 Lam / _k2 时用到 ⇒ 存 float32（24→12 B/胞）；不再需要时可由
         #   调用方置 None（`LevelSetMulti` 就这么做）。
         self.K = np.asarray(K, dtype=np.float32) if self._lam32 else K
         self.N3 = float(N) ** 3
         self._k2 = (K.astype(np.float64) ** 2).sum(1)
         self.axs = (1, 2, 3)
+        # ★★★ R576（goal §8 的配套要求）：**"半轴 = 最后一个轴"必须运行期断言，不能只写在注释里。**
+        #   为什么：这条是 scipy 的实现细节，而整条 rfft 路径（半谱 k 网格、Nyquist 修正、
+        #   `E_el` 的 `_wmask`、`sh.reshape((6,N,N,_half))`）**全部**建立在它之上。
+        #   若哪天 axes 顺序变了而半轴换到别的轴，`reshape` 的**形状仍然对得上**
+        #   （(6,N,N,N/2+1) 依旧合法）⇒ **语义错位而不报错**。这正是本仓库最怕的一类错。
+        #   ⇒ 用一把 (1,2,2,2) 小探针**实测**，与 `self.axs` / `self._half` 交叉验证。
+        if self._fft_mode == 'rfft':
+            #   ⚠ 探针尺寸必须**互不相同且 ≥3**：用 (1,2,2,2) 时 `2//2+1 == 2`
+            #     ⇒ 半轴变到哪个轴形状都一样，探针**没有分辨力**（量具必须先自证）。
+            _probe = np.zeros((1, 4, 6, 8))
+            _pshape = sfft.rfftn(_probe, axes=self.axs).shape
+            # ⚠ 第一版把 `_want` 写成"只列 axes 那几维" ⇒ 漏掉了**未被变换的前导轴**
+            #   （探针是 (1,4,6,8) 而 axes=(1,2,3)）⇒ 断言**误报**。
+            #   断言自己也要能过正对照：这里按"逐轴判断"重建，不做任何省略。
+            _last = self.axs[-1]
+            _want = tuple(_probe.shape[a] // 2 + 1 if a == _last else _probe.shape[a]
+                          for a in range(_probe.ndim))
+            if _pshape != _want:
+                raise RuntimeError(
+                    'rfft 半轴假设失效：`sfft.rfftn(axes=%r)` 给出 %r，预期 %r。'
+                    '整条 rfft 路径（Lam 半谱网格 / _wmask / reshape）都以'
+                    '"半轴 = axes 的最后一个"为前提 ⇒ 必须先修这里再启用 rfft。'
+                    % (self.axs, _pshape, _want))
+            del _probe, _pshape, _want
         del _lam, K
 
     # ---------------- 场 ----------------
     def eps0_fields(self):
+        """`ε⁰(x)` 的 6 个 Voigt 分量场 `(6,N,N,N)`，由 `Σ_v e0v[v,p]·φ_v` 装配。
+
+        ★★ R562（算子优化）：三种实现，**默认 `loop` = 旧路，逐位不变**。
+          实测（`_r562_opbench.py` B1，生产宿主 WSL/conda ml/numpy 2.5.3）：
+            旧 loop        0.0368 s   1.00×   基准
+            einsum         0.0210 s   1.76×   max|Δ|/max = **0.000e+00（逐位）**
+            GEMM           0.0020 s   18.1×   max|Δ|/max = 2.7e-16（1–2 ulp）
+          `einsum` 逐位相同这条**在两个宿主上各测过一次**（Windows numpy 2.1.3 也 0.0）
+          ⇒ 它可以直接当"等价加速"用；GEMM 只差 1–2 ulp，但**不是逐位**，
+          故两者都保留成显式开关，由使用方按需要的严格度选。
+
+        ★★★ R579（goal §4）：`self._h_src is not None` 时走**流式**路
+          （见 `eps0_fields_stream`）—— `pf.phi` 那个 `(nv,N³)` 常驻数组**不再需要**。
+        """
+        if self._h_src is not None:
+            with acct.mark('el.e0.stream'):
+                e = self.eps0_fields_stream(self._h_src, chunk=self._h_chunk,
+                                            slab=getattr(self, '_h_slab', 0))
+            # ★★★ R580（P1）：流式装配**不物化 h**，但**必须把它算出的 ε⁰ 存一份**
+            #   —— 否则诊断 `E_el()` 会用"当前"的 h，与归档的物化路径**口径不同**
+            #   （实测 `E_el_J` 差到 3.1×）。代价 48 B/胞固定，与 nv 无关。
+            #   ⚠ 必须 copy：`_epsh` 随后会就地 `e[3:] *= 2.0`。
+            self._eps0_lag = e.copy()
+            return e
+        _m = self._eps0_mode
+        if _m == 'einsum':
+            with acct.mark('el.e0.einsum'):
+                return np.ascontiguousarray(
+                    np.einsum('vp,v...->p...', self.e0v, self.phi))
+        if _m == 'gemm':
+            with acct.mark('el.e0.gemm'):
+                return (self.e0v.T @ self.phi.reshape(self.nv, -1)).reshape(
+                    6, self.N, self.N, self.N)
         e = np.zeros((6, self.N, self.N, self.N))
-        for p in range(6):
-            for v in range(self.nv):
-                e[p] += self.e0v[v, p] * self.phi[v]
+        with acct.mark('el.e0.loop'):
+            for p in range(6):
+                for v in range(self.nv):
+                    e[p] += self.e0v[v, p] * self.phi[v]
+        return e
+
+    def eps0_fields_stream(self, h_at, chunk=4, slab=0):
+        r"""★★★ R579（goal §4）：**不物化**软指示场 `h` 的 ε⁰ 装配。
+
+        ## 它省什么
+        生产走 `elastic_soft=True` ⇒ `pf.phi` 从 bool 升成 **float64**
+        ⇒ `(nv,N³)` 常驻 **8 B/胞·nv**。N=160 实测 `a = 16.000 B/胞`
+        （`g.phi` 8 + `pf.phi` 8）；C5（10 µm 填 30%）需要 `a ≤ 4.6`
+        ⇒ **这一项是 C5 的必要条件之一**（`R579_OPOPT4.md §2`）。
+
+        ## 为什么必须**分块**（而不是"现算一个大 h 再 einsum"）
+        现算一个 `(nv,N³)` 的 `h` ⇒ **常驻降了、峰值没降** ⇒ 对内存墙**毫无帮助**。
+        必须按 `v` 分块、把 `h` 限制在 `chunk` 份 `(N,N,N)` 上。
+
+        ## 逐位等价（可证，不是近似）
+        累积写成
+        ```python
+        for v0 in range(0, nv, chunk):
+            h = h_at(v0, v1)                 # (v1-v0, N,N,N)
+            for j in range(v1 - v0):
+                for p in range(6):
+                    e[p] += e0v[v0 + j, p] * h[j]
+        ```
+        对**固定 p** 而言，沿 `v` 的累加次序仍是**升序**，且每一步都是
+        `e[p] += e0v[v,p] * h_v` —— 与 `eps0_mode='loop'` 的
+        `for p: for v: e[p] += e0v[v, p] * phi[v]` **完全同一串运算**
+        （`p` 循环彼此独立）⇒ **逐位相同**。判据见 `_r579_pfphi.py`。
+
+        `h_at(v0, v1)` 由调用方给（`LevelSetMulti._soft_h_at`），返回
+        `(v1-v0, N,N,N)` 的软指示场切片。
+
+        ★★★★★ R581-L2（goal §(4) L2）：`slab > 0` 时走**首轴空间分块**。
+          ## 为什么（**用生产口径的记账表定靶，不是猜的**）
+          生产（`onfly` + N=96/nv=48）实测 `el.epsh` = **47.5% 单步**，其中 1.10 s
+          就是本函数。**不是算子重，是缓存**：`e` 是 `(6,N³)` float64 = **48 B/胞**
+          （N=96 ⇒ 40.5 MB，超过 L3），而下面 288 次整场 axpy 每次都把 `e[p]` 与 `h[j]`
+          从 DRAM 过一遍 ⇒ 288 × 14 MB ≈ **4.1 GB/步**，而 `e` 只是累加器。
+          ## 为什么**必然逐位**
+          分块只改**外层循环的切法**，`x0:x1` 是**同一批胞**；对**每个胞**而言，
+          沿 `v` 的累加次序、每一步的 `e0v[v,p]*h_v` 表达式**一字不变**
+          ⇒ 逐位相同（`_r581_L2_epsh.py` + `_r581_L2_sweep.py`：**42 档组合全部
+          `array_equal`**；两个负对照（chunk 内 v 倒序 / 少一维）都有分辨力）。
+          ## 实测（微基准，交错配对）
+          首轴 slab：N=64 **1.885×**（slab=4,chunk=2）、N=96 **1.812×**（slab=2,chunk=4）。
+          ⚠ **末轴** slab **更慢**（0.55–0.62×）—— `e[p,:,:,z0:z1]` 是跨行切片。
+          ⚠ 大 slab 反而更慢（工作集溢出 cache）⇒ 最优区间窄在 slab∈{2,4,8}。
+        """
+        if int(slab) > 0:
+            return self._eps0_fields_stream_tiled(h_at, chunk, int(slab))
+        e = np.zeros((6, self.N, self.N, self.N))
+        e0v = self.e0v
+        for v0 in range(0, self.nv, int(chunk)):
+            v1 = min(v0 + int(chunk), self.nv)
+            h = h_at(v0, v1)
+            for j in range(v1 - v0):
+                hj = h[j]
+                for p in range(6):
+                    e[p] += e0v[v0 + j, p] * hj
+            del h, hj
+        return e
+
+    def _eps0_fields_stream_tiled(self, h_at, chunk, slab):
+        """★ R581-L2：**首轴空间分块**版（累加次序与 :meth:`eps0_fields_stream` 一致 ⇒ 逐位）。"""
+        N = self.N
+        e = np.zeros((6, N, N, N))
+        e0v = self.e0v
+        for x0 in range(0, N, slab):
+            x1 = min(x0 + slab, N)
+            for v0 in range(0, self.nv, int(chunk)):
+                v1 = min(v0 + int(chunk), self.nv)
+                h = h_at(v0, v1, x0, x1)
+                for j in range(v1 - v0):
+                    hj = h[j]
+                    for p in range(6):
+                        e[p, x0:x1] += e0v[v0 + j, p] * hj
+                del h, hj
         return e
 
     def eps0_fields_idx(self, idx):
@@ -259,36 +494,136 @@ class PF3D(object):
         return e
 
     def _fft(self, x):
-        return sfft.fftn(x, axes=self.axs, workers=self.workers)
+        with acct.mark('el.fft_fwd'):
+            return sfft.fftn(x, axes=self.axs, workers=self.workers)
 
     def _ifft(self, x):
-        return sfft.ifftn(x, axes=self.axs, workers=self.workers)
+        with acct.mark('el.fft_inv'):
+            return sfft.ifftn(x, axes=self.axs, workers=self.workers)
 
-    def _epsh(self, idx=None):
-        """工程应变分量的未归一化 FFT: (6, N,N,N)。idx 给定时走 T3 的 gather 路径。"""
-        e = self.eps0_fields() if idx is None else self.eps0_fields_idx(idx)
-        e[3:] *= 2.0
-        return self._fft(e)
+    # ★★ R567：实数 FFT（半谱）。半轴 = **最后一个轴** ⇒ `x` 形状 (…,N,N,N) 出去是
+    #   (…,N,N,N//2+1)。`irfftn` 必须显式给 `s=`，否则输出末轴会是 2*(half-1)。
+    def _rfft(self, x):
+        with acct.mark('el.rfft_fwd'):
+            return sfft.rfftn(x, axes=self.axs, workers=self.workers)
+
+    def _irfft(self, x):
+        with acct.mark('el.rfft_inv'):
+            return sfft.irfftn(x, axes=self.axs, s=(self.N,) * self.dim,
+                               workers=self.workers)
+
+    def _epsh(self, idx=None, lag=False):
+        """工程应变分量的未归一化 FFT: (6, N,N,N)。idx 给定时走 T3 的 gather 路径。
+
+        ★★★ R580（P1）：`lag=True` 时**用"弹性求解那一刻"存下的 ε⁰**（见 `_eps0_lag`），
+        以复刻归档路径的诊断语义。见 `_eps0_lag` 的说明与 `R580_VERIFY.md §5`。
+        """
+        with acct.mark('el.epsh'):
+            # ⚠⚠ 派遣条件**必须**带 `self._h_src is not None`：
+            #   否则**物化档**（`_h_src is None`、`_eps0_lag is None`）下
+            #   `lag=True` 会拿到"全零"，`E_el()` 直接变 0 —— **把默认路径弄坏**。
+            #   （这正是 `_r580_p1check.py` 的 Q2 抓到的：materialized=0 vs onfly=1.9e5。）
+            if idx is None and lag and self._h_src is not None:
+                e = self._eps0_for_diag()
+            elif idx is None:
+                e = self.eps0_fields()
+            else:
+                e = self.eps0_fields_idx(idx)
+            e[3:] *= 2.0
+            return self._fft(e)
+
+    def _epsh_r(self, idx=None, lag=False):
+        """★ R567：同 `_epsh`，但返回**半谱** `(6,N,N,N//2+1)`（实数 FFT）。"""
+        with acct.mark('el.epsh_r'):
+            if idx is None and lag and self._h_src is not None:
+                e = self._eps0_for_diag()
+            elif idx is None:
+                e = self.eps0_fields()
+            else:
+                e = self.eps0_fields_idx(idx)
+            e[3:] *= 2.0
+            return self._rfft(e)
+
+    def _eps0_for_diag(self):
+        r"""★★★ R580（P1）：给**诊断**用的 ε⁰ —— **逐位复刻归档路径**的那一个。
+
+        ## 为什么需要它
+        `--pf-phi onfly` 下 `eps0_fields()` 从**当前** `g.phi` 现算软指示场 h；
+        而归档的物化路径里，`E_el()` 读的是 `pf.phi` —— 那是**上一次弹性求解开始时**
+        写进去的 h。`advance()` 在弹性求解之后还要推进 `g.phi`
+        ⇒ 测量时刻的 `g.phi` **比那个 h 晚一步**。
+
+        实测（`_r580_bisect.sh` + `_r580_elj.py`，30 步真实路径）：
+        `E_el_J` 在前 5 行只差 ~4e-3，而 `--eng-cadence 30` 那一步差 **3.1×**
+        （4.309e-11 → 1.353e-10）。**求解器没错**（`Vt`/`f_var`/`nslab_n`/`nf3` 末值全同），
+        但 `E_el_J` 被一堆分析脚本用 ⇒ **不能静默改口径**。
+
+        ## 做法
+        在 `eps0_fields()` 每次**流式**装配完时，把结果存一份 `_eps0_lag`；
+        诊断（`E_el`）改读它。语义上等价于"读上一次写进 `pf.phi` 的那个 h"。
+
+        ## 代价（记账）
+        `(6,N³)` float64 = **48 B/胞**，**与 nv 无关**。
+        对比它替掉的 `pf.phi`（`8·nv` B/胞）：nv=782 时 **48 vs 6256 ⇒ 省 130×**。
+        ⚠ 它是**固定项** ⇒ 进内存定律的 `c`（不是 `a`）：N=160 时 +196.6 MB。
+        ⇒ 已把 `c` 由 344 更新为 **392 B/胞**、`nv_max` 由 602 更新为 **597**（见 `R580_VERIFY.md §5`）。
+
+        ## 还没有 stash 时（首次弹性求解之前）
+        物化路径下那时 `pf.phi` **还是全零的 bool** ⇒ ε⁰ ≡ 0（实测 step 0 的 `E_el_J` = 0）
+        ⇒ 这里必须**同样返回全零**，否则 step 0 就会分叉。
+        """
+        if self._eps0_lag is not None:
+            return self._eps0_lag.copy()      # ⚠ 必须 copy：`_epsh` 会就地 `e[3:] *= 2`
+        return np.zeros((6, self.N, self.N, self.N))
 
     def sigma_tensor(self, idx=None):
         """sigma(x) = real(ifftn(-Lambda : fftn(eps)))  （见文件头归一化说明）
 
         ★ T3：`lam_prec='f32'` 时**强制 float32 的 einsum**。若不强制，numpy 会把
-          float32 的 `Lam` 升成 float64 临时量（N=96 时多占 255 MB），白白吃掉收益。"""
+          float32 的 `Lam` 升成 float64 临时量（N=96 时多占 255 MB），白白吃掉收益。
+        ★ R567：`fft_mode='rfft'` 时走半谱（半轴 = 末轴），`Lam` 也已带上 Nyquist 面的
+          Hermite 修正 ⇒ 与 c2c 路**等价到舍入**（判据 `_r567_nyqfix.py` N1 = 6.1e-16）。"""
+        if self._fft_mode == 'rfft':
+            Eh = np.ascontiguousarray(self._epsh_r(idx)).reshape(6, -1)
+            with acct.mark('el.sig.contract'):
+                if self._lam32:
+                    _dt = np.complex64 if self._lam_cplx else np.float32
+                    sh = -np.einsum('kpq,qk->pk', self.Lam,
+                                    Eh.astype(_dt, copy=False), dtype=_dt)
+                else:
+                    sh = -np.einsum('kpq,qk->pk', self.Lam, Eh)
+            return self._irfft(sh.reshape((6, self.N, self.N, self._half)))
         Eh = self._epsh(idx).reshape(6, -1)
-        if self._lam32:
-            _dt = np.complex64 if self._lam_cplx else np.float32
-            sh = -np.einsum('kpq,qk->pk', self.Lam,
-                            Eh.astype(_dt, copy=False), dtype=_dt)
-        else:
-            sh = -np.einsum('kpq,qk->pk', self.Lam, Eh)
+        with acct.mark('el.sig.contract'):
+            if self._lam32:
+                _dt = np.complex64 if self._lam_cplx else np.float32
+                sh = -np.einsum('kpq,qk->pk', self.Lam,
+                                Eh.astype(_dt, copy=False), dtype=_dt)
+            else:
+                sh = -np.einsum('kpq,qk->pk', self.Lam, Eh)
         sh = sh.reshape((6, self.N, self.N, self.N))
-        return np.real(self._ifft(sh))
+        with acct.mark('el.sig.real'):
+            return np.real(self._ifft(sh))
 
     def E_el(self):
         """★ T3：这是**诊断路径**（不在每步热路径）。`lam_prec='f32'` 时显式升到 float64
-        以保证判据精度 —— 代价是一次性 255 MB 临时量（只在调用时存在）。"""
-        Eh = self._epsh().reshape(6, -1) / self.N3
+        以保证判据精度 —— 代价是一次性 255 MB 临时量（只在调用时存在）。
+        ★ R567：`fft_mode='rfft'` 时在半谱上算同一个二次型
+        （`Σ_k conj(ε(k)):Λ:ε(k)`，k 遍历半谱即可，因为被加项在 k↔−k 上相同）。
+
+        ★★★ R580（P1）：**一律走 `lag=True`** —— 在 `--pf-phi onfly` 下读
+        `_eps0_lag`（弹性求解那一刻的 ε⁰），从而与归档的物化路径**逐位一致**；
+        在默认（物化）路径下 `lag=True` 是**空操作**（`_h_src is None` ⇒ 走原路）。
+        """
+        if self._fft_mode == 'rfft':
+            # ★ R570/R571：半谱二次型必须带**配对权重**（判据与实测见 `__init__` 的记账）。
+            #   `Σ_full q = 2·Σ_half q − Σ_{m∈{0,N/2}} q`，且 `q` 用 `Λ_eff`。
+            Eh = np.ascontiguousarray(self._epsh_r(lag=True)).reshape(6, -1) / self.N3
+            Lam = (self.Lam.astype(np.complex128 if self._lam_cplx else np.float64)
+                   if self._lam32 else self.Lam)
+            q = np.real(np.einsum('pk,kpq,qk->k', np.conj(Eh), Lam, Eh))
+            return 0.5 * self.V * float(2.0 * q.sum() - q[self._wmask].sum())
+        Eh = self._epsh(lag=True).reshape(6, -1) / self.N3
         if self._lam32:
             Lam = self.Lam.astype(np.complex128 if self._lam_cplx else np.float64)
         else:
@@ -566,7 +901,18 @@ def test_F1():
 
 
 def test_F2():
-    """功能导数正对照: dE_el/dphi_v(x) 必须等于 -e0_v:sigma(x)"""
+    """功能导数正对照: dE_el/dphi_v(x) 必须等于 -e0_v:sigma(x)
+
+    ⚠⚠ **2026-10-01 修（第 42 个自查错误，`§180`）**：本测试**从 T1/P0-1 修复起就一直是 FAIL**，
+    而 FAIL 的原因是**测试过期**、不是引擎错：
+      * T1（P0-1）把 `forces()` 的弹性项从 `−ε⁰:σ` 改成 **`+ε⁰:σ`**（驱动力口径，已由
+        `T1_verify_edsign.py` 独立判决 PASS）；
+      * 而本测试原来写 `an = f[v][idx]`，**注释仍写"泛函导数 = −e0_v:sigma"** ——
+        修复后 `f` 变成 `+ε⁰:σ`，于是判据变成拿 `+ε⁰:σ` 比 `−ε⁰:σ`
+        ⇒ 相对差**恰好 2.00** 且**不随 δ 下降**（实测 1e-4/1e-5/1e-6 全是 2.00e+00）。
+      * ⇒ 现在**直接从 `sig` 算** `−ε⁰_v:σ`（这才是 `dE_el/dφ_v`），
+        并额外断言 `forces()` 确实等于 `+ε⁰:σ`（把两套约定的**关系**也钉住）。
+    """
     print('---- F2: 功能导数有限差分对照（抓 FFT 归一化错）----')
     N, L, nv = 12, 1e-7, 2
     C = C_iso3(100e9, 0.3)
@@ -579,7 +925,11 @@ def test_F2():
     f, sig = pf.forces()
     idx = (3, 5, 7)
     v = 0
-    an = f[v][idx]                                     # 泛函导数 = -e0_v:sigma  (J/m^3)
+    # ★ 修：泛函导数 = −ε⁰_v:σ（**直接从 sig 算**，不要再借道 `forces()`）
+    e0s = -np.einsum('p,p...->...', pf.e0v_eng[v], sig)
+    an = e0s[idx]                                      # 泛函导数 (J/m^3)
+    # ★ 附加断言：`forces()` 的弹性项必须恰好是 **+ε⁰:σ**（= −泛函导数）
+    drive_ok = abs(f[v][idx] - (-an)) / max(abs(an), 1e-30)
     errs, fds = [], []
     for d in (1e-4, 1e-5, 1e-6):
         E0 = pf.E_el()
@@ -593,8 +943,10 @@ def test_F2():
           % tuple(errs))
     print('  dE/dphi_%d%s (FD,delta=1e-6) = %+.8e ;  -e0:sigma (解析) = %+.8e   %s'
           % (v, idx, fds[-1], an, 'PASS' if errs[-1] < 1e-4 else 'FAIL'))
+    print('  [附加] `forces()` 弹性项 vs `+e0:sigma` 的相对差 = %.2e  %s（预期 0：驱动力口径）'
+          % (drive_ok, 'PASS' if drive_ok < 1e-12 else 'FAIL'))
     # 注: FD 精度地板实测 ~4e-6（在 E_el ~1e-13 J 上做有限差分），故判据取 1e-4
-    return errs[-1] < 1e-4 and errs[0] > errs[-1]
+    return (errs[-1] < 1e-4 and errs[0] > errs[-1] and drive_ok < 1e-12)
 
 
 def test_A0cd():
