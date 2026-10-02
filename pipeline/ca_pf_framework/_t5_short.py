@@ -59,7 +59,7 @@ def build(a, switches):
              '--reinit-dt', '1e-4', '--reinit-band', '6.0',
              '--nuc-overlap-nm', repr(float(a.overlap_nm))] +
             (['--nuc-periodic-seed', '1'] if int(a.periodic_seed) == 1 else []) +
-            ['--laths', laths(a.m),
+            ['--laths', laths(a.m, a.nvar),
              '--ckpt-every', str(a.ckpt_every), '--ckpt-keep', str(a.ckpt_keep)]
             + (['--resume', a.resume] if a.resume else [])
             + ['--out', a.out, '--tag', a.tag]
@@ -93,6 +93,25 @@ def main():
     ap.add_argument('--tag', default='t5s1')
     ap.add_argument('--N', type=int, default=160)
     ap.add_argument('--m', type=int, default=4)
+    # ★★★★★ R581-T5R-s18（**形核停滞的修复**）：`--nvar` —— **活跃变体数**。
+    #   ## 病灶（第 17 轮诊断跑实测，`nuc_dbg.json`）
+    #     `nfsv_nofield = 6`、`n_target_final = 10`、`ok = 3`
+    #     ⇒ **6 个形核事件因"同变体组里没有空闲场"被拒**。
+    #   ## 机制（`windowB_surface.py:2324-2345` + 代码自己的结论 `:2385-2394`）
+    #     `nfsv` 在**同一变体组**里找未被占用的场；找不到就拒绝。
+    #     代码逐字：「**「空场用完」= 模型能表示的板条数到顶**
+    #     （**`nv` 是个表示上限，不是物理上限**）…… 必须**拒绝 + 计数**」。
+    #   ## 为什么 `--nvar` 是正确旋钮
+    #     `laths(m, nvar)` = `nvar` 个变体 × 每个 `m` 个场 ⇒ **`nv = nvar·m`**。
+    #     我的跑**塌缩到单变体**（`f_var = 1/0/0/…`）⇒ 该变体只有 `m` 个场
+    #     ⇒ **用完即封顶**。把 `nvar` 调小、`m` 调大，**乘积（= nv = 内存）不变**，
+    #     而**单变体可容纳的板条数 = m** 变大。
+    #   ⚠ **取舍记账**：变体数变少**会削弱判据⑥（涌现自协调需要多变体）**
+    #     ⇒ 这是显式的取舍；当前必须先解除形核封顶（否则判据③④⑤ 完全拿不到）。
+    #   ⚠ **不采用** `nfsv_strict=False`（回退到已有场）—— 代码明确警告它
+    #     「会把"表示不了"伪装成"又长了一片"」。
+    ap.add_argument('--nvar', type=int, default=12,
+                    help='活跃变体数（nv = nvar × m）。默认 12 与归档一致。')
     ap.add_argument('--B', type=int, default=5)
     ap.add_argument('--steps', type=int, default=40)
     ap.add_argument('--every', type=int, default=5)
@@ -131,7 +150,7 @@ def main():
 
     c = build(a, switches)
     lg = '_w2_t5_short_%s.log' % a.tag
-    nv = 12 * a.m
+    nv = int(a.nvar) * a.m
     Ms = 873.0
     n_nuc = int((float(a.alpha_km) * (Ms - float(a.T_end))) // 1)
     print('=' * 100)
