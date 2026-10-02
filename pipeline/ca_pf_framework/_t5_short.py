@@ -58,6 +58,8 @@ def build(a, switches):
              #   ⇒ **收益 ≫ 代价 ⇒ 改成跟随 `--snap-every`。**
              #   ⚠ 只影响**新起**的臂；正在跑的臂不受影响（其 band 仍是每 200 步）。
              '--phi-band-every', str(a.snap_every),
+             # ★★★ R581-T5R-s69：**S14 热史档透传**（默认 `linear` ⇒ 与归档逐字相同）
+             '--therm-hist', str(getattr(a, 'therm_hist', 'linear')),
              '--eng-cadence', '30', '--nthreads', str(a.nthreads),
              '--plate-L', '1000', '--plate-W', '500', '--plate-T', '510',
              '--gamma0', '0.25', '--beta-h', '6.477', '--grow-stack',
@@ -125,6 +127,12 @@ def main():
     #     「会把"表示不了"伪装成"又长了一片"」。
     ap.add_argument('--nvar', type=int, default=12,
                     help='活跃变体数（nv = nvar × m）。默认 12 与归档一致。')
+    # ★★★ R581-T5R-s69：**S14 热史档**（透传给 `_bk_exp.py` 的 `--therm-hist`）
+    #   ⚠ 留痕：第一版我只在 `build()` 里加了透传，**忘了在这里加 argparse 条目**
+    #     ⇒ 传 `--therm-hist lpbf` 时本脚本 argparse **直接 exit=2**（无法识别的参数），
+    #       而 6b 的判据据此报 FAIL。**是判据先失败、我才发现**（若没跑，会以为"还在待测"）。
+    ap.add_argument('--therm-hist', default='linear', choices=('linear', 'lpbf'),
+                    help='热史：linear（默认，归档）| lpbf（S14，未过 6a/6b/6c 勿用于结论）')
     ap.add_argument('--B', type=int, default=5)
     ap.add_argument('--steps', type=int, default=40)
     ap.add_argument('--every', type=int, default=5)
