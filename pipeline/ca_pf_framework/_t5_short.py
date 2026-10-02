@@ -44,7 +44,20 @@ def build(a, switches):
              '--N', str(a.N), '--dx-nm', '62.5',
              '--steps', str(a.steps), '--every', str(a.every),
              '--snap-every', str(a.snap_every), '--pair-every', str(a.pair_every),
-             '--norm-smooth', '0', '--phi-band-every', '200',
+             '--norm-smooth', '0',
+             # ★★★★★ R581-T5R-s54：**把 `--phi-band-every` 与 `--snap-every` 对齐**。
+             #   ## 为什么（实测依据，`R581_T5_RESTART.md §30.1`）
+             #     带内 φ（`band_idx`/`band_val`/`band_fld`）**只在 `--phi-band-every` 的倍数步落盘**。
+             #     原来写死 **200**，而 `--snap-every` 是 **40** ⇒ 实测只有 `snap_00000`/`snap_00200`
+             #     带 band ⇒ **判据② 的厚度量具（`wide_face_thickness`）分辨率被压到 200 步**。
+             #   ## 代价 vs 收益（用户的判据）
+             #     代价：带 band 的快照体积增加 —— 实测 step 0 那份只有 **0.11 MB**
+             #           （它只存 `|φ| ≤ 6Δx` 的胞，占 0.28%/场）⇒ **很小**；
+             #     收益：**判据② 的分辨率 200 → 40 步（5×）**，且与 `nslab_n`/`nf3` 的
+             #           40 步快照**同步对齐** ⇒ 可直接做时间序列对照。
+             #   ⇒ **收益 ≫ 代价 ⇒ 改成跟随 `--snap-every`。**
+             #   ⚠ 只影响**新起**的臂；正在跑的臂不受影响（其 band 仍是每 200 步）。
+             '--phi-band-every', str(a.snap_every),
              '--eng-cadence', '30', '--nthreads', str(a.nthreads),
              '--plate-L', '1000', '--plate-W', '500', '--plate-T', '510',
              '--gamma0', '0.25', '--beta-h', '6.477', '--grow-stack',
