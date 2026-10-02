@@ -25,7 +25,21 @@ LOG=_w2_r30_regress.log
   #   实测后果：R49 中途我连跑两次回归，第二次（10:28）实际比的是**10:22 的旧产物**
   #   （表头里没有新列 `dG_tip_p90`/`v_tip_nabs`，这就是线索）。
   #   ⇒ 两处修：① 跑前 `rm -rf`；② 跑后**断言 CSV 是刚刚写的**（见 ①c）。
-  rm -rf _exp/_bk_eng/dry_r30reg
+  # ★★★★★ R581-ckpt（2026-10-02，**goal 硬禁令**）：原写法是
+  #   `rm -rf _exp/_bk_eng/dry_r30reg` —— 而 goal 逐字要求：
+  #   「**脚本里禁止 `rm -rf` 打在运行目录上** …… 一律改成
+  #     `mv <目录> <目录>_superseded_<时间戳>`」。
+  #   ⇒ 本行按 goal 改成 `mv`。
+  #   ⚠ **语义不变**（这是关键）：R49 的教训是「`_bk_exp.py` 会**复用**已存在的
+  #     目录 ⇒ 不把旧目录挪走，回归就**静默变成空操作**」。`mv` 与 `rm -rf`
+  #     在"不再占用原名"这一点上**完全等价**，但 `mv` **可回退**。
+  if [ -d _exp/_bk_eng/dry_r30reg ]; then
+    _SUP="_exp/_bk_eng/dry_r30reg_superseded_$(date '+%Y%m%d_%H%M%S')"
+    mv _exp/_bk_eng/dry_r30reg "$_SUP"
+    echo "    旧产物已 **mv 归档**（未删除）：$_SUP"
+  else
+    echo "    （没有旧产物，无需挪走）"
+  fi
   _T0=$(date +%s)
   echo "    已删除旧产物，_T0=$_T0"
   echo

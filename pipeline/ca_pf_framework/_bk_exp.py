@@ -340,6 +340,234 @@ def _sparse_band(phi, dx, band_cells):
                 band_cells=np.int64(band_cells))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ★★★★★ R581-ckpt（goal「原生精度断点续跑」）—— 检查点的**采集 / 原子写 / 滑动窗口**
+#
+#   ## 三条硬约束（都来自 goal）
+#   1. **全部默认关**（`--ckpt-every 0`）⇒ **归档路径逐位不变**（门 4）；
+#   2. **φ 必须 f64**（与 `g.phi` 同精度）⇒ **不得为省事降精度**；
+#   3. **滑动窗口用 A/B 交替**（goal 任务(3) 逐字）⇒ `n_keep=2` 时
+#      **完全不需要删除**，磁盘天然恒定；`n_keep>2` 才用步号命名 + `_superseded`，
+#      且 `_superseded` 用**滚动名 + `os.replace` 覆盖**（**不用 `rm`**，遵守硬禁令）。
+#
+#   ## 为什么不能用 `pickle` 存/取**整个对象**
+#   `windowB_par.ParCtx` 含 `ThreadPoolExecutor`/`threading.local`，
+#   `dG_of_T`/`T_of_t`/`pf._h_src` 是闭包/绑定方法 ⇒ **实测都不可 pickle**
+#   ⇒ 本文件**只 pickle 数据**（`_nuc` 的纯值字典、RNG 的 state），
+#   恢复走「**同一命令行重建对象 + 逐项回填**」（见 `--resume`）。
+# ══════════════════════════════════════════════════════════════════════════════
+CKPT_VER = 1
+#: 版本哈希要覆盖的引擎文件（goal 硬要求「记录复现命令 + seed + 版本哈希」）
+CKPT_ENGINE_FILES = ('windowB_surface.py', 'windowB_pf3d.py', 'windowB_par.py',
+                     'windowB_lath.py', 'windowB_acct.py', 'windowB_pf.py',
+                     '_bk_exp.py')
+
+
+def _engine_sha():
+    """引擎文件的 `sha256` 前 16 位（JSON 串）。**读不到就给 `?`，不抛。**"""
+    import hashlib
+    base = os.path.dirname(os.path.abspath(__file__))
+    h = {}
+    for fn in CKPT_ENGINE_FILES:
+        try:
+            with open(os.path.join(base, fn), 'rb') as fh:
+                h[fn] = hashlib.sha256(fh.read()).hexdigest()[:16]
+        except Exception:
+            h[fn] = '?'
+    return json.dumps(h, sort_keys=True)
+
+
+def _ckpt_gather(g, it, t_sim, drv, N, L, nv, nreg, vmap, tstep=None):
+    """★ **只读地**采集「续跑所需的全部状态」（goal 任务(1) 的 1a–1k）。
+
+    **本函数不得修改 `g` 或任何入参** —— 它每步都可能被调用，
+    一旦有副作用就会破坏"归档逐位不变"（门 4）。
+    """
+    import pickle
+    st = {}
+
+    # ── 1k 元信息 ─────────────────────────────────────────────────────
+    st['ckpt_ver'] = np.int64(CKPT_VER)
+    st['step'] = np.int64(it)
+    st['t_s'] = np.float64(t_sim)
+    st['N'] = np.int64(N)
+    st['L'] = np.float64(L)
+    st['nv'] = np.int64(nv)
+    st['nreg'] = np.int64(nreg)
+    st['phi_prec'] = np.array(str(getattr(g, 'phi_prec', 'f64')))
+    st['cmdline'] = np.array(' '.join(str(x) for x in sys.argv))
+    st['engine_sha'] = np.array(_engine_sha())
+    st['vmap_keys'] = np.array(sorted(vmap), dtype=np.int64)
+    st['vmap_vals'] = np.array([int(vmap[k]) for k in sorted(vmap)], dtype=np.int64)
+
+    # ── 1a ★ 完整 φ（f64，**不是带内**）───────────────────────────────
+    #   ⚠ 收窄成 f32 会**主动丢精度** ⇒ goal 明令禁止。dtype 原样保留。
+    st['phi'] = np.asarray(g.phi)
+
+    # ── 1c 引擎计时 / 节拍 ────────────────────────────────────────────
+    st['t'] = np.float64(getattr(g, 't', 0.0))
+    _T = getattr(g, 'T', None)
+    st['T'] = np.float64(_T) if _T is not None else np.float64(np.nan)
+    _df = getattr(g, 'df', None)
+    st['df'] = np.asarray(_df) if _df is not None else np.zeros(1)
+    st['_cnt'] = np.int64(getattr(g, '_cnt', 0))
+    st['_t_since_reinit'] = np.float64(getattr(g, '_t_since_reinit', 0.0))
+    st['_forced_reinit'] = np.int64(getattr(g, '_forced_reinit', 0))
+    st['_need_reinit'] = np.int64(1 if getattr(g, '_need_reinit', False) else 0)
+    st['dG_max'] = np.float64(getattr(g, 'dG_max', np.nan))
+    st['_fp_cnt'] = np.int64(getattr(g, '_fp_cnt', 0))
+
+    # ── 1b/1d ★ 形核通道（`_nuc` 整字典 + RNG state + sites + dbg['ok']）──
+    nuc = getattr(g, '_nuc', None) or {}
+    dbg = nuc.get('dbg') or {}
+    # ★ `dbg['ok']` 单独拎出来（`:2534` 用它的**奇偶**决定 attach 先试哪一端）
+    st['nuc_ok'] = np.int64(int(dbg.get('ok', 0) or 0))
+    st['nuc_n_activated'] = np.int64(int(nuc.get('n_activated', 0) or 0))
+    # RNG：只存**位发生器的 state**（PCG64 只有两个整数）
+    _rng = nuc.get('rng')
+    try:
+        st['nuc_rng_state'] = np.frombuffer(
+            pickle.dumps(_rng.bit_generator.state), dtype=np.uint8)
+    except Exception:
+        st['nuc_rng_state'] = np.zeros(0, np.uint8)
+    # 位点池：list[(k, xyz)] ⇒ (n,4) float（k 放第 0 列）
+    _sites = nuc.get('sites') or []
+    _arr = np.zeros((len(_sites), 4), float)
+    for _i, _s in enumerate(_sites):
+        try:
+            _arr[_i, 0] = float(_s[0])
+            _arr[_i, 1:4] = np.asarray(_s[1], float).ravel()[:3]
+        except Exception:
+            pass
+    st['nuc_sites'] = _arr
+    # 其余**纯值**键（31 个配置键 + dbg）⇒ **pickle 数据**（不是 pickle 对象）
+    #   ⚠ 用 pickle 而不是 `int(v)`：N12 的教训 —— `dbg` 里有 `list` 型值，
+    #     无条件 `int()` 会让**整份文件**写崩（`nuc_dbg.json` 曾写出 0 字节）。
+    _cfg = {k: v for k, v in nuc.items() if k not in ('rng', 'sites')}
+    try:
+        st['nuc_cfg_pkl'] = np.frombuffer(pickle.dumps(_cfg), dtype=np.uint8)
+    except Exception:
+        st['nuc_cfg_pkl'] = np.zeros(0, np.uint8)
+
+    # ── 1e ★ 热启动 / 口径状态（最容易漏的一类）──────────────────────
+    _ae = getattr(g, '_ae_eps', None)
+    st['ae_eps'] = np.asarray(_ae) if _ae is not None else np.zeros(0, np.float32)
+    _pf = getattr(g, 'pf', None)
+    _lag = getattr(_pf, '_eps0_lag', None) if _pf is not None else None
+    st['pf_eps0_lag'] = np.asarray(_lag) if _lag is not None else np.zeros(0, np.float32)
+    # `pf.phi` 只在**物化档**下才是"上一次弹性解的 h"（诊断口径）⇒ 记录是否物化
+    st['pf_phi_mode'] = np.array(str(getattr(g, '_pf_phi_mode', '?')))
+    if (str(getattr(g, '_pf_phi_mode', '')) == 'materialized'
+            and _pf is not None and getattr(_pf, 'phi', None) is not None):
+        st['pf_phi'] = np.asarray(_pf.phi)
+    else:
+        st['pf_phi'] = np.zeros(0, np.float32)
+
+    # ── 1f ★ `npref_tab`（`_npref_of()` 拿不到会 **raise**）────────────
+    _np_tab = getattr(g, 'npref_tab', None)
+    try:
+        st['npref_pkl'] = np.frombuffer(
+            pickle.dumps(_np_tab) if _np_tab is not None else b'', dtype=np.uint8)
+    except Exception:
+        st['npref_pkl'] = np.zeros(0, np.uint8)
+
+    # ── 1g 可选通道（按开关）────────────────────────────────────────
+    for _k, _attr in (('c', 'c'), ('Gam_mol', 'Gam_mol'), ('Gam', 'Gam'),
+                      ('Gam_derived', '_Gam_derived'), ('psi', 'psi')):
+        _v = getattr(g, _attr, None)
+        st['aux_' + _k] = np.asarray(_v) if _v is not None else np.zeros(0, np.float32)
+
+    # ── 1h ★ 模块全局（**它们不是实例属性** ⇒ 不显式存就会静默退档）──
+    try:
+        import windowB_surface as _ws
+        st['g_ufv_mode'] = np.array(str(getattr(_ws, '_UFV_MODE', '?')))
+        st['g_bbox_mode'] = np.array(str(getattr(_ws, '_BBOX_MODE', '?')))
+    except Exception:
+        st['g_ufv_mode'] = np.array('?')
+        st['g_bbox_mode'] = np.array('?')
+
+    # ── 1i ★ 外部注入开关（类内**从不赋值** ⇒ 对象快照拍不到）──────
+    _inj = {}
+    for _k in ('pair_curvature', '_pc_legacy', 'pair_sig_from_seed', 'facet_excl',
+               'wrap_strict', 'reinit_bbox', 'reinit_bbox_margin',
+               'reinit_skip_tol', 'reinit_guard_region', 'reinit_strict',
+               'diag_terms_on', 'diag_edv_on'):
+        if hasattr(g, _k):
+            _inj[_k] = getattr(g, _k)
+    try:
+        st['injected_pkl'] = np.frombuffer(pickle.dumps(_inj), dtype=np.uint8)
+    except Exception:
+        st['injected_pkl'] = np.zeros(0, np.uint8)
+
+    # ── 1j ★ 驱动层状态（**不在对象里** ⇒ 由调用方传进来）────────────
+    _drv = dict(drv or {})
+    _dV = _drv.get('_qs_dV')
+    st['drv_dV'] = (np.asarray(_dV, float) if _dV is not None
+                    else np.zeros(0, float))          # ★ 滑动窗口列表（顺序敏感）
+    _drv2 = {k: v for k, v in _drv.items() if k != '_qs_dV'}
+    try:
+        st['drv_pkl'] = np.frombuffer(pickle.dumps(_drv2), dtype=np.uint8)
+    except Exception:
+        st['drv_pkl'] = np.zeros(0, np.uint8)
+
+    # ── 步时统计（便于事后看"哪一段慢"）────────────────────────────
+    st['tstep'] = np.asarray(tstep or [], float)
+    return st
+
+
+def _ckpt_write(outdir, st, keep=2, atomic=True, milestone=False):
+    """★ **原子写 + 滑动窗口**（goal 任务(3)）。
+
+    ## 命名
+    * **`n_keep == 2`**（默认）⇒ **A/B 交替**（`ckpt_A.npz` / `ckpt_B.npz`）
+      ⇒ **磁盘恒定，且**完全不需要删除****（goal 逐字推荐的做法）；
+    * **`n_keep != 2`** ⇒ 步号命名（`ckpt_%06d.npz`）+ 多余帧 `os.replace` 进
+      `_superseded/`（**滚动名覆盖，不用 `rm`** —— 遵守硬禁令）；
+    * **里程碑**（`ckptms_%06d.npz`）**不参与滑动**。
+
+    ## 原子性
+    `atomic=True` 时先写 `<name>.tmp` 再 `os.replace()` ⇒
+    **任何时刻都有一帧是完整的**（被 `kill` 也只会留一个 `.tmp`）。
+    """
+    cdir = os.path.join(outdir, 'ckpt')
+    os.makedirs(cdir, exist_ok=True)
+    it = int(st['step'])
+    if milestone:
+        name = 'ckptms_%06d.npz' % it
+    elif int(keep) == 2:
+        name = 'ckpt_%s.npz' % ('A' if (it % 2 == 0) else 'B')      # ★ A/B 交替
+    else:
+        name = 'ckpt_%06d.npz' % it
+    final = os.path.join(cdir, name)
+    tmp = final + '.tmp'
+    if atomic:
+        np.savez_compressed(tmp, **st)
+        os.replace(tmp, final)
+    else:
+        np.savez_compressed(final, **st)
+
+    # ── 滑动窗口（只对**非里程碑**、且 `keep != 2` 时）──────────────
+    if (not milestone) and int(keep) != 2:
+        import re as _re
+        fs = []
+        for f in os.listdir(cdir):
+            m = _re.fullmatch(r'ckpt_(\d{6})\.npz', f)
+            if m:
+                fs.append((int(m.group(1)), f))
+        fs.sort()
+        if len(fs) > max(int(keep), 1):
+            sup = os.path.join(cdir, '_superseded')
+            os.makedirs(sup, exist_ok=True)
+            # ★ 滚动名：`os.replace` 覆盖旧内容 ⇒ **磁盘恒定，且没有 `rm`**
+            for _i, (_s, f) in enumerate(fs[:-max(int(keep), 1)]):
+                try:
+                    os.replace(os.path.join(cdir, f),
+                               os.path.join(sup, 'ckpt_rolled_%d.npz' % (_i % 2)))
+                except Exception:
+                    pass
+    return final
+
+
 def read_series(path):
     """读 `series.csv` ⇒ `{列名: np.ndarray}`；整型列给 int，数值列给 float，
     其余（如 `runs='5/3/1/2/4/6'`）原样给 str。
@@ -1664,6 +1892,14 @@ def run(a):
     _qs_V = None                    # 上一步的转变胞数
     _qs_dV = []                     # 滑动窗口内的 |ΔV|（胞）
     _qs_dg = []                     # 各档收敛时的 dG_max/dG_ref（诊断）
+    # ★★★★★ R581-ckpt 审计发现（判据⑩ 的样本）：**`_qs_rel_last` 是**只写不读**的死变量**
+    #   实测：全仓 `grep -n '_qs_rel_last'` **只有 1 处赋值**（本循环内
+    #   `_qs_rel_last = _rel`），**零处读取**。
+    #   ⇒ 它长得像"必须随检查点保存的状态"（goal 任务(1) 的 1j 列了它），
+    #     实则**与动力学无关**。
+    #   ⇒ 这里**只加一个初始值**，让检查点采集器能安全读它（**数值零影响**：
+    #     既有的唯一赋值点照旧覆盖它，且没有任何读取点）。
+    _qs_rel_last = None             # ⚠ **只写不读**（留档用；见上注）
     if _qs_clock:
         P('★★★★★ **准静态钟（1B）已启用**：ΔT = %.3f K（= 1/α_KM，**方案 A**，'
           '用户 2026-10-04 拍板；%s）⇒ 每档每块各 1 根；'
@@ -2388,6 +2624,52 @@ def run(a):
             if a.phi_every > 0 and (it % a.phi_every == 0 or it == a.steps):
                 d['phi'] = g.phi.astype(np.float32)
             np.savez_compressed(os.path.join(outdir, 'snap_%05d.npz' % it), **d)
+        # ══════════════════════════════════════════════════════════════════════
+        # ★★★★★ R581-ckpt（goal「原生精度断点续跑」）：**可续跑检查点**
+        #
+        #   ⚠ **默认关**（`--ckpt-every 0`）⇒ 下面**一个字节都不执行**
+        #     ⇒ `snap_*.npz` 与 `series.csv` 逐位不变（**门 4**）。
+        #
+        #   ## 为什么放在这里
+        #   它在"本步的 `advance` 已完成 + 观测量已落盘"之后 ⇒
+        #   检查点里的状态 = **下一步开始时**的状态 ⇒ 恢复时从 `it + 1` 续跑即可。
+        #
+        #   ## 与快照的关系（**两套东西，各有用途**）
+        #   * 快照（`snap_*.npz`，1–3 MB）：**事后分析**用（`region` + 带内 φ）；
+        #   * 检查点（`ckpt/`，26–39 MB@N=160）：**续跑**用（完整 φ + 全部状态）。
+        #   ⚠ 检查点**不替代**快照；两者并存。
+        # ══════════════════════════════════════════════════════════════════════
+        if int(getattr(a, 'ckpt_every', 0) or 0) > 0:
+            _ck = int(a.ckpt_every)
+            _ckms = int(getattr(a, 'ckpt_milestone_every', 0) or 0)
+            _is_ms = bool(_ckms > 0 and it > 0 and it % _ckms == 0)
+            if (it % _ck == 0) or (it == a.steps) or _is_ms:
+                _cdir = (a.ckpt_dir or os.path.join(outdir, 'ckpt'))
+                try:
+                    _st = _ckpt_gather(
+                        g, it, t_sim,
+                        dict(_qs_T=_qs_T, _qs_stage=_qs_stage, _qs_dt=_qs_dt,
+                             _qs_stop=_qs_stop, _qs_conv=_qs_conv, _qs_ref=_qs_ref,
+                             _qs_relax=_qs_relax, _qs_V=_qs_V,
+                             _qs_dV=list(_qs_dV), _qs_rel_last=_qs_rel_last,
+                             _qs_shrink_n=_qs_shrink_n, _qs_shrink_v=_qs_shrink_v,
+                             _qs_shrink_used=_qs_shrink_used,
+                             _qs_win=_qs_win, _qs_tol=_qs_tol,
+                             n_ath_ev=n_ath_ev, n_ath_tgt=n_ath_tgt,
+                             n_eng_ev=n_eng_ev, n_fresh_fallback=n_fresh_fallback,
+                             n_mode=dict(n_mode)),
+                        N, L, nv, int(getattr(g, 'nreg', nv + 1)), vmap, tstep=tstep)
+                    _cp = _ckpt_write(_cdir, _st, keep=int(a.ckpt_keep),
+                                      atomic=bool(int(a.ckpt_atomic)),
+                                      milestone=_is_ms)
+                    if it % max(_ck, 1) == 0 or _is_ms:
+                        P('  [ckpt %4d]%s 检查点落盘 %s（%.1f MB）'
+                          % (it, ' **里程碑**' if _is_ms else '',
+                             os.path.basename(_cp), os.path.getsize(_cp) / 1048576.0))
+                except Exception as _ce:
+                    # ★ 检查点失败**绝不影响仿真**（与 `nuc_dbg.json` 的 N12 教训同源：
+                    #   一份辅助产物不该毁掉整轮）
+                    P('  ⚠ [ckpt %4d] 检查点落盘失败（**不影响仿真**）：%s' % (it, _ce))
         P('  [%4d] Vt=%.4f µm³ | **nslab=%d** nf3col=%d runs=%-13s | F3面=%-6d '
           '面积=%.4f µm² | Δpos=%+7.3f dx std=%5.1f nm | nc=%d..%d(显著%d) | '
           '厚度(在位的场) %s nm | 壁=%d | %.2fs/步'
@@ -2721,6 +3003,35 @@ def main():
                          '带内稀疏 φ 是"新量具事后重测界面几何/曲率"的唯一来源。')
     ap.add_argument('--phi-band-cells', type=int, default=6,
                     help='带内稀疏 φ 的判定带：存 |phi| <= 本值·dx 的胞（默认 6）')
+    # ══════════════════════════════════════════════════════════════════════
+    # ★★★★★ R581-ckpt（goal「原生精度断点续跑」）—— **五个开关，全部默认关**
+    #   门 4：**不传任何 `--ckpt-*`** 时，`snap_*.npz` 与 `series.csv` 逐位不变。
+    # ══════════════════════════════════════════════════════════════════════
+    ap.add_argument('--ckpt-every', type=int, default=0,
+                    help='**[默认 0 = 关]** 每 K 步写一个**可续跑检查点**'
+                         '（`<outdir>/ckpt/`）。'
+                         '★ 检查点含**完整 φ（f64）**+ RNG 状态 + `_nuc` 整字典 + '
+                         '引擎节拍 + 驱动层准静态钟状态 ⇒ 可**原生精度续跑**。'
+                         '⚠ 成本实测：N=160 跑到 600 步时约 **26–39 MB/帧**'
+                         '（活跃场 6–9；见 `R581_RESUME_DESIGN.md` §4\'）。'
+                         '不传它 ⇒ 一行检查点代码都不会执行 ⇒ 归档逐位不变。')
+    ap.add_argument('--ckpt-keep', type=int, default=2,
+                    help='**滑动窗口**保留的帧数（默认 **2**）。'
+                         '★ `2` ⇒ **A/B 交替**（`ckpt_A.npz`/`ckpt_B.npz`）'
+                         '⇒ **磁盘恒定、且完全不需要删除**（goal 推荐做法）；'
+                         '`>2` ⇒ 步号命名 + 多余帧滚进 `_superseded/`'
+                         '（**滚动名 `os.replace` 覆盖，不用 `rm`**）；'
+                         '`1` ⇒ 单文件（**没有退路**，不推荐）。')
+    ap.add_argument('--ckpt-atomic', type=int, default=1, choices=(0, 1),
+                    help='**[默认 1 = 开]** 先写 `<name>.tmp` 再 `os.replace()` 原子改名'
+                         '⇒ 被 kill 时**任何时刻都有一帧是完整的**。'
+                         '⚠ 关掉它就没有这个保证（只用于做**负对照**）。')
+    ap.add_argument('--ckpt-milestone-every', type=int, default=0,
+                    help='[默认 0 = 关] 每 M 步另存一个**里程碑**'
+                         '（`ckptms_%06d.npz`，**不参与滑动窗口**）'
+                         '⇒ 给"想往回退一大截"留一条路。')
+    ap.add_argument('--ckpt-dir', default='',
+                    help='检查点目录（默认 `<outdir>/ckpt`）。')
     ap.add_argument('--laths', default='1,1,1,1,1,1')
     # ★★★ R31（目标第 (2) 项 J-4）：**多块播种**。
     #   `--laths 3,3` ⇒ 2 块（变体 1 的 3 根 + 变体 2 的 3 根）。
