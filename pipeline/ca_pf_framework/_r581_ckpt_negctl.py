@@ -49,6 +49,18 @@ def sabotage(src, dst, kind, band_cells=6):
     elif kind == 'no_dbg_ok':
         st['nuc_ok'] = np.int64(0)
         note = '`_nuc[\'dbg\'][\'ok\']` 归零（attach 选端的奇偶会不同）'
+    elif kind == 'dbg_ok_odd':
+        # ★★★★★ 修正版（2026-10-02，**第 4 轮的判据缺陷**）：
+        #   `dbg['ok']` **只被读它的奇偶**（`windowB_surface.py:2534`：
+        #   `_sides = ((1,-1) if _dbg['ok'] % 2 == 0 else (-1,1))`）。
+        #   ⇒ **把它"归零"若原本就是偶数，则奇偶**没变** ⇒ 测不出差异** ——
+        #     这正是上一轮负 4 拿 0 处差异的原因（**我的判据设计缺陷**，不是"那一项不重要"）。
+        #   ⇒ 本模式把它置成 **1（奇数）** ⇒ **奇偶一定翻转** ⇒ 才能真的测到。
+        _cur = int(np.asarray(st['nuc_ok']).item()) if 'nuc_ok' in st else 0
+        st['nuc_ok'] = np.int64(1 if (_cur % 2 == 0) else 0)
+        note = ('`dbg[\'ok\']` %d → **%d**（**翻转奇偶**，而不是归零 —— '
+                '该量只看奇偶，归零可能不改变它）'
+                % (_cur, int(np.asarray(st['nuc_ok']).item())))
     else:
         raise SystemExit('未知的破坏类型：%s' % kind)
     with open(dst, 'wb') as fh:

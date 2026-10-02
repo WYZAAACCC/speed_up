@@ -2649,6 +2649,57 @@ def run(a):
                 else:
                     P('   ⚠ athermal 事件 #%d 被引擎拒（无可用空场/落位失败）@ step %d'
                       % (n_ath_tgt, it))
+
+        # ══════════════════════════════════════════════════════════════════════
+        # ★★★★★ R581-ckpt（goal「原生精度断点续跑」）：**可续跑检查点**
+        #
+        #   ## ★★ 为什么必须放在**这里**（本块的第二次定位 —— 第一版放错了）
+        #   第一版把它放在 **CSV 块之后**，而那里有
+        #   `if not _every_now: continue`（`:2688-2689`）与独立快照的 `continue`（`:2687`）
+        #   ⇒ **凡不是 `--every` 倍数的步，都在到达检查点块之前就 `continue` 了**
+        #   ⇒ 实测（`_r581_crit5.sh`，`--ckpt-every 2 --every 20`）：
+        #     **只写出 2 帧（step 0 与 20），而不是 11 帧**
+        #   ⇒ **滑动窗口根本没被驱动**（判据⑤因此第一次没测成）。
+        #   **修法**：挪到 `advance()` 之后、**任何 `continue` 之前** ⇒ 每步都会经过。
+        #
+        #   ## 语义
+        #   检查点里的状态 = **本步 `advance` 已完成**后的状态 ⇒ 恢复时从 `it + 1` 续跑。
+        #   ⚠ **默认关**（`--ckpt-every 0`）⇒ 下面**一个字节都不执行**（门 4）。
+        # ══════════════════════════════════════════════════════════════════════
+        if int(getattr(a, 'ckpt_every', 0) or 0) > 0:
+            _ck = int(a.ckpt_every)
+            _ckms = int(getattr(a, 'ckpt_milestone_every', 0) or 0)
+            _is_ms = bool(_ckms > 0 and it > 0 and it % _ckms == 0)
+            if (it % _ck == 0) or (it == a.steps) or _is_ms:
+                _cdir = (a.ckpt_dir or os.path.join(outdir, 'ckpt'))
+                try:
+                    _st = _ckpt_gather(
+                        g, it, t_sim,
+                        dict(_qs_T=_qs_T, _qs_stage=_qs_stage, _qs_dt=_qs_dt,
+                             _qs_stop=_qs_stop, _qs_conv=_qs_conv, _qs_ref=_qs_ref,
+                             _qs_relax=_qs_relax, _qs_V=_qs_V,
+                             _qs_dV=list(_qs_dV), _qs_rel_last=_qs_rel_last,
+                             _qs_shrink_n=_qs_shrink_n, _qs_shrink_v=_qs_shrink_v,
+                             _qs_shrink_used=_qs_shrink_used,
+                             _qs_win=_qs_win, _qs_tol=_qs_tol,
+                             n_ath_ev=n_ath_ev, n_ath_tgt=n_ath_tgt,
+                             n_eng_ev=n_eng_ev, n_fresh_fallback=n_fresh_fallback,
+                             n_mode=dict(n_mode)),
+                        N, L, nv, int(getattr(g, 'nreg', nv + 1)), vmap, tstep=tstep,
+                        P0=P0)
+                    _cp = _ckpt_write(_cdir, _st, keep=int(a.ckpt_keep),
+                                      atomic=bool(int(a.ckpt_atomic)),
+                                      milestone=_is_ms, seq=int(_ckpt_seq))
+                    if not _is_ms:
+                        _ckpt_seq += 1
+                    P('  [ckpt %4d]%s 检查点落盘 %s（%.1f MB）'
+                      % (it, ' **里程碑**' if _is_ms else '',
+                         os.path.basename(_cp), os.path.getsize(_cp) / 1048576.0))
+                except Exception as _ce:
+                    # ★ 检查点失败**绝不影响仿真**（与 `nuc_dbg.json` 的 N12 教训同源：
+                    #   一份辅助产物不该毁掉整轮）
+                    P('  ⚠ [ckpt %4d] 检查点落盘失败（**不影响仿真**）：%s' % (it, _ce))
+
         # ★★★ R49（**口径修复：`--snap-every` 原先藏在 `--every` 门后面**）
         #   原写法把**整块 CSV + 快照**都放在 `if (it % a.every) ... continue` 之后
         #   ⇒ 快照的**实际**间隔 = `lcm(every, snap_every)`，而不是 `snap_every`。
@@ -2904,55 +2955,10 @@ def run(a):
             if a.phi_every > 0 and (it % a.phi_every == 0 or it == a.steps):
                 d['phi'] = g.phi.astype(np.float32)
             np.savez_compressed(os.path.join(outdir, 'snap_%05d.npz' % it), **d)
-        # ══════════════════════════════════════════════════════════════════════
-        # ★★★★★ R581-ckpt（goal「原生精度断点续跑」）：**可续跑检查点**
-        #
-        #   ⚠ **默认关**（`--ckpt-every 0`）⇒ 下面**一个字节都不执行**
-        #     ⇒ `snap_*.npz` 与 `series.csv` 逐位不变（**门 4**）。
-        #
-        #   ## 为什么放在这里
-        #   它在"本步的 `advance` 已完成 + 观测量已落盘"之后 ⇒
-        #   检查点里的状态 = **下一步开始时**的状态 ⇒ 恢复时从 `it + 1` 续跑即可。
-        #
-        #   ## 与快照的关系（**两套东西，各有用途**）
-        #   * 快照（`snap_*.npz`，1–3 MB）：**事后分析**用（`region` + 带内 φ）；
-        #   * 检查点（`ckpt/`，26–39 MB@N=160）：**续跑**用（完整 φ + 全部状态）。
-        #   ⚠ 检查点**不替代**快照；两者并存。
-        # ══════════════════════════════════════════════════════════════════════
-        if int(getattr(a, 'ckpt_every', 0) or 0) > 0:
-            _ck = int(a.ckpt_every)
-            _ckms = int(getattr(a, 'ckpt_milestone_every', 0) or 0)
-            _is_ms = bool(_ckms > 0 and it > 0 and it % _ckms == 0)
-            if (it % _ck == 0) or (it == a.steps) or _is_ms:
-                _cdir = (a.ckpt_dir or os.path.join(outdir, 'ckpt'))
-                try:
-                    _st = _ckpt_gather(
-                        g, it, t_sim,
-                        dict(_qs_T=_qs_T, _qs_stage=_qs_stage, _qs_dt=_qs_dt,
-                             _qs_stop=_qs_stop, _qs_conv=_qs_conv, _qs_ref=_qs_ref,
-                             _qs_relax=_qs_relax, _qs_V=_qs_V,
-                             _qs_dV=list(_qs_dV), _qs_rel_last=_qs_rel_last,
-                             _qs_shrink_n=_qs_shrink_n, _qs_shrink_v=_qs_shrink_v,
-                             _qs_shrink_used=_qs_shrink_used,
-                             _qs_win=_qs_win, _qs_tol=_qs_tol,
-                             n_ath_ev=n_ath_ev, n_ath_tgt=n_ath_tgt,
-                             n_eng_ev=n_eng_ev, n_fresh_fallback=n_fresh_fallback,
-                             n_mode=dict(n_mode)),
-                        N, L, nv, int(getattr(g, 'nreg', nv + 1)), vmap, tstep=tstep,
-                        P0=P0)
-                    _cp = _ckpt_write(_cdir, _st, keep=int(a.ckpt_keep),
-                                      atomic=bool(int(a.ckpt_atomic)),
-                                      milestone=_is_ms, seq=int(_ckpt_seq))
-                    if not _is_ms:
-                        _ckpt_seq += 1
-                    if it % max(_ck, 1) == 0 or _is_ms:
-                        P('  [ckpt %4d]%s 检查点落盘 %s（%.1f MB）'
-                          % (it, ' **里程碑**' if _is_ms else '',
-                             os.path.basename(_cp), os.path.getsize(_cp) / 1048576.0))
-                except Exception as _ce:
-                    # ★ 检查点失败**绝不影响仿真**（与 `nuc_dbg.json` 的 N12 教训同源：
-                    #   一份辅助产物不该毁掉整轮）
-                    P('  ⚠ [ckpt %4d] 检查点落盘失败（**不影响仿真**）：%s' % (it, _ce))
+        # ⚠ **检查点块已上移到本循环体靠前处**（`advance()` 之后、任何 `continue` 之前）——
+        #   原因见那里的长注释：放在这里会被 `if not _every_now: continue` 挡掉，
+        #   实测 `--ckpt-every 2 --every 20` **只写出 2 帧而不是 11 帧**。
+        #   ★ 这里**不再重复写**（否则同一帧写两次、`_ckpt_seq` 也会跳号）。
         P('  [%4d] Vt=%.4f µm³ | **nslab=%d** nf3col=%d runs=%-13s | F3面=%-6d '
           '面积=%.4f µm² | Δpos=%+7.3f dx std=%5.1f nm | nc=%d..%d(显著%d) | '
           '厚度(在位的场) %s nm | 壁=%d | %.2fs/步'
