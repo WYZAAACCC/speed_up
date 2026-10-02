@@ -75,6 +75,13 @@ def cmd_of(a):
             + (['--nuc-overlap-nm', repr(float(a.overlap_nm))]
                if a.overlap_nm is not None else [])
             + (['--nuc-periodic-seed', '1'] if int(a.periodic_seed) == 1 else [])
+            # ★★★★★ R581-ckpt：**断点续跑**透传（默认关 ⇒ 不改变归档路径）
+            + (['--ckpt-every', str(int(a.ckpt_every)),
+                '--ckpt-keep', str(int(a.ckpt_keep))]
+               if int(a.ckpt_every) > 0 else [])
+            + (['--ckpt-milestone-every', str(int(a.ckpt_milestone_every))]
+               if int(a.ckpt_milestone_every) > 0 else [])
+            + (['--resume', a.resume] if a.resume else [])
             + SWITCHES)
 
 
@@ -142,6 +149,23 @@ def main():
                     help='1 = 传 `--nuc-periodic-seed 1`（N13 的修复）')
     ap.add_argument('--archive-old', action='store_true',
                     help='跑前把同名目录 mv 归档改名（**绝不删除**）')
+    # ★★★★★ R581-ckpt（2026-10-03）：**断点续跑**透传。
+    #   ## 为什么接在这里
+    #   用户要求本轮长跑**必须能断点续跑**（跑一段→存→被杀→恢复⇒逐位相同，
+    #   已在 `_r581_killtest.sh` 实测：`kill -9` 后 `diff=0`）。
+    #   而 `_bk_exp.py` 的 `--ckpt-*` / `--resume` 是**默认关**的
+    #   ⇒ 不传 ⇒ 归档路径逐位不变（门 0/门 4 已验）。
+    #   ## 三档语义（与 `_bk_exp.py` 一致）
+    #   `--ckpt-every 0`（默认）= 关；`--resume` 空 = 不续跑。
+    #   **⚠ `--steps` 是绝对总步数**（续跑时仍写原目标）。
+    ap.add_argument('--ckpt-every', type=int, default=0,
+                    help='>0 则每 K 步写一个可续跑检查点（默认 0 = 关）')
+    ap.add_argument('--ckpt-keep', type=int, default=2,
+                    help='滑动窗口只留最新 n 帧（默认 2 ⇒ A/B 交替，磁盘恒定）')
+    ap.add_argument('--ckpt-milestone-every', type=int, default=0,
+                    help='>0 则每 M 步另存里程碑（**不参与滑动**）')
+    ap.add_argument('--resume', default='',
+                    help='从检查点 `.npz` **或目录**（自动挑 step 最大帧）续跑')
     a = ap.parse_args()
 
     nv = 12 * a.m
