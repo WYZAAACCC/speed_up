@@ -23,8 +23,28 @@ sys.path.insert(0, '.')
 import _bk_measure as BM                                     # noqa: E402
 
 
+def rebuild_full(z):
+    """★ 重建**整场数组** `(nreg,N,N,N)`（带内填真值、带外填 `1e3`）。
+
+    ## 为什么必须传整场（第 34 轮正对照实测的教训）
+    我第一版传的是**单个 `(N,N,N)`** ⇒ **`k` 被完全忽略**（A/B/C 三档给出同一个 559.6 nm）。
+    `wide_face_thickness(phi, dx, n_hab, k, …)` 的 `phi` 契约是**整场数组**、由 `k` 选场。
+    **⇒ 必须按 `(nreg,N,N,N)` 传，否则调用约定就是错的。**
+    """
+    N = int(np.asarray(z['N']).item())
+    fld = np.asarray(z['band_fld'])
+    nreg = int(fld.max()) + 1
+    phi = np.full((nreg, N ** 3), 1e3, np.float64)
+    idx = np.asarray(z['band_idx'])
+    val = np.asarray(z['band_val'], np.float64)
+    for k in range(nreg):
+        m = (fld == k)
+        phi[k, idx[m]] = val[m]
+    return phi.reshape(nreg, N, N, N)
+
+
 def rebuild(z, k):
-    """按场 k 重建 φ（带内填真值、带外填 1e3 —— 与 `np.full(...,1e3)` 的语义一致）。"""
+    """（保留）按场 k 重建**单场** φ —— 只用于对照，**不要**直接喂 `wide_face_thickness`。"""
     N = int(np.asarray(z['N']).item())
     phi = np.full(N ** 3, 1e3, np.float64)
     idx = np.asarray(z['band_idx'])
@@ -53,10 +73,11 @@ def main():
         print('=' * 96)
         print('  %-5s %14s %14s %10s' % ('场', 't_wf 原始(nm)', 't_wf − Δx(nm)', '备注'))
         print('  ' + '-' * 62)
+        # ★ 传**整场数组**（第 34 轮的教训：传单场会忽略 `k`）
+        phiF = rebuild_full(z)
         for k in want:
-            phi = rebuild(z, k)
             try:
-                r = BM.wide_face_thickness(phi, dx, n_hab, k)
+                r = BM.wide_face_thickness(phiF, dx, n_hab, k)
                 d = r if isinstance(r, dict) else {'?': r}
                 # 从 dict 里找厚度
                 got = None
