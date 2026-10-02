@@ -739,7 +739,20 @@ def _ckpt_restore(g, path, strict_prec=True, verbose=True):
                 t_s=float(np.asarray(z['t_s']).item()),
                 phi_prec=prec,
                 # ★ `P0`：F3 位置参考基准（**路径相关**；门 1 实测抓出来的漏项）
-                P0=(float(np.asarray(z['f3_pos_p0_m']).item())
+                # ★★★★★ R581-T5R-s76 修：**把 `nan` 当作"未设定"**（与 `None` 同义）。
+                #   ## 病灶（第 75 轮逐行定位，`R581_T5_THERM_FRAME.md §15`）
+                #     写入侧 `:525` 是 `st['f3_pos_p0_m'] = P0 if P0 is not None else np.nan`
+                #     ⇒ **"未设定"被存成 `nan`**（早期步还没有 F3 面时就是这种状态）。
+                #     而这里原来只判 `'f3_pos_p0_m' in got` ⇒ 读回 **`float('nan')`**，
+                #     再经 `:2282` 的 `if _p0 is not None: P0 = float(_p0)`（**`nan` 不是 `None`**）
+                #     ⇒ `P0` 被"恢复"成 `nan` ⇒ **不再是 `None`**
+                #     ⇒ 主循环"第一次 `pm` 有限时钉基准"的逻辑（`if P0 is None and isfinite(pm)`）
+                #       **永远不再触发** ⇒ `P0` 恒为 `nan` ⇒ `f3_pos_dx` 静默退化为 `0.0`。
+                #   ## 影响面（如实）
+                #     **只影响 F3 位置诊断**（`f3_pos_dx`）—— 物理列 94/96 全同（§14.3）；
+                #     但**续跑臂上的该诊断会静默失效** ⇒ 必须修。
+                P0=((lambda _v: float(_v) if np.isfinite(float(_v)) else None)(
+                        np.asarray(z['f3_pos_p0_m']).item())
                     if 'f3_pos_p0_m' in got else None),
                 cmdline=str(np.asarray(z['cmdline']).item()) if 'cmdline' in got else '',
                 engine_sha=(str(np.asarray(z['engine_sha']).item())
