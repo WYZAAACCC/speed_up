@@ -74,13 +74,26 @@ print()
 
 V, A = res['t5V2'], res['t5H3']
 def judge(name, cond, got, vs):
-    print('  %-34s %s   （V2: %s | t5H3: %s）' %
-          (name, '✅ PASS' if cond else ('⏳ 未到' if got is None else '❌ FAIL'), got, vs))
+    """⚠ s143 修：闸门关着时**一律**显示"未到"，不显示 FAIL
+    （原版的 `got is None` 只挡住"列空"的情况 ⇒ 闸关着而列有值时仍打 FAIL ⇒ **误导**）"""
+    if not gate:
+        tag = '⏳ 未到'
+    else:
+        tag = '✅ PASS' if cond else '❌ FAIL'
+    print('  %-34s %s   （V2: %s | t5H3: %s）' % (name, tag, got, vs))
 
 print('  ── 判据（预先写死）──')
 # 前置闸（P26）：V2 的块表列是否已经有值
-gate = (V['nblk'] is not None and V['nvar'] is not None)
-print('  【分辨力闸】V2 的块表列已有值 = %s' % ('是 ✅' if gate else '**否 ⇒ 判"未到"，不判 FAIL**'))
+# ⚠⚠ s143 修（**我第一版写错了，留痕**）：原闸是
+#     gate = (V['nblk'] is not None and V['nvar'] is not None)
+#   —— 它只检查"块表列**有没有值**"，而 `nblk_sig = 1` 在 step 0/100/200… 就会写出
+#   ⇒ **闸门恒开** ⇒ 在 V2 **还没到事件 #23** 时就判 FAIL（**正是 P26 要防的"无分辨力却下结论"**）。
+#   **正确的闸 = "该机制**该不该已经发生**"** —— 即 `fresh` 首触发的门槛 `K = n(T_end) = 23`。
+K_FRESH = 23
+gate = (V['nev'] >= K_FRESH) or (V['nfresh'] >= 1)
+print('  【分辨力闸】V2 的形核事件数 %d >= K=%d（或已出现 fresh）= %s'
+      % (V['nev'], K_FRESH, '是 ✅' if gate else '**否 ⇒ 判"未到"，不判 FAIL**'))
+print('     ★ 闸的口径：**事件数**（该机制该不该已发生），**不是**"块表列有没有值"')
 print()
 tight = V['nf2'] is not None and V['nf2'] > 0
 judge('① 首个 fresh 成功',      V['nfresh'] >= 1, V['nfresh'], A['nfresh'])
