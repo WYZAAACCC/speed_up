@@ -25,7 +25,7 @@ DX = 62.5
 TAGS = ['t5AB_A', 't5AB_B', 't5AB_C', 't5AB_D',
         't5AD_500', 't5AD_700', 't5AD_1000',         # ★ s221/s224：剂量-响应
         't5AM_ell', 't5AM_combo',                    # ★ s230：迁移率各向异性 2×2
-        't5N276',                                    # ★ s239：5 µm 盒 · nv=276(12 变体)
+        't5N276', 't5NR',                                    # ★ s239：5 µm 盒 · nv=276(12 变体)
         't5V2', 't5H3']
 NROUND = int(sys.argv[1]) if len(sys.argv) > 1 else 60
 GAP = int(sys.argv[2]) if len(sys.argv) > 2 else 300
