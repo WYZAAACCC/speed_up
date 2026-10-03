@@ -73,8 +73,23 @@ def build(a, switches):
              #     **会影响长跑的恢复**）。修法：**并入原有的 `+` 链**（见下方）。
              '--eng-cadence', '30', '--nthreads', str(a.nthreads),
              '--plate-L', '1000', '--plate-W', '500', '--plate-T', '510',
-             '--gamma0', '0.25', '--beta-h', '6.477', '--grow-stack',
-             '--nuc-law', 'athermal', '--nuc-init', '6',
+             '--gamma0', '0.25', '--beta-h', '6.477',
+             '--nuc-law', 'athermal',
+             # ★★★★★ s266：**`--no-nucleation` 开关**（B4S 二分实验用）。
+             #   为什么要它：`--nuc-init` 是**引擎内部参数**，启动器原不接受
+             #   ⇒ B4S 直接传 `--nuc-init 0` 会被 argparse 拒（实测报错）。
+             #   语义：`--no-nucleation` ⇒ 去掉 `--grow-stack` 并把 `--nuc-init` 设为 **0**
+             #   ⇒ **只有 t=0 的种子（场 1）**，其余场全空 ⇒ 等价"单根"。
+             #   ⚠ **默认档（不传）⇒ 与归档逐字相同**（见下方 `([...] if ... else [...])`）。
+             # ★★★★★ s266 修（**实测教训**）：**保留 `--grow-stack`**，只把 `--nuc-init` 设 0。
+             #   第一版连 `--grow-stack` 一起去掉 ⇒ `grow=False` ⇒ 引擎走
+             #   **t=0 多片播种**（`_bk_exp.py:1636`）⇒ `nvar 1 · m 23` 播 23 片 × 0.51 µm
+             #   = 11.7 µm > 盒 4 µm ⇒ `ValueError: margin -2.376e-06`（中心出盒）。
+             #   ⚠ `grow` 还决定"t=0 播 1 片还是 M 片"（`_bk_exp.py:1707` 逐字）
+             #     ⇒ **禁形核只能靠 `--nuc-init 0`**，不能靠去掉 `--grow-stack`。
+             ] + (['--grow-stack', '--nuc-init', '0']
+                  if bool(getattr(a, 'no_nucleation', False))
+                  else ['--grow-stack', '--nuc-init', '6']) + [
              '--nuc-block-target', str(a.B), '--nuc-shape', 'ellipsoid',
              '--nuc-supercrit', '1', '--nuc-sites-refill', '1',
              '--qs-clock', '1', '--qs-max-relax', '100',
@@ -83,7 +98,14 @@ def build(a, switches):
              '--cool-rate', '2.3524e6',
              '--facet-proj', '0', '--facet-excl', '0',
              '--reinit-dt', '1e-4', '--reinit-band', '6.0',
-             '--nuc-overlap-nm', repr(float(a.overlap_nm))] +
+             '--nuc-overlap-nm', repr(float(a.overlap_nm))] + \
+            # ★★★★★ s267：**`--diag-terms` 透传**（R208 三项分离诊断，**默认不传**）。
+            #   为什么要它：判"孤立种子为何溶解"必须**直接测**速度律三项
+            #     `|df_k−df_l|`（化学）· `|ed_k−ed_l|`（弹性）· `|stk·κ|`（曲率）,
+            #   且引擎把**含母相的 F1 界面单列**（正是孤立种子的界面）。
+            #   ⚠ 纯记账：只读、只统计，**不参与任何分支/数值**
+            #     ⇒ `--diag-terms` 关时（**默认**）逐位不变 ✓
+            (['--diag-terms'] if bool(getattr(a, 'diag_terms', False)) else []) + \
             # ★★★★★ R581-T5R-s122：两个透传（**默认档不传** ⇒ 归档/长跑逐字不变）
             # ★★★★★ R581-T5R-s213：两个物理开关（**默认档不传** ⇒ 归档/在跑的臂逐字不变）
             (['--eng-elong', repr(float(a.eng_elong))]
@@ -190,6 +212,14 @@ def main():
                     help='惯习面内 45 度方向的迁移率凹陷强度（c=4 时 h(a)/h(w)=9.73）')
     ap.add_argument('--eng-elong', type=float, default=0.0,
                     help='核拉长率（0=引擎回退 plate_L/plate_W；3.75=代码写明的物理值）')
+    ap.add_argument('--no-nucleation', action='store_true',
+                    help='★ s266：禁止引擎形核（去掉 --grow-stack 且 --nuc-init 0）'
+                         '⇒ 只留 t=0 的种子；默认 False ⇒ 归档逐字不变')
+    ap.add_argument('--diag-terms', action='store_true',
+                    help='★ s267：透传 `--diag-terms`（R208 三项分离诊断）；'
+                         '默认 False ⇒ 归档逐字不变')
+
+
     ap.add_argument('--facet-proj', type=int, default=0,
                     help='棱面投影（0=引擎默认，从未跑过；1=打开）')
     ap.add_argument('--nuc-fresh-every', type=int, default=0,

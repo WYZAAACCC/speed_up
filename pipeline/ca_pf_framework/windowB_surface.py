@@ -4422,7 +4422,18 @@ class LevelSetMulti(object):
                         # ★ 退化可见性：`ed` 逐位相同（同变体复制）时的**占比**，
                         #   避免"中位恰好 0"被误读成"弹性项不存在"（`§135.7`）。
                         frac_ed0=float((a == 0.0).mean()),
-                        frac_sk0=float((b == 0.0).mean()))
+                        frac_sk0=float((b == 0.0).mean()),
+                        # ★★★★★ s268：**带符号**的 `Δed`（纯记账）。
+                        #   为什么要它：本轮查"孤立种子为何溶解/碎裂"时，
+                        #   `|Δed|` 中位 = 2.7e8（比 `γκ` 大 130 倍）⇒ 弹性项是主导项，
+                        #   但**只报绝对值就无法判它把界面推向哪边**。
+                        #   `Δed < 0` ⇒ 该胞的 winner 被弹性项**惩罚** ⇒ 界面**回退**。
+                        #   ⚠ 只在 `diag_terms_on` 块内、只进返回 dict：
+                        #     `--diag-terms` 关时（默认）逐位不变。
+                        med_ed_signed=float(np.median(_edt[mask])),
+                        q10_ed_signed=float(np.percentile(_edt[mask], 10)),
+                        q90_ed_signed=float(np.percentile(_edt[mask], 90)),
+                        frac_ed_neg=float((_edt[mask] < 0).mean()))
 
                 self.diag_terms = dict(
                     step=int(getattr(self, 'step', -1)), vmap_split=_vsplit_ok,
