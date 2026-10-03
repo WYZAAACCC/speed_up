@@ -4675,7 +4675,17 @@ class LevelSetMulti(object):
             #         `g(θ) = AB/√(B²cos²θ + A²sin²θ)`，`A=1`、`B=1/mob_ratio`。
             #   ⚠ 默认 `mob_iform='exp2'`（现行为）⇒ **本分支不进入，逐位不变**。
             _wt2 = getattr(self, 'wtab', None)
-            _nh2 = (np.asarray(sorted(npref.values())[0], float).ravel()
+            # ★★★★★ R581-T5R-s231（**我修的框架 BUG**，实测 traceback 见 _t5_amtrace.sh）：
+            #   原代码是 `sorted(npref.values())[0]` —— 而 `npref` 的**值是三维法向数组**，
+            #   `sorted()` 用 `<` 逐对比较 ⇒ 长度>1 的数组返回**布尔数组** ⇒
+            #   `ValueError: truth value ... is ambiguous` ⇒ **本分支从来没跑起来过**
+            #   （实测：开 `--mob-iform ellipse` 的两臂都在 step 0 以 exit=1 退出）。
+            #   修法（**保持作者意图**）：下一行 `_wv2 = _wt2[1]` 说明意图是"取某一个变体的轴"
+            #   ⇒ 改为**按键**排序取第一个键（不再对数组做比较）。
+            #   ⚠ 安全性：本段被 `mob_iform == 'ellipse'` 闸住（默认 'exp2'）
+            #     ⇒ **默认路径不进入 ⇒ 对所有已跑/在跑的臂逐位不变**。
+            _npk = (sorted(npref.keys())[0] if isinstance(npref, dict) else None)
+            _nh2 = (np.asarray(npref[_npk], float).ravel()
                     if isinstance(npref, dict) else np.asarray(npref, float).ravel())
             _wv2 = np.asarray(_wt2[1], float).ravel()
             _av2 = np.cross(_wv2, _nh2)
