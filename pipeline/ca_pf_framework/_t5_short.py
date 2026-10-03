@@ -85,6 +85,11 @@ def build(a, switches):
              '--reinit-dt', '1e-4', '--reinit-band', '6.0',
              '--nuc-overlap-nm', repr(float(a.overlap_nm))] +
             # ★★★★★ R581-T5R-s122：两个透传（**默认档不传** ⇒ 归档/长跑逐字不变）
+            # ★★★★★ R581-T5R-s213：两个物理开关（**默认档不传** ⇒ 归档/在跑的臂逐字不变）
+            (['--eng-elong', repr(float(a.eng_elong))]
+             if float(getattr(a, 'eng_elong', 0.0) or 0.0) > 0 else []) +
+            (['--facet-proj', str(int(a.facet_proj))]
+             if int(getattr(a, 'facet_proj', 0) or 0) != 0 else []) +
             (['--var-rule', str(getattr(a, 'var_rule', 'ed'))]
              if str(getattr(a, 'var_rule', 'ed')) != 'ed' else []) +
             (['--nuc-fresh-every', str(a.nuc_fresh_every)]
@@ -158,6 +163,15 @@ def main():
     #   `0`（**默认**）⇒ **不传** ⇒ 引擎自动取 `K = n(T_end) = 23` ⇒ 归档路径逐字不变；
     #   `>0` ⇒ 显式传给引擎 ⇒ **诊断用**（让短臂更快尝试 `fresh`，拿被拒原因）。
     #   ⚠ 小臂的 `K` 与长跑不同 ⇒ 只能回答"为什么被拒"，不能回答"长跑里会不会成功"。
+    # ★★★★★ R581-T5R-s213：**两个「物理开关」的透传**（§212 查明它们影响长宽比）
+    #   `--eng-elong`：核的拉长率。**代码自己写明物理值 = 3.75**（驱动层 L/W=2400/640）；
+    #     默认 0 ⇒ 走 `use_engine` 回退 = plate_L/plate_W = 2.0。
+    #   `--facet-proj`：棱面投影。**引擎默认 0 ⇒ `facet_project()` 一次都没跑过** ⇒
+    #     界面不会自发形成平整宽面 ⇒ 形状偏圆（**这是本 A/B 要测的**）。
+    ap.add_argument('--eng-elong', type=float, default=0.0,
+                    help='核拉长率（0=引擎回退 plate_L/plate_W；3.75=代码写明的物理值）')
+    ap.add_argument('--facet-proj', type=int, default=0,
+                    help='棱面投影（0=引擎默认，从未跑过；1=打开）')
     ap.add_argument('--nuc-fresh-every', type=int, default=0,
                     help='fresh 通道周期（0=引擎自动取 K=n(T_end)；>0=诊断用）')
     ap.add_argument('--B', type=int, default=5)
