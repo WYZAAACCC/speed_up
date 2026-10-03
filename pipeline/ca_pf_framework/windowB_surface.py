@@ -2563,6 +2563,35 @@ class LevelSetMulti(object):
                             if not bool(np.isin(_okr, (0, k)).all()):
                                 _dbg['cov'] += 1
                                 continue
+                            # ★★★★★★ 2026-10-04（**超临界判据扩展到 `attach` 通道**）：
+                            #   承 `stack` 分支的同一处补丁（见该处长注释）。根因：
+                            #   正确判据 `ΔG_v(T) + ed_face > 2γ/t`（`PHYSICS_FIRST_SPEC §6.1`）
+                            #   已实现（`_supercrit_probe`，试放+精确回滚）、已开启
+                            #   （`_t5_short.py:79` 传 `--nuc-supercrit 1`），
+                            #   但**唯一调用点在 `fresh` 分支内** ⇒ 事件分布
+                            #   attach 16 / stack 9 / fresh 2 ⇒ **25/27 绕过判据**。
+                            #   **实测（`t5SCV`）**：step 101/201 的事件全是 `attach`，
+                            #   且 `Vt` 在事件后**下降**（1.4548 → 1.4197 → 1.3936 µm³）
+                            #   ⇒ **新核出生即溶解** ✓ 与本根因吻合。
+                            #   ⚠ 完全由 `c.get('supercrit', False)` 门控（与 `fresh`/`stack`
+                            #     **同一个开关**）⇒ `--nuc-supercrit 0` 时一行都不执行 ⇒ 逐位不变 ✓
+                            #   ⚠ **厚度传 `_t_use`**（不是 `t`）—— 紧随其后的 `seed_plate`
+                            #     用的就是 `_t_use`（含末片减薄 `t_last_reduce`）
+                            #     ⇒ 传 `t` 会与真实落位不一致。
+                            #   ⚠ `_supercrit_probe` 自己**真放 + 精确回滚**（净效果 = 不改任何场）;
+                            #     拒绝时**什么都不用撤销**（其 docstring 逐字）。
+                            if c.get('supercrit', False):
+                                _ok_sc, _med_sc, _fc_sc, _n_sc = self._supercrit_probe(
+                                    k_new, cc, nrm, R, _t_use, cover, df, c['gamma'],
+                                    shape=c.get('nuc_shape', 'disc'))
+                                _dbg['sc_try_att'] = _dbg.get('sc_try_att', 0) + 1
+                                _dbg['sc_att_last_df'] = float(df)
+                                _dbg['sc_att_last_ed'] = float(_med_sc)
+                                _dbg['sc_att_last_fcrit'] = float(_fc_sc)
+                                if not _ok_sc:
+                                    _dbg['supercrit_att'] = _dbg.get('supercrit_att', 0) + 1
+                                    continue          # 站不住 ⇒ **试下一个候选落位**
+                                _dbg['sc_att_pass'] = _dbg.get('sc_att_pass', 0) + 1
                             try:
                                 self.seed_plate(k_new, cc, nrm, R, _t_use,
                                                 shape=c.get('nuc_shape', 'disc'),
@@ -2625,6 +2654,32 @@ class LevelSetMulti(object):
                             if not bool((reg[cover] == 0).all()):
                                 _dbg['cov'] += 1
                                 continue
+                            # ★★★★★★ 2026-10-04（**超临界判据扩展到 `stack` 通道**）：
+                            #   根因：正确判据 `ΔG_v(T) + ed_face > 2γ/t`（`PHYSICS_FIRST_SPEC §6.1`）
+                            #   **已实现**（`_supercrit_probe`，试放+精确回滚）、**已开启**
+                            #   （`_t5_short.py:79` 传 `--nuc-supercrit 1`），
+                            #   但**唯一调用点在 `fresh` 分支内**（`:2146`）
+                            #   ⇒ 事件分布 attach 16 / stack 9 / fresh 2 ⇒ **25/27 绕过判据**
+                            #   ⇒ 核被放在**净驱动力为负**处 ⇒ **出生即溶解**
+                            #     （实测孤立种子 −87%；F1 界面 `Δed` = −2.955e8，`<0` 占 100%）;
+                            #   而代码自己实测过：放核**前** `ed` = +1.9e8、放核**后** = −2.5e8
+                            #   ⇒ **符号相反** ⇒ 只有"试放后测"才有效 ⇒ **本处必须用 `_supercrit_probe`**。
+                            #   ⚠ 完全由 `c.get('supercrit', False)` 门控（与 `fresh` 同开关）
+                            #     ⇒ `--nuc-supercrit 0` 时**一行都不执行** ⇒ 逐位不变 ✓
+                            #   ⚠ `_supercrit_probe` 自己**真放 + 精确回滚**（净效果 = 不改任何场）;
+                            #     拒绝时**什么都不用撤销**（其 docstring 逐字）。
+                            if c.get('supercrit', False):
+                                _ok_sc, _med_sc, _fc_sc, _n_sc = self._supercrit_probe(
+                                    k_new, cc, nrm, R, t, cover, df, c['gamma'],
+                                    shape=c.get('nuc_shape', 'disc'))
+                                _dbg['sc_try_stack'] = _dbg.get('sc_try_stack', 0) + 1
+                                _dbg['sc_stack_last_df'] = float(df)
+                                _dbg['sc_stack_last_ed'] = float(_med_sc)
+                                _dbg['sc_stack_last_fcrit'] = float(_fc_sc)
+                                if not _ok_sc:
+                                    _dbg['supercrit_stack'] = _dbg.get('supercrit_stack', 0) + 1
+                                    continue          # 站不住 ⇒ **试下一个落位**
+                                _dbg['sc_stack_pass'] = _dbg.get('sc_stack_pass', 0) + 1
                             try:
                                 # ★★★★★ 2026-10-04（**修 stack 不建新场**）：
                                 #   原来这里三处都用 **源场 `k`** ⇒ `nfsv` 算出的
