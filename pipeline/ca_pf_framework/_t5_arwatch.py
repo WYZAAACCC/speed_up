@@ -62,9 +62,37 @@ def series(tag):
     return uniq
 
 
+def restore_peak(tag):
+    """★ s247 修：**从历史日志恢复峰值**（否则重启后峰值被当成当前值 ⇒ **E2 永不触发**）。
+
+    根因（我上一轮实测暴露）：监视器每次重启都从 `peak = {}` 开始，
+    于是它把**当前**值当成峰值 ⇒ 之后**再跌也不报 E2**（实测：重启后 `峰值=3.57 跌=0%`，
+    而真实历史峰值是 **6.76**）。
+    ⇒ 本函数扫描 `OUT` 日志里**本臂出现过的最大长宽比**，作为初始峰值。
+    ⚠ 只认含 `♥ [tag] ... 长宽比=X` 或 `★E?  [tag] ... 现 X` 的行；**不解析报警行里的"% 跌"**。
+    """
+    best, bs = 0.0, 0
+    rx = re.compile(r'\[%s\][^\n]*?长宽比[= ]\*{0,2}([\d.]+)' % re.escape(tag))
+    try:
+        for line in open(OUT, errors='ignore'):
+            for m in rx.finditer(line):
+                v = float(m.group(1))
+                if v > best:
+                    best = v
+    except FileNotFoundError:
+        pass
+    return best, bs
+
+
 say('════ 长宽比衰减监视器启动：臂=%s，每 %d s ════' % (TAGS, GAP))
 say('  判据（预先写死）：E1 新高(>+5%%) · **E2 自历史最高跌 >30%%** · E3 跌破 5 · E4 每 30 min 心跳')
+say('  ★ s247：峰值**从历史日志恢复**（修"重启后峰值被重置 ⇒ E2 永不触发"的缺陷）')
 peak = {}
+for _t in TAGS:
+    _p, _s = restore_peak(_t)
+    if _p > 0:
+        peak[_t] = (_p, _s)
+        say('     [%s] 恢复历史峰值 = **%.2f**（日志中最大值）' % (_t, _p))
 last_beat = 0.0
 for _ in range(ROUNDS):
     for tag in TAGS:
@@ -86,8 +114,15 @@ for _ in range(ROUNDS):
                     '　**跌 %.0f%%**' % (tag, pk[0], pk[1], ar, st, drop * 100))
                 peak[tag + '_rep'] = drop
             elif ar < PHYS_LO and pk[0] >= PHYS_LO:
-                say('★E3⚠ [%s] **跌破真实区间下沿**：长宽比 **%.2f** < %.1f（step %s，峰值 %.2f）'
-                    % (tag, ar, PHYS_LO, st, pk[0]))
+                # ★ s246 修：E3 原**无守卫** ⇒ 只要仍在 <5 就每轮重复报（实测每 2 分钟一条相同行，
+                #   会刷屏并**掩盖真正的新事件**）。⇒ 加"已报过"守卫：同一臂**只报一次**，
+                #   且若**回升到 5 以上**则重置（以便下次再跌破时能再报）。
+                if not peak.get(tag + '_e3'):
+                    say('★E3⚠ [%s] **跌破真实区间下沿**：长宽比 **%.2f** < %.1f（step %s，峰值 %.2f）'
+                        % (tag, ar, PHYS_LO, st, pk[0]))
+                    peak[tag + '_e3'] = True
+            if ar >= PHYS_LO:
+                peak[tag + '_e3'] = False      # 回升 ⇒ 重置守卫
     if time.time() - last_beat > 1800:
         for tag in TAGS:
             ss = series(tag)
