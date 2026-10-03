@@ -22,7 +22,9 @@ import numpy as np
 DX = 62.5
 # ★ s215：把**还在跑的长臂**也纳入监控（用户目标 = 持续监控板条长宽比）
 #   `t5V2`（N=160/10 µm，仍在跑）是当前唯一的**长臂**；`t5H3` 已跑完，留作**参照**。
-TAGS = ['t5AB_A', 't5AB_B', 't5AB_C', 't5AB_D', 't5V2', 't5H3']
+TAGS = ['t5AB_A', 't5AB_B', 't5AB_C', 't5AB_D',
+        't5AD_500', 't5AD_700',                      # ★ s221：剂量-响应的 2 个新臂
+        't5V2', 't5H3']
 NROUND = int(sys.argv[1]) if len(sys.argv) > 1 else 60
 GAP = int(sys.argv[2]) if len(sys.argv) > 2 else 300
 LOG = '_w2_t5_ar_monitor.log'
