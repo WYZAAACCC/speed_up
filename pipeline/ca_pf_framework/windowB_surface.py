@@ -2626,12 +2626,22 @@ class LevelSetMulti(object):
                                 _dbg['cov'] += 1
                                 continue
                             try:
-                                self.seed_plate(k, cc, nrm, R, t,
+                                # ★★★★★ 2026-10-04（**修 stack 不建新场**）：
+                                #   原来这里三处都用 **源场 `k`** ⇒ `nfsv` 算出的
+                                #   新场 `k_new`（2320–2332）**被丢弃** ⇒
+                                #   ① 不产生新板条（实测 15 次 stack ⇒ 0 根新板条，
+                                #      总账 计划 66 根 → 实际 19 根，**少 15 根正好 = stack 次数**）；
+                                #   ② 同一场被塞第二个种子 ⇒ **碎片化**
+                                #      （实测：新场首现即 2–5 块，且 34 核只生成 19 个场）。
+                                #   对照 `attach` 分支（2567–2572）三处**全部**用 `k_new` ✓。
+                                #   ⚠ `k_new` 初值 = `k`（2320）⇒ **`nfsv` 关时逐位不变**；
+                                #     且 `nfsv` 要求同变体 ⇒ `_along_of` 同向 ⇒ 无额外行为变化。
+                                self.seed_plate(k_new, cc, nrm, R, t,
                                                 shape=c.get('nuc_shape', 'disc'),
                                                 elong=c.get('elong', 1.0),
-                                                along=_along_of(k),
+                                                along=_along_of(k_new),
                                                 flat_end=True)
-                                out.append((k, 'stack'))
+                                out.append((k_new, 'stack'))
                                 _dbg['ok'] += 1
                                 done = True
                             except ValueError:
