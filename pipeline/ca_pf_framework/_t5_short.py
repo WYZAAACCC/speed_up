@@ -84,6 +84,11 @@ def build(a, switches):
              '--facet-proj', '0', '--facet-excl', '0',
              '--reinit-dt', '1e-4', '--reinit-band', '6.0',
              '--nuc-overlap-nm', repr(float(a.overlap_nm))] +
+            # ★★★★★ R581-T5R-s122：两个透传（**默认档不传** ⇒ 归档/长跑逐字不变）
+            (['--var-rule', str(getattr(a, 'var_rule', 'ed'))]
+             if str(getattr(a, 'var_rule', 'ed')) != 'ed' else []) +
+            (['--nuc-fresh-every', str(a.nuc_fresh_every)]
+             if int(getattr(a, 'nuc_fresh_every', 0) or 0) > 0 else []) +
             (['--nuc-periodic-seed', '1'] if int(a.periodic_seed) == 1 else []) +
             ['--laths', laths(a.m, a.nvar),
              '--ckpt-every', str(a.ckpt_every), '--ckpt-keep', str(a.ckpt_keep)]
@@ -144,6 +149,11 @@ def main():
     #       而 6b 的判据据此报 FAIL。**是判据先失败、我才发现**（若没跑，会以为"还在待测"）。
     ap.add_argument('--therm-hist', default='linear', choices=('linear', 'lpbf'),
                     help='热史：linear（默认，归档）| lpbf（S14，未过 6a/6b/6c 勿用于结论）')
+    # ★★★★★ R581-T5R-s122：**两个透传**（把"单变体单块"变成"多变体多块"的必要条件）
+    #   `--var-rule`：变体选择（**只对 `fresh` 通道生效**；`ed`=归档默认 ⇒ 不传）
+    #   `--nuc-fresh-every`：`fresh` 通道周期（`0`=引擎自动取 `K=n(T_end)` ⇒ 不传）
+    ap.add_argument('--var-rule', default='ed', choices=('ed', 'random', 'doublet'),
+                    help='变体选择（只对 fresh 生效）：ed=归档默认 | random | doublet')
     # ★★★★★ R581-T5R-s112：**`--nuc-fresh-every`**（`fresh` 通道的调度周期）
     #   `0`（**默认**）⇒ **不传** ⇒ 引擎自动取 `K = n(T_end) = 23` ⇒ 归档路径逐字不变；
     #   `>0` ⇒ 显式传给引擎 ⇒ **诊断用**（让短臂更快尝试 `fresh`，拿被拒原因）。
