@@ -88,6 +88,14 @@ def build(a, switches):
             # ★★★★★ R581-T5R-s213：两个物理开关（**默认档不传** ⇒ 归档/在跑的臂逐字不变）
             (['--eng-elong', repr(float(a.eng_elong))]
              if float(getattr(a, 'eng_elong', 0.0) or 0.0) > 0 else []) +
+            # ★★★★★ s230：迁移率各向异性（**默认档不传** ⇒ 归档/在跑的臂逐字不变）
+            (['--mob-iform', str(a.mob_iform)]
+             if str(getattr(a, 'mob_iform', 'exp2')) != 'exp2' else []) +
+            (['--mob-ratio', repr(float(a.mob_ratio))]
+             if str(getattr(a, 'mob_iform', 'exp2')) != 'exp2' else []) +
+            (['--mob-wulff'] if bool(getattr(a, 'mob_wulff', False)) else []) +
+            (['--mob-dip', repr(float(a.mob_dip))]
+             if float(getattr(a, 'mob_dip', 0.0) or 0.0) > 0 else []) +
             (['--facet-proj', str(int(a.facet_proj))]
              if int(getattr(a, 'facet_proj', 0) or 0) != 0 else []) +
             (['--var-rule', str(getattr(a, 'var_rule', 'ed'))]
@@ -168,6 +176,18 @@ def main():
     #     默认 0 ⇒ 走 `use_engine` 回退 = plate_L/plate_W = 2.0。
     #   `--facet-proj`：棱面投影。**引擎默认 0 ⇒ `facet_project()` 一次都没跑过** ⇒
     #     界面不会自发形成平整宽面 ⇒ 形状偏圆（**这是本 A/B 要测的**）。
+    # ★★★★★ R581-T5R-s230：**迁移率各向异性**（= 生长阶段的伸长机制）的透传
+    #   `--mob-iform ellipse` 是关键那一个：它把面内极曲线取成**椭圆**
+    #   ⇒ 极集本身凸 ⇒ 凸化恒等 ⇒ `h(a)/h(w)` **恰等于** `--mob-ratio`
+    #   （代码实测 ratio=9 给 **8.93**）。默认 `exp2` 走不到那条分支。
+    ap.add_argument('--mob-iform', choices=['exp2', 'ellipse'], default='exp2',
+                    help='面内迁移率角函数：exp2=默认（实测各向异性只 1.24）；'
+                         'ellipse=椭圆（实测 8.93）')
+    ap.add_argument('--mob-ratio', type=float, default=9.0,
+                    help='椭圆面内极曲线长短轴比（= 目标长径比）')
+    ap.add_argument('--mob-wulff', action='store_true', help='Wulff 凸化速度律（刻面机制）')
+    ap.add_argument('--mob-dip', type=float, default=0.0,
+                    help='惯习面内 45 度方向的迁移率凹陷强度（c=4 时 h(a)/h(w)=9.73）')
     ap.add_argument('--eng-elong', type=float, default=0.0,
                     help='核拉长率（0=引擎回退 plate_L/plate_W；3.75=代码写明的物理值）')
     ap.add_argument('--facet-proj', type=int, default=0,
