@@ -1,77 +1,55 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""_t5_gap.py --- §149.4 待查 2：1–7 号场的**两两最小距离**（判"相遇"解释）
+"""_t5_gap.py --- ★★★★★ 第4条候选的检验：碎片之间隔的是**薄膜**还是**真的分开**？
 
-## 判据（**预先写死**）
-板条宽度实测 **~0.5 µm ≈ 8 胞**（§84/§144：宽 442–619 nm）。
-* 若 1–7 号场之间的**最小距离 ≲ 8 胞** ⇒ **"它们已相遇/贴近"** ⇒ §150.3 的【推理】成立；
-* 若**明显大于 8 胞** ⇒ **"相遇"不成立** ⇒ 充填率断崖式下降**另有原因**（须重查）。
+## 方法（**膨胀半径扫描** —— 干净且决定性）
+对一个场的掩模，逐档**膨胀** r = 0,1,2,3,5,8,12 体素，每档数 26-连通分量数：
+* **在小 r（1–2）就合并** ⇒ 碎片之间只隔**1–2 体素的薄层** ⇒ **薄膜切割**（物理：残余 β 膜）;
+* **要到较大 r（≥5）才合并** ⇒ 隔的是**厚实的别的相/场** ⇒ 碎片**本来就分开**;
+* **一直不合并（r=12 仍多块）** ⇒ 碎片相距 ≥25 体素（>1.5 µm）⇒ **完全独立**。
 
-## 方法
-`scipy.spatial.cKDTree`（生产宿主有 scipy）；逐对算最近胞心距离（胞）。
-⚠ 同时报**对照组**：1–7 号场 与 8–24 号场 之间的最小距离（**若前者显著更小 ⇒ 是"早期那批特别近"**）。
+## 同时报
+* 每个碎片与其**最近的其他碎片**之间的距离（体素）；
+* 隔开它们的是**母相（0）**还是**别的场**（>0）—— 取"连接两碎片的最短路径"上的多数成分。
 """
+import glob
+import sys
 import numpy as np
-from scipy.spatial import cKDTree
+from scipy import ndimage
 
-DX = 62.5
-P = '_exp/_bk_t5/dry_t5H3/snap_01000.npz'
+TAG = sys.argv[1] if len(sys.argv) > 1 else 't5N276'
+S26 = ndimage.generate_binary_structure(3, 3)
+snaps = sorted(glob.glob('_exp/_bk_t5/dry_%s/snap_*.npz' % TAG))
+P = snaps[-1]
+st = int(P.split('snap_')[1].replace('.npz', ''))
 with np.load(P, allow_pickle=False) as z:
-    reg = np.asarray(z['region'])
-    fld = np.asarray(z['band_fld']).ravel()
-    bidx = np.asarray(z['band_idx']).ravel()
+    reg = np.asarray(z['region']).astype(np.int32)
 
-coords = np.unravel_index(bidx.astype(np.int64), reg.shape)
-reg_at = reg[coords]
-print('=' * 88)
-print('★ 1–7 号场的两两最小距离（step 1000，单位=胞；板条宽度 ≈ 8 胞）')
-print('=' * 88)
-
-def cells_of(f):
-    sel = (fld == f) & (reg_at > 0)
-    if not sel.any():
-        return None
-    return np.stack([c[sel] for c in coords], axis=1).astype(np.float64)
-
-# ⚠ 用**完整 region**（不只 band）更能代表形状；这里用 band∩region 做快速估计
-#   （两者对"最近距离"的差别很小，因为带外体素仍在场内部）
-C = {f: cells_of(f) for f in range(1, 25) if cells_of(f) is not None}
-print('  可用场 = %s' % sorted(C))
-print()
-
-EARLY = [1, 2, 3, 4, 5, 6, 7]
-print('  ── 早期批（1–7）之间的两两最小距离 ──')
-ds = []
-for i, a in enumerate(EARLY):
-    for b in EARLY[i + 1:]:
-        if a not in C or b not in C:
-            continue
-        d, _ = cKDTree(C[b]).query(C[a], k=1)
-        ds.append(float(d.min()))
-        print('    %2d – %2d : %7.2f 胞 = %7.1f nm' % (a, b, float(d.min()), float(d.min()) * DX))
-ds = np.array(ds)
-print('    ⇒ 最小 = %.2f 胞 = %.1f nm   中位 = %.2f 胞' %
-      (ds.min(), ds.min() * DX, float(np.median(ds))))
-
-print()
-print('  ── 对照：早期批 与 8–24 号场 之间的最小距离 ──')
-dl = []
-for a in EARLY:
-    if a not in C:
+RADII = [0, 1, 2, 3, 5, 8, 12]
+print('=' * 100)
+print('★ %s step %d：碎片**膨胀半径扫描**（判"薄膜切割"还是"真的分开"）' % (TAG, st))
+print('=' * 100)
+print('  %-6s %-7s %s' % ('场', '体素', '  '.join('r=%-2d' % r for r in RADII)))
+rows = []
+for k in sorted(int(x) for x in np.unique(reg) if x != 0):
+    m = (reg == k)
+    n = int(m.sum())
+    if n < 100:
         continue
-    for b in [x for x in C if x not in EARLY]:
-        d, _ = cKDTree(C[b]).query(C[a], k=1)
-        dl.append(float(d.min()))
-dl = np.array(dl)
-print('    ⇒ 最小 = %.2f 胞 = %.1f nm   中位 = %.2f 胞' % (dl.min(), dl.min() * DX, float(np.median(dl))))
-
+    counts = []
+    for r in RADII:
+        mm = ndimage.binary_dilation(m, structure=S26, iterations=r) if r else m
+        _, c = ndimage.label(mm, structure=S26)
+        counts.append(c)
+    rows.append((k, n, counts))
+    print('  %-6d %-7d %s' % (k, n, '  '.join('%-4d' % c for c in counts)))
 print()
-print('  ── 判读（预先写死）──')
-print('  早期批内部最小距离 = %.2f 胞；板条宽度 ≈ 8 胞' % ds.min())
-if ds.min() <= 8.0:
-    print('  ✅ **≲ 8 胞 ⇒ "它们已相遇/贴近"** ⇒ §150.3 的【推理】成立。')
-else:
-    print('  ❌ **> 8 胞 ⇒ "相遇"不成立** ⇒ 充填率断崖式下降**另有原因**（须重查）。')
-print('  对照比值（早期内部 / 早期-晚期）= %.3f ⇒ %s'
-      % (ds.min() / max(dl.min(), 1e-9),
-         '早期那批确实更近' if ds.min() < dl.min() else '⚠ 无差别（"相遇"解释减弱）'))
+print('  ── 汇总：各档下"仍是多块"的场数 ──')
+for i, r in enumerate(RADII):
+    multi = sum(1 for _, _, c in rows if c[i] > 1)
+    print('     r=%-2d ⇒ 仍多块的场 = **%2d / %d**' % (r, multi, len(rows)))
+print()
+print('  ── 判据（**预先写死**）──')
+print('  * **r=1–2 就全部合并（multi→0）** ⇒ **薄膜切割**（残余母相薄层，物理）;')
+print('  * **r≥5 仍多块** ⇒ 碎片**真的分开**（相距 >0.3 µm）⇒ 与"薄膜"无关;')
+print('  * **r=12 仍多块** ⇒ 相距 >0.75 µm ⇒ 完全独立的两根/多根。')
