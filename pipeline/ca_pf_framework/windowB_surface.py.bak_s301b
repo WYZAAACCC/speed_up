@@ -2961,15 +2961,10 @@ class LevelSetMulti(object):
             for j in range(self.nreg):
                 if j != k:
                     self.phi[j] = np.maximum(self.phi[j], -sdf)
-            # ★ s301b：真实播种后清理——**本场 k 以及本次被 `max` 擦过的每个 j**
-            #   （第一版只清 k ⇒ 实测与守卫档逐位相同，因为 k 在"自己播完"那一刻
-            #    仍是单连通；第二块是**之后**被别的籽晶擦出来的。）
+            # ★ s301：真实播种后清掉 φ<0 的多余连通块（`--nuc-occ-guard 2` 才启用）
             if undo is None and int((getattr(self, '_nuc', None) or {})
                                     .get('occ_guard', 0) or 0) >= 2:
                 self.keep_largest_neg(k)
-                for j in range(self.nreg):
-                    if j != k and (-sdf > self.phi[j]).any():
-                        self.keep_largest_neg(j)
             return
         # ★★★★★★ s299（**播种调试记账**，`SEED_DBG=1` 才生效；默认一行不进 ⇒ 逐位不变）
         #   目的：分开「同一个场被播多次(甲)」与「探针回滚留残迹(乙)」——
@@ -3014,13 +3009,10 @@ class LevelSetMulti(object):
         for j in range(self.nreg):
             if j != k:
                 self.phi[j] = np.maximum(self.phi[j], -sdf)
-        # ★ s301b：真实播种后清理——**本场 k 以及本次被 `max` 擦过的每个 j**（同 along 分支）
+        # ★ s301：真实播种后清掉 φ<0 的多余连通块（`--nuc-occ-guard 2` 才启用）
         if undo is None and int((getattr(self, '_nuc', None) or {})
                                 .get('occ_guard', 0) or 0) >= 2:
             self.keep_largest_neg(k)
-            for j in range(self.nreg):
-                if j != k and (-sdf > self.phi[j]).any():
-                    self.keep_largest_neg(j)
 
     def init_parent(self):
         """★ 多区域 VDF 的标准初始化：母相 = 变体并集的补集 ⇒ φ_0 = −min_{k≥1} φ_k。

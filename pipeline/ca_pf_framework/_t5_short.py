@@ -257,7 +257,7 @@ def main():
 
     ap.add_argument('--facet-proj', type=int, default=0,
                     help='棱面投影（0=引擎默认，从未跑过；1=打开）')
-    ap.add_argument('--nuc-occ-guard', type=int, default=0, choices=(0, 1),
+    ap.add_argument('--nuc-occ-guard', type=int, default=0, choices=(0, 1, 2),
                     help='s300: \u64ad\u79cd\u5360\u7528\u5b88\u536b')
     ap.add_argument('--nuc-block-parallel', type=int, default=0, choices=(0, 1),
                     help='s293: \u5757\u6570 = B\uff08\u524d B \u4e2a\u4e8b\u4ef6\u5404\u5efa\u65b0\u5757\uff09')

@@ -3640,7 +3640,7 @@ def main():
     #     需要在面内做分割，**本轮不做**" ⇒ **框架里本来没有"块的数目"这条律**。
     #     本开关**不发明新律**，它把"块数 vs 块内板条数"的**分配**暴露成显式输入
     #     ⇒ **本开关下的"块数"是规定的、不是涌现的**，不得当成物理结论。
-    ap.add_argument('--nuc-occ-guard', type=int, default=0, choices=(0, 1),
+    ap.add_argument('--nuc-occ-guard', type=int, default=0, choices=(0, 1, 2),
                     help='s300: \u64ad\u79cd\u5360\u7528\u5b88\u536b\uff08\u4e00\u4e2a\u573a\u53ea\u64ad\u4e00\u5757\uff09\uff1b0=\u65e7\u884c\u4e3a')
     ap.add_argument('--nuc-block-parallel', type=int, default=0, choices=(0, 1),
                     help='\u2605 s293\uff1a\u5757\u6570 = B\uff08\u524d B \u4e2a\u4e8b\u4ef6\u5404\u5efa\u65b0\u5757\uff09\u30020=\u65e7\u89c4\u5219\uff08\u9010\u4f4d\u4e0d\u53d8\uff09')
