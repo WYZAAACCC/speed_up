@@ -2886,34 +2886,12 @@ class LevelSetMulti(object):
             e_per = np.linalg.norm(u - e_par[..., None] * al, axis=-1)
             sdf = np.maximum(np.maximum(np.abs(d) - t / 2, np.abs(e_par) - elong * R),
                              e_per - R)
-            if os.environ.get('SEED_DBG') == '1':
-                try:
-                    _pb = int((self.phi[k] < 0).sum())
-                    _cc = np.asarray(center, float) * 1e9
-                    print('[SEEDDBG] k=%d undo=%d before=%d shape=along center=(%.1f,%.1f,%.1f)nm'
-                          % (k, 0 if undo is None else 1, _pb, _cc[0], _cc[1], _cc[2]),
-                          flush=True)
-                except Exception:
-                    pass
             self._seed_undo_note(k, sdf, undo)
             self.phi[k] = np.minimum(self.phi[k], sdf)
             for j in range(self.nreg):
                 if j != k:
                     self.phi[j] = np.maximum(self.phi[j], -sdf)
             return
-        # ★★★★★★ s299（**播种调试记账**，`SEED_DBG=1` 才生效；默认一行不进 ⇒ 逐位不变）
-        #   目的：分开「同一个场被播多次(甲)」与「探针回滚留残迹(乙)」——
-        #   密快照诊断已证「一场多块」在 **step 1 播种那一步**就产生且之后完全冻结。
-        if os.environ.get('SEED_DBG') == '1':
-            try:
-                _pb = int((self.phi[k] < 0).sum())
-                _lbl = 'disc'
-            except Exception:
-                _pb, _lbl = -1, '?'
-            _cc = np.asarray(center, float) * 1e9
-            print('[SEEDDBG] k=%d undo=%d before=%d shape=%s center=(%.1f,%.1f,%.1f)nm'
-                  % (k, 0 if undo is None else 1, _pb, _lbl, _cc[0], _cc[1], _cc[2]),
-                  flush=True)
         sdf = np.maximum(np.abs(d) - t / 2, rperp - R)         # 椭/圆盘 SDF（近似）
         # ★★★★★ R508（2026-10-01）：**核的形状** —— 尖边圆柱 vs 光滑椭球。
         #   ## 为什么这是一个"必须做开关"的东西（`R507_fullclosure`）
