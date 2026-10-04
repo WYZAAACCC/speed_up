@@ -2573,7 +2573,27 @@ def run(a):
             #     它还有一个**几何导出的上界** `B_max = L_box²/A_f`（每块占满一个足迹）。
             #   ⚠ `--nuc-block-target 0`（**默认**）⇒ 完全走原路径 ⇒ 归档逐位不变。
             _Bt = int(getattr(a, 'nuc_block_target', 0) or 0)
-            _n_blk = int(np.floor(CL.alpha_km_n_lath(_Tnow, _alpha) + 1e-12))
+            # ★★★★★★ s284（**用户总目标第 4 项：修 burst 至物理正确**）
+            #   原文一行：`_n_blk = int(np.floor(CL.alpha_km_n_lath(_Tnow, _alpha) + 1e-12))`，
+            #   而 `alpha_km_n_lath(T) = floor(α·(M_s − T))` **线性于 ΔT**
+            #   ⇒ `α·ΔT_step = 1.0` ⇒ `_n_blk` **每档 +1** ⇒ `_tgt = B·_n_blk` **每档 +B**
+            #   ⇒ **恒定速率 ⇒ 没有 burst**（本文件 `:1781-1782` 自己写明
+            #     「**burst 的定量率律仍然没有**」）。
+            #   ## 物理正确的形式（模块里**已有**函数，只是没被用于形核调度）
+            #     `windowB_km.koistinen(T, M_s, α) = 1 − exp(−α(M_s − T))`（KM **分数律**）
+            #     ⇒ `N(T) = N_end · f(T)`，`N_end = alpha_km_n_lath(T_end, α)` = **23** 每块
+            #     ⇒ 每档增量 `ΔN_k = N_end·Δf(T_k)`：
+            #         首档 `αΔT=1` ⇒ `f=0.632` ⇒ **63.2%**（**Ms 处爆发**）
+            #         次档 ⇒ **23.2%** ｜ 三档 ⇒ **8.5%** ｜ 四档 ⇒ **3.1%** …（**指数衰减**）✓
+            #   ⚠ 完全由 `--burst-km` 门控（默认 **0**）⇒ 默认档**逐字走原式**
+            #     ⇒ 归档与在跑的臂**逐位不变** ✓
+            if bool(int(getattr(a, 'burst_km', 0) or 0)):
+                _N_end = float(CL.alpha_km_n_lath(float(getattr(a, 'T_end', 298.0) or 298.0),
+                                                  _alpha))
+                _f_km = 1.0 - np.exp(-_alpha * max(M_S_TI64 - _Tnow, 0.0))
+                _n_blk = int(round(_N_end * _f_km))
+            else:
+                _n_blk = int(np.floor(CL.alpha_km_n_lath(_Tnow, _alpha) + 1e-12))
             if _Bt > 0:
                 _tgt = min(_Bt * _n_blk, nv)
             else:
@@ -3487,6 +3507,11 @@ def main():
     ap.add_argument('--nuc-supercrit', type=int, default=0, choices=(0, 1),
                     help='超临界判据 ΔG_v+ed_face>2γ/t，用**试放**实现'
                          '（0=关，归档行为；1=开，**只作用于 fresh 通道**）')
+    ap.add_argument('--burst-km', type=int, default=0, choices=(0, 1),
+                    help='★ s284：形核调度用 **KM 分数律** `1-exp(-a(Ms-T))`'
+                         '⇒ Ms 处爆发 + 随后饱和（物理正确的 burst）；'
+                         '默认 0 ⇒ 逐字走线性原式，归档逐位不变')
+
     # ★ R508：核的形状。默认 disc = 归档行为；ellipsoid = 光滑椭球。
     #   依据见 `nuc_cfg` 调用处的长注释与 `R507_fullclosure`。
     ap.add_argument('--nuc-shape', default='disc', choices=('disc', 'ellipsoid'),
