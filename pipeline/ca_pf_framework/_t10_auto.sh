@@ -47,7 +47,7 @@ while :; do
     SS=$(free -m | awk '/^Swap:/{print $3}')
     ST=$(grep -aE '^ *\[ *[0-9]+\] Vt=' _w2_t5_short_$TAG.log 2>/dev/null | tail -1 | grep -oE '\[ *[0-9]+\]' | tr -dc '0-9')
     NE=$(grep -ac 'athermal 形核' _w2_t5_short_$TAG.log 2>/dev/null)
-    echo "[${el}s] 步=${ST:-0} 核=${NE} RSS=$(( $(awk '/VmRSS/{print $2}' /proc/$P/status)/1024 )) VmHWM=$(( ${HW:-0}/1024 )) VmSwap=${SW:-0} 全机swap=${SS} MB" >> "$LOG"
+    echo "[${el}s] 步=${ST:-0} 核=${NE} RSS=$(( $(awk '/VmRSS/{print $2}' /proc/$P/status)/1024 )) VmHWM=${HW:-0} VmSwap=${SW:-0} 全机swap=${SS} MB" >> "$LOG"
   fi
   # ③ 快照 ≥100 就出七项（只出一次）
   MX=$(ls _exp/_bk_t5/dry_$TAG/snap_*.npz 2>/dev/null | sed 's/.*snap_0*//;s/\.npz//' | sort -n | tail -1)
