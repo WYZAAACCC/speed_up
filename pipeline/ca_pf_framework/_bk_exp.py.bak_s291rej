@@ -2604,32 +2604,7 @@ def run(a):
                 _tgt = min(_Bt * _n_blk, nv)
             else:
                 _tgt = min(_n_blk, nv)
-            # ★★★★★★ s291（**用户总目标第 4 项：修 burst 至物理正确 —— 第二处缺陷**）
-            #   ## 缺陷（**记账错，且是原代码就带的**）
-            #     `:2150` 自己写明 `n_ath_tgt` 是「**当前的累计根数**」
-            #     —— 即**盒子里真实存在的板条数**。而下面 `n_ath_tgt += 1`
-            #     在**被拒**（`not _ev`，引擎放不下）时**也加 1**
-            #     ⇒ 把**不存在的板条**记进累计数 ⇒ 目标被**凭空吃掉**。
-            #   ## 为什么在 burst 档下才致命（**实测**）
-            #     线性旧律 `floor(αΔT)` **每档只 +1** ⇒ 被拒很稀疏 ⇒ 旧缺陷几乎不显形。
-            #     修好的 KM 分数律**首档就要 45 根**（`3·round(23·0.6327)`）
-            #     ⇒ 实测（`t5BKMo`/`t5FIX` 两臂**逐位相同**）：
-            #         **尝试 45 次 → 成功 20 根、被拒 25 次**
-            #       ⇒ 这 25 根**此后永不重试**；打印的「累计 21/23」还多算 1 根。
-            #   ## 修法（**只改记账，不改物理律**）
-            #     · 被拒 ⇒ **不消耗目标**，只累计 `_rej`
-            #     ⇒ `n_ath_tgt` 回到「真实存在的根数」的原定义 ✓
-            #     ⇒ 本档放不下的核，**下一档（更低温、目标更大）继续重试** ✓
-            #     ⇒ 物理含义：burst 的需求由 KM 律给出，**投放速率受几何容量限制**，
-            #       一旦几何腾出空间就补上（不是"作废"）。
-            #   ## 防死循环（**代价有界**）
-            #     每步被拒上限 `_rej_cap = 8`（局部变量，随本步重置）
-            #   ⚠ 惰性：`--burst-km 0`（默认）⇒ `_rej_cap = 10**9` ⇒ 条件恒真，
-            #     且下面的 `+= 1` 无条件执行 ⇒ **逐位不变** ✓
-            _burst_on = bool(int(getattr(a, 'burst_km', 0) or 0))
-            _rej = 0
-            _rej_cap = 8 if _burst_on else 10 ** 9
-            while n_ath_tgt < _tgt and n_ath_tgt < nv and _rej < _rej_cap:
+            while n_ath_tgt < _tgt and n_ath_tgt < nv:
                 _reg_e = g.region()
                 _fnow = 1.0 - float((_reg_e == 0).sum()) / g.N ** 3
                 # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` §189，**缺陷③**）：
@@ -2703,11 +2678,7 @@ def run(a):
                         P('   ⚠ athermal 事件 #%d：`fresh` 被拒 ⇒ **退回 `stack`**'
                           '（本算例累计 %d 次）'
                           % (n_ath_tgt + 1, n_fresh_fallback))
-                # ★ s291：**被拒的事件不得消耗目标**（只改记账）
-                if _ev or not _burst_on:
-                    n_ath_tgt += 1
-                else:
-                    _rej += 1
+                n_ath_tgt += 1
                 if _ev:
                     n_eng_ev += len(_ev)
                     n_ath_ev += 1
@@ -2757,9 +2728,8 @@ def run(a):
                          float(g.df[1]), _ev[0][0], n_ath_tgt, _n_law,
                          _ev[0][1], n_mode.get('fresh', 0), n_mode.get('stack', 0)))
                 else:
-                    P('   ⚠ athermal 形核**被引擎拒**（无可用空场/落位失败）@ step %d'
-                      '：目标 %d 根、**实有 %d 根**，本步第 %d/%d 次被拒'
-                      % (it, _tgt, n_ath_tgt, _rej, _rej_cap))
+                    P('   ⚠ athermal 事件 #%d 被引擎拒（无可用空场/落位失败）@ step %d'
+                      % (n_ath_tgt, it))
 
         # ══════════════════════════════════════════════════════════════════════
         # ★★★★★ R581-ckpt（goal「原生精度断点续跑」）：**可续跑检查点**

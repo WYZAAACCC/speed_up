@@ -6,16 +6,20 @@ LIM=${1:-1800}
 M=_w2_t5_n276_milestones.log      # ③④⑤ 跃迁
 D=_w2_t5_ar_decay.log             # ② 衰减（E1-E3）
 K=_w2_t5_keeper_all.log           # 守护
+F=_w2_t5_fresh.log                # ★ fresh 通道（④⑤ 的**直接前兆**）
 
 # ★ P48 纪律：计数一律用 awk（`grep -c` 可能返回多行 ⇒ `[ -gt ]` 静默失效）
 c_m() { awk '/★M[0-9]/{n++} END{print n+0}' "$M" 2>/dev/null; }
 c_d() { awk '/★E[123]/{n++} END{print n+0}' "$D" 2>/dev/null; }
+# ★ s250：`fresh` 报警行以 ★★★ 标记（由 `_t5_freshwatch.py` 写）
+c_f() { awk '/★★★/{n++} END{print n+0}' "$F" 2>/dev/null; }
 alive() { ps -eo args --no-headers 2>/dev/null | awk -v q="--tag $1" 'index($0,q){n++} END{print n+0}'; }
 
-B_M=$(c_m); B_D=$(c_d)
-echo "  起等：★M=$B_M  ★E=$B_D   最多 ${LIM} s"
+B_M=$(c_m); B_D=$(c_d); B_F=$(c_f)
+echo "  起等：★M=$B_M  ★E=$B_D  ★fresh=$B_F   最多 ${LIM} s"
 T=0; WHY=""
 while [ "$T" -lt "$LIM" ]; do
+  [ "$(c_f)" -gt "$B_F" ] && { WHY="★ fresh 通道触发（④⑤ 的前兆）"; break; }
   [ "$(c_m)" -gt "$B_M" ] && { WHY="③④⑤ 里程碑"; break; }
   [ "$(c_d)" -gt "$B_D" ] && { WHY="② 长宽比衰减"; break; }
   if [ "$(alive t5N276)" -eq 0 ]; then WHY="⚠ t5N276 进程消失"; break; fi
@@ -28,6 +32,8 @@ echo '════ ★ ③④⑤ 里程碑（全部）════'
 grep -E '★M[0-9]' "$M" 2>/dev/null | tail -6 | sed 's/^/  /' || true
 echo '════ ★ ② 衰减（全部）════'
 grep -E '★E[123]|♥' "$D" 2>/dev/null | sort -u | tail -4 | sed 's/^/  /' || true
+echo '════ ★ fresh 通道（④⑤ 的直接前兆）════'
+grep -E '★★★|模式计数变化|♥' "$F" 2>/dev/null | sort -u | tail -3 | sed 's/^/  /' || true
 echo '════ 两臂块表（最新）════'
 /root/miniconda3/envs/ml/bin/python - <<'PYEOF'
 import csv, os
