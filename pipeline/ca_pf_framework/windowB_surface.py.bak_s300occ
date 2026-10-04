@@ -1544,7 +1544,6 @@ class LevelSetMulti(object):
                 harden_f=1.0, sym_gap_cells=2, max_per_step=1, seed=11,
                 var_rule='ed', use_fcrit=False,
                 supercrit=False, sites_refill=False, sites_margin=4,
-                occ_guard=False,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
                 nfsv_diag=False, periodic_seed=False,
                 elong=1.0, along=None, prefer_end=True, nfsv_strict=True,
@@ -1617,7 +1616,6 @@ class LevelSetMulti(object):
                          #   ⇒ 本判据做的是**试放**：在**不改任何场**的前提下，构造一个
                          #     "试放后的 `region`"，用它跑一次弹性求解，再判。
                          supercrit=bool(supercrit),
-                         occ_guard=bool(occ_guard),   # ★ s300 占用守卫
                          # ★ R508：**核的形状**。'disc'（默认，= 归档行为）
                          #   或 'ellipsoid'。详见 `seed_plate` 里的长注释与
                          #   `R507_fullclosure`：尖边圆柱的弹性罚比光滑椭球高 52%，
@@ -2102,25 +2100,6 @@ class LevelSetMulti(object):
                                                       replace=False)]
                 else:                                   # 'ed'（默认）
                     _ks = [int(np.argmax(drv)) + 1]
-                # ★★★★★★ s300（**播种占用守卫**）；`--nuc-occ-guard 0`（默认）⇒ 整段不进
-                #   ## 根因（`t10DBG` 的 SEEDDBG 记账，见 `_t5_patch_occguard.py` 头部）
-                #     `seed_plate` 是**并集**语义 `phi[k]=min(phi[k],sdf)`；
-                #     而 `fresh` 通道按 `argmax(drv)` 直接取场号、**不检查该场是否已被占用**
-                #     ⇒ 同一个场被写进第二块（不同中心）⇒ **一场多块**（实测 k=1 被写了两次真放）。
-                #     密快照诊断：该多块 **step 1 就出现、step 1→20 逐位冻结、与 η 无关** ✓
-                #   ## 修法：**同一择优准则下把已占用的场排除**（不改准则本身）
-                #     占用表**每次调用只算一次**（`(phi[1:]<0).any(axis=(1,2,3))`，
-                #     nv=220·N=160 时约 1–2 s）——不是每个候选算一次 ⇒ 代价可控。
-                if bool(c.get('occ_guard', False)):
-                    _occ = (self.phi[1:] < 0).any(axis=(1, 2, 3))     # 长度 nv
-                    _free = ~_occ
-                    _kd = int(_ks[0]) if _ks else 0
-                    if _kd >= 1 and (not _free[_kd - 1]):
-                        _d2 = np.where(_free, drv, -np.inf)
-                        if np.isfinite(_d2).any():
-                            _ks = [int(np.argmax(_d2)) + 1]
-                        else:
-                            _ks = []          # 无空场 ⇒ 本候选不投放（调用方会退回 stack）
                 # ★★ Round 89 修（`WINDOWB_AUDIT_REGISTER.md` A2，**实测已证**）：
                 #   原来 `fresh` 通道**没有任何重叠守卫**，而 `seed_plate` 的
                 #   `phi[j] = max(phi[j], -sdf)` 会把新核盘内的**已有变体删掉**——
