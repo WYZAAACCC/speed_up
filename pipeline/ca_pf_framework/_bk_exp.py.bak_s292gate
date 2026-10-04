@@ -2629,31 +2629,7 @@ def run(a):
             _burst_on = bool(int(getattr(a, 'burst_km', 0) or 0))
             _rej = 0
             _rej_cap = 8 if _burst_on else 10 ** 9
-            # ★★★★★★ s292（**代价闸**，2026-10-04）
-            #   ## 为什么加（**实测，不是猜**）
-            #     s291 让"被拒的核不消耗目标" ⇒ 跨档重试。功能**成立**
-            #     （`t5BKMo` 在第 7 步补上了第 20 根），但**代价失控**：
-            #     每 60 s 采样实测 —— 节拍从 **7.87 s/步** 掉到 **~60 s/步（7.6×）**，
-            #     被拒数以 **~1.2 次/s** 增长而成功数为 0。
-            #     根因：每次落位尝试都要跑 `--nuc-supercrit 1` 的弹性探针（≈5–6 s）
-            #     ⇒ `_rej_cap = 8`/步 就是 **+45 s/步** ⇒ 6000 步 ≈ **100 小时**。
-            #   ## 修法（**物理语义更准，不是"为了快"**）
-            #     KM 律给的是「**在温度 T 下应当有多少根**」——
-            #     **它的粒度本来就是"档"，不是"步"**。
-            #     而 `_tgt` 只在进入新温度档时才增长（45 → 60 → 66 → 66 → 67 …）
-            #     ⇒ **只在本档目标比上次尝试时更大时才补投**。
-            #     · 每档至多一次补投轮 ⇒ 全跑 ≤ 23 档 × 8 = 184 次尝试（≈18 min）
-            #     · **"欠着的核不作废"仍成立** —— 下一档目标变大时继续补 ✓
-            #   ⚠ 惰性：`--burst-km 0`（默认）⇒ `_do_try = True` 恒真 ⇒ 逐位不变 ✓
-            #     （旧线性律每步 `_tgt` 都 +1 ⇒ 新档判据每步都为真 ⇒ 旧路径行为不变）
-            _tgt_try = int(getattr(g, '_burst_tgt_try', -1))
-            _do_try = (_tgt > _tgt_try) if _burst_on else True
-            if _do_try and _burst_on:
-                g._burst_tgt_try = int(_tgt)
-            if _do_try and _burst_on:
-                P('   ◆ s292 补投轮：本档目标 %d 根，实有 %d 根'
-                  % (_tgt, n_ath_tgt))
-            while _do_try and n_ath_tgt < _tgt and n_ath_tgt < nv and _rej < _rej_cap:
+            while n_ath_tgt < _tgt and n_ath_tgt < nv and _rej < _rej_cap:
                 _reg_e = g.region()
                 _fnow = 1.0 - float((_reg_e == 0).sum()) / g.N ** 3
                 # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` §189，**缺陷③**）：
