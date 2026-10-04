@@ -1130,30 +1130,7 @@ def run(a):
             #     `K` 也只在 `--nuc-init > 0` 时才被下面用到（见 `_K > 0 and a.nuc_init > 0`）。
             _K_exp = int(_n_law)
             _K_got = int(getattr(a, 'nuc_fresh_every', 0) or 0)
-            # ★★★★★★ s293（**平行建块**；用户 2026-10-04 批准）
-            #   ## 为什么不是「K = ceil(n/B)」
-            #     闭式 `实际块数 = ceil(B·n / K)`，要它 `= B` ⇒ **`K = n` 是唯一整数解**
-            #     （与 B 无关）。取 `K = ceil(n/B) = 8` ⇒ 实际 **9 块**，不是 3 块。
-            #     ⇒ 引擎下面那段注释是对的；**缺陷在"次序"不在"K 的值"**。
-            #   ## 真正缺陷
-            #     `K = n = 23` ⇒ fresh 落在第 23/46/69 个事件，
-            #     而 burst 把 45 根塞进首档 ⇒ **前 22 个核全挤进 1 号块**。
-            #     实测（`t5N276F` 的 `series.csv`）：`step 400: nblk=1, n_var_sig=1`。
-            #   ## 本开关的语义（**「B 个块、每块 n 根」的本来次序**）
-            #     先把 B 个块建出来，再往块里堆 ⇒ 块数 = B（规定的），每块 ≈ n 根。
-            _Bpar = bool(int(getattr(a, 'nuc_block_parallel', 0) or 0))
-            if _Bpar and _Bt0 > 0:
-                P('      \u2605\u2605\u2605 **\u5e73\u884c\u5efa\u5757\uff08`--nuc-block-parallel 1`\uff09**\uff1a'
-                  '\u524d **B = %d** \u4e2a\u6210\u529f\u4e8b\u4ef6\u5404\u5efa\u4e00\u4e2a**\u65b0\u5757**\uff0c'
-                  '\u4e4b\u540e\u624d\u8f6c `stack`'
-                  ' \u21d2 \u5757\u6570 = B = %d\uff08**\u89c4\u5b9a\u7684**\uff09\uff0c'
-                  '\u6bcf\u5757\u6700\u7ec8 \u2248 n(T_end) = %d \u6839' % (_Bt0, _Bt0, _K_exp))
-                P('         \u65e7\u89c4\u5219\uff08`K = n(T_end) = %d`\uff09\u628a fresh \u653e\u5728'
-                  '\u7b2c %d/%d/%d\u2026 \u4e2a\u4e8b\u4ef6 \u21d2 **\u524d %d \u4e2a\u6838\u5168\u6324\u8fdb 1 \u53f7\u5757**'
-                  '\uff08\u5b9e\u6d4b `t5N276F`\uff1a\u524d 400 \u6b65 nblk=1\u3001n_var_sig=1\uff09'
-                  ' \u21d2 \u81ea\u534f\u8c03\u4e0d\u53ef\u80fd + burst \u9996\u6863\u88ab\u62d2\u3002'
-                  % (_K_exp, _K_exp, 2 * _K_exp, 3 * _K_exp, _K_exp - 1))
-            elif a.nuc_init <= 0:
+            if a.nuc_init <= 0:
                 P('      ⚠ `--nuc-fresh-every` 只在 `--nuc-init > 0` 时生效'
                   '（当前 `--nuc-init %d`）⇒ 本算例的 fresh/stack 交错**不生效**，'
                   '块数由 `--laths` 的变体分布决定。' % a.nuc_init)
@@ -2171,7 +2148,6 @@ def run(a):
     # ★★★ R29：athermal 钟的逐步状态（`--nuc-law cadence` 下**全部不参与**）
     n_ath_ev = 0                 # 由 athermal 律触发的形核次数
     n_ath_tgt = 0                # 当前的累计根数（不含预摆的第 1 片）
-    n_fresh_ok = 0               # ★ s293：**成功建立的新块数**（`--nuc-block-parallel` 用；旧档不读）
     T_hist = []                  # 每次事件时的 (step, t, T, df)
     # ★ §189（缺陷③）：fresh/stack 的**实际分配**记账（必须留在日志里，不是内部变量）
     n_mode = {}                  # {'fresh': n, 'stack': n}
@@ -2308,7 +2284,6 @@ def run(a):
             _qs_shrink_used = int(_rb_drv.get('_qs_shrink_used', _qs_shrink_used))
             n_ath_ev = int(_rb_drv.get('n_ath_ev', n_ath_ev))
             n_ath_tgt = int(_rb_drv.get('n_ath_tgt', n_ath_tgt))
-            n_fresh_ok = int(_rb_drv.get('n_fresh_ok', n_fresh_ok))
             n_eng_ev = int(_rb_drv.get('n_eng_ev', n_eng_ev))
             n_fresh_fallback = int(_rb_drv.get('n_fresh_fallback', n_fresh_fallback))
             _nm = _rb_drv.get('n_mode')
@@ -2721,13 +2696,7 @@ def run(a):
                 #     `K = 0`（默认）⇒ 走**原来的** `n_fresh=(1 if nuc_init>0 else 0)` 一行
                 #     ⇒ 归档路径**逐位不变**。
                 _K = int(getattr(a, 'nuc_fresh_every', 0) or 0)
-                # ★★★★★★ s293：**平行建块**（前 B 个成功事件各建一个新块）——
-                #   见上面 N8 区的长注释。默认关 ⇒ 逐位不变。
-                _Bpar2 = bool(int(getattr(a, 'nuc_block_parallel', 0) or 0))
-                if _Bpar2 and int(_Bt) > 0 and a.nuc_init > 0:
-                    _fresh_now = (n_fresh_ok < int(_Bt))
-                    _nf, _ns = (1, 0) if _fresh_now else (0, 1)
-                elif _K > 0 and a.nuc_init > 0:
+                if _K > 0 and a.nuc_init > 0:
                     _fresh_now = ((n_ath_tgt % _K) == 0)
                     _nf, _ns = (1, 0) if _fresh_now else (0, 1)
                 else:
@@ -2766,9 +2735,6 @@ def run(a):
                 if _ev:
                     n_eng_ev += len(_ev)
                     n_ath_ev += 1
-                    # ★ s293：只有**成功**且**要的是 fresh** 才记一个新块
-                    if _nf > 0:
-                        n_fresh_ok += 1
                     n_mode[_ev[0][1]] = n_mode.get(_ev[0][1], 0) + 1
                     # ★★★★★ 2026-10-04（**N7：报告口径修复**；判定见
                     #   `R2_PARAM_VERDICTS.md §0 N7`）
@@ -2852,7 +2818,6 @@ def run(a):
                              _qs_shrink_used=_qs_shrink_used,
                              _qs_win=_qs_win, _qs_tol=_qs_tol,
                              n_ath_ev=n_ath_ev, n_ath_tgt=n_ath_tgt,
-                             n_fresh_ok=n_fresh_ok,
                              n_eng_ev=n_eng_ev, n_fresh_fallback=n_fresh_fallback,
                              n_mode=dict(n_mode)),
                         N, L, nv, int(getattr(g, 'nreg', nv + 1)), vmap, tstep=tstep,
@@ -3566,8 +3531,6 @@ def main():
     #     需要在面内做分割，**本轮不做**" ⇒ **框架里本来没有"块的数目"这条律**。
     #     本开关**不发明新律**，它把"块数 vs 块内板条数"的**分配**暴露成显式输入
     #     ⇒ **本开关下的"块数"是规定的、不是涌现的**，不得当成物理结论。
-    ap.add_argument('--nuc-block-parallel', type=int, default=0, choices=(0, 1),
-                    help='\u2605 s293\uff1a\u5757\u6570 = B\uff08\u524d B \u4e2a\u4e8b\u4ef6\u5404\u5efa\u65b0\u5757\uff09\u30020=\u65e7\u89c4\u5219\uff08\u9010\u4f4d\u4e0d\u53d8\uff09')
     ap.add_argument('--nuc-fresh-every', type=int, default=0,
                     help='athermal 事件里每 K 个走一次 fresh（建新块），其余走 stack'
                          '（块内板条）；0=关（归档行为，全 fresh）')

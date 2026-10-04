@@ -140,8 +140,6 @@ def build(a, switches):
              if int(getattr(a, 'facet_proj', 0) or 0) != 0 else []) +
             (['--var-rule', str(getattr(a, 'var_rule', 'ed'))]
              if str(getattr(a, 'var_rule', 'ed')) != 'ed' else []) +
-            (['--nuc-block-parallel', str(a.nuc_block_parallel)]
-             if int(getattr(a, 'nuc_block_parallel', 0) or 0) > 0 else []) +
             (['--nuc-fresh-every', str(a.nuc_fresh_every)]
              if int(getattr(a, 'nuc_fresh_every', 0) or 0) > 0 else []) +
             (['--nuc-periodic-seed', '1'] if int(a.periodic_seed) == 1 else []) +
@@ -255,8 +253,6 @@ def main():
 
     ap.add_argument('--facet-proj', type=int, default=0,
                     help='棱面投影（0=引擎默认，从未跑过；1=打开）')
-    ap.add_argument('--nuc-block-parallel', type=int, default=0, choices=(0, 1),
-                    help='s293: \u5757\u6570 = B\uff08\u524d B \u4e2a\u4e8b\u4ef6\u5404\u5efa\u65b0\u5757\uff09')
     ap.add_argument('--nuc-fresh-every', type=int, default=0,
                     help='fresh 通道周期（0=引擎自动取 K=n(T_end)；>0=诊断用）')
     ap.add_argument('--B', type=int, default=5)
