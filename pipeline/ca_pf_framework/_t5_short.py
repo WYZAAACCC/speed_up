@@ -41,7 +41,14 @@ def laths(m, nvar=12):
 
 def build(a, switches):
     return ([PY, '-u', os.path.join(HERE, '_bk_exp.py'),
-             '--N', str(a.N), '--dx-nm', '62.5',
+             # ★★★★★★ s287：**`--dx-nm` 透传**（原来**硬编码 '62.5'** ⇒ 改 `--N` 只改盒不改分辨率）。
+             #   为什么要它：薄板厚度 `t = 312.5 nm` 在 `dx = 62.5 nm` 下**恒为 5 个胞**
+             #   ⇒ 与球体基准（`T1_verify_edsign.py` 用 `dx = 20/10 nm`，收敛到 ~2.0e8）
+             #     **分辨率差 3–6 倍** ⇒ **"薄板 2.96e8 vs 球体 2.0e8"含混淆变量** ⚠
+             #   ⇒ 需做**只改 dx** 的单变量对照，判"**欠解析** vs **物理量**"。
+             #   ⚠ **默认 62.5** ⇒ `repr(float(62.5))` = `'62.5'` ⇒ **与原字面量逐字相同**
+             #     ⇒ 归档与在跑的臂**逐位不变** ✓
+             '--N', str(a.N), '--dx-nm', repr(float(getattr(a, 'dx_nm', 62.5))),
              '--steps', str(a.steps), '--every', str(a.every),
              '--snap-every', str(a.snap_every), '--pair-every', str(a.pair_every),
              '--norm-smooth', '0',
@@ -164,6 +171,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--tag', default='t5s1')
     ap.add_argument('--N', type=int, default=160)
+    ap.add_argument('--dx-nm', type=float, default=62.5,
+                    help='★ s287：网格步长（nm）。默认 **62.5** ⇒ 与原来的硬编码值'
+                         '逐字相同 ⇒ 归档逐位不变；改小 ⇒ 只改分辨率、盒子 L 不变'
+                         '（薄板厚度将占更多胞 ⇒ 可判"罚能是否因欠解析偏高"）')
+
     ap.add_argument('--m', type=int, default=4)
     # ★★★★★ R581-T5R-s18（**形核停滞的修复**）：`--nvar` —— **活跃变体数**。
     #   ## 病灶（第 17 轮诊断跑实测，`nuc_dbg.json`）
