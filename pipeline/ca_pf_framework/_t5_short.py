@@ -106,6 +106,12 @@ def build(a, switches):
             #   ⚠ 纯记账：只读、只统计，**不参与任何分支/数值**
             #     ⇒ `--diag-terms` 关时（**默认**）逐位不变 ✓
             (['--diag-terms'] if bool(getattr(a, 'diag_terms', False)) else []) + \
+            # ★★★★★★ s285（**用户总目标第 4 项：修 burst 至物理正确**）：
+            #   透传 `--burst-km`（`_bk_exp.py` 里由它把形核调度从**线性律**
+            #   `floor(α·(Ms−T))` 换成 **KM 分数律** `round(N_end·(1−exp(−α(Ms−T))))`）。
+            #   ⚠ **默认 `0` ⇒ 不产生任何参数** ⇒ 归档与在跑的臂**逐字不变** ✓
+            (['--burst-km', str(int(getattr(a, 'burst_km', 0) or 0))]
+             if int(getattr(a, 'burst_km', 0) or 0) != 0 else []) + \
             # ★★★★★ R581-T5R-s122：两个透传（**默认档不传** ⇒ 归档/长跑逐字不变）
             # ★★★★★ R581-T5R-s213：两个物理开关（**默认档不传** ⇒ 归档/在跑的臂逐字不变）
             (['--eng-elong', repr(float(a.eng_elong))]
@@ -218,6 +224,10 @@ def main():
     ap.add_argument('--diag-terms', action='store_true',
                     help='★ s267：透传 `--diag-terms`（R208 三项分离诊断）；'
                          '默认 False ⇒ 归档逐字不变')
+    ap.add_argument('--burst-km', type=int, default=0, choices=(0, 1),
+                    help='★ s285：透传 `--burst-km`（形核用 KM 分数律 ⇒ 物理正确的 burst）；'
+                         '默认 0 ⇒ 不传任何参数，归档逐字不变')
+
 
 
     ap.add_argument('--facet-proj', type=int, default=0,
