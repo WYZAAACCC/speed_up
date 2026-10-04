@@ -2823,20 +2823,9 @@ def run(a):
                                        mode=str(_ev[0][1])))
                     P('   ★★ **athermal 形核** @ step %d：T=%.1f K'
                       '（T_%d 理论=%.1f K；块内第 %d 根 / 共 %d 块）'
-                      # ★★★★★★ s298（**量具口径修正**；纯打印，**数值逐位不变**）
-                      #   ## 缺陷（实测日志原文）
-                      #     `累计 10/23` 的分母取的是 `_n_law`（= `n(T_end)` = 23，
-                      #     **每块**根数，C-2 口径），而 `while` 真正的判据是
-                      #     `n_ath_tgt < _tgt`，`_tgt = B × _n_blk`：
-                      #       首档 `_n_blk = round(23×0.6327) = 15` ⇒ **`_tgt = 45`**
-                      #       末档 `_tgt = 69`
-                      #     ⇒ 这一列会涨到 **`45/23`**，**看着像超额 2 倍，实际正确**。
-                      #   ## 修法（**加法式**：两个口径都给，旧日志仍可解析）
-                      #     `累计 n/本档目标（本档目标；每块口径 _n_law）`
-                      '，df=%.4e，场 %d（累计 %d/%d（本档目标；每块口径 %d）；'
-                      '模式 **%s**；累计 fresh=%d stack=%d）'
+                      '，df=%.4e，场 %d（累计 %d/%d；模式 **%s**；累计 fresh=%d stack=%d）'
                       % (it, _Tnow, _kpb, CL.T_of_k(_kpb, _alpha), _kpb, _B_eff,
-                         float(g.df[1]), _ev[0][0], n_ath_tgt, _tgt, _n_law,
+                         float(g.df[1]), _ev[0][0], n_ath_tgt, _n_law,
                          _ev[0][1], n_mode.get('fresh', 0), n_mode.get('stack', 0)))
                 else:
                     P('   ⚠ athermal 形核**被引擎拒**（无可用空场/落位失败）@ step %d'
