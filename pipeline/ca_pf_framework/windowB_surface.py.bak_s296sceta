@@ -1881,34 +1881,7 @@ class LevelSetMulti(object):
         finally:
             # ★ 无论成功失败都必须还原（净效果 = 不改场）
             self._seed_undo_apply(bak)
-        # ★★★★★★ s296（**修法 A 的另一半**：把 η 接到**形核闸门**上）
-        #   ## 为什么要接（**s295 接出引擎 dbg 后才看得见的实测**）
-        #     `fresh` 通道实测 **100% 被拒**（三臂一致）。引擎分诊计数：
-        #       `fresh_cand=12  fresh_blocked=12  sites_resampled=12`
-        #       `sc_try=11  supercrit=11`
-        #       `sc_last_df = +1.2273e8`（= 理论 ΔG(Ms)，4 位吻合 ✓）
-        #       `sc_last_ed = -2.1342e8`（**弹性罚能 = 驱动力的 1.74 倍**）
-        #       `sc_last_fcrit = 1.6e6`
-        #     `sites_resampled=12` ⇒ 引擎的**解卡机制正常工作**（重抽了 12 个位点），
-        #     但重抽的位点**全部卡在同一条判据**上 ⇒ **阻塞是"判据"，不是"几何"**。
-        #   ## 判据本身（下面两行，逐行读过）
-        #     `fcrit = 2γ/t`；判据 `df + med > fcrit`
-        #     代入：`1.2273e8 + (−2.1342e8) = −9.07e7`，**远不大于** `1.6e6` ⇒ 拒绝 ✓
-        #   ## 根因：**η 只接了一半**
-        #     `η` 此前只接在**长大律** `dG_cell = Δdf + η·Δed − γκ`（`:4366`），
-        #     **没有**接在**形核闸门** `df + ed > 2γ/t` 上。
-        #     而"弹性罚能高估 ~3 倍"（**纯线弹性、无塑性弛豫/TRIP**）这条物理理由
-        #     **对形核闸门同样成立** —— 储存能里同样有 2/3 应被塑性耗散掉。
-        #   ## 后果（**三个症状同一个根因**）
-        #     核根本放不下 ⇒ 只有 `attach`/`stack`（**不经**该判据）能放核，
-        #     而这些核放下去又被长大律溶解 ⇒
-        #       「一场多板条」+「块数恒 1」+「burst 首档被拒」全部由此而来。
-        #   ## 修法（**一处，与长大律口径一致**）
-        #     `η = 0.375` 时：`1.2273e8 + 0.375·(−2.1342e8) = +4.270e7 > 1.6e6` ⇒ **通过** ✓
-        #   ⚠ `η = 1.0`（**默认**）⇒ **与原文逐字等价** ⇒ 归档臂**逐位不变** ✓
-        #   ⚠ 与 `:4366` 用**同一个** `self.ed_eta` ⇒ 两条律口径一致，不再"一半一半"
-        _eta_sc = float(getattr(self, 'ed_eta', 1.0) or 1.0)
-        return bool(float(df) + _eta_sc * med > fcrit), med, fcrit, nc
+        return bool(float(df) + med > fcrit), med, fcrit, nc
 
 
     def nucleate(self, ed, R_nuc=None, t_nuc=None, n_fresh=0, n_stack=0,                 f_now=0.0, drive_min=None, df=0.0):
