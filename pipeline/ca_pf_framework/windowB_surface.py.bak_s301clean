@@ -2815,46 +2815,6 @@ class LevelSetMulti(object):
         for (j, ii, vals) in undo:
             self.phi[j].reshape(-1)[ii] = vals
 
-    def keep_largest_neg(self, k):
-        """★ s301：把 `phi[k] < 0` 只保留**最大 26-连通块**，其余置正（清数值伪影）。
-
-        ## 依据
-        模型表示约定是「一个相场 = 一根板条」。实测（`t10OCC` step 1，守卫 ON、
-        每场只真放一次）仍有 9/15 个场含 2–3 块，且三维图显示主体是板条、
-        另一块是**孤立的 166 胞小球**。三条机制假说（重复播种 / sdf 不连通 /
-        后播擦断）均被各自判据否掉 ⇒ 按**表示约定**清理伪影，是物理上正当的止损。
-
-        ⚠ 只在**真实播种**（`undo is None`）后调用；**探针路径绝不调用**
-          （探针要的是"真放再精确回滚"，清理会破坏它的语义）。
-        返回被清掉的胞数。
-        """
-        try:
-            from scipy import ndimage
-        except Exception:
-            return -1
-        m = self.phi[k] < 0
-        n = int(m.sum())
-        if n <= 1:
-            return 0
-        idx = np.argwhere(m)
-        lo = idx.min(0); hi = idx.max(0) + 1
-        sub = m[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
-        lab, nc = ndimage.label(sub, structure=ndimage.generate_binary_structure(3, 3))
-        if nc <= 1:
-            return 0
-        sz = np.bincount(lab.ravel())[1:]
-        keep = int(np.argmax(sz)) + 1
-        drop = (lab != keep) & (lab > 0)
-        nd = int(drop.sum())
-        if nd == 0:
-            return 0
-        sl = (slice(lo[0], hi[0]), slice(lo[1], hi[1]), slice(lo[2], hi[2]))
-        cur = self.phi[k][sl]
-        # 置正：取绝对值（并加一个小量，确保严格 > 0）
-        cur[drop] = np.abs(cur[drop]) + 1e-12
-        self.phi[k][sl] = cur
-        return nd
-
     def seed_plate(self, k, center, normal, R, t, elong=1.0, along=None, flat_end=False,
                    undo=None, shape='disc'):
         """薄板晶核：法向 normal、半径 R、厚 t。
@@ -2961,10 +2921,6 @@ class LevelSetMulti(object):
             for j in range(self.nreg):
                 if j != k:
                     self.phi[j] = np.maximum(self.phi[j], -sdf)
-            # ★ s301：真实播种后清掉 φ<0 的多余连通块（`--nuc-occ-guard 2` 才启用）
-            if undo is None and int((getattr(self, '_nuc', None) or {})
-                                    .get('occ_guard', 0) or 0) >= 2:
-                self.keep_largest_neg(k)
             return
         # ★★★★★★ s299（**播种调试记账**，`SEED_DBG=1` 才生效；默认一行不进 ⇒ 逐位不变）
         #   目的：分开「同一个场被播多次(甲)」与「探针回滚留残迹(乙)」——
@@ -3009,10 +2965,6 @@ class LevelSetMulti(object):
         for j in range(self.nreg):
             if j != k:
                 self.phi[j] = np.maximum(self.phi[j], -sdf)
-        # ★ s301：真实播种后清掉 φ<0 的多余连通块（`--nuc-occ-guard 2` 才启用）
-        if undo is None and int((getattr(self, '_nuc', None) or {})
-                                .get('occ_guard', 0) or 0) >= 2:
-            self.keep_largest_neg(k)
 
     def init_parent(self):
         """★ 多区域 VDF 的标准初始化：母相 = 变体并集的补集 ⇒ φ_0 = −min_{k≥1} φ_k。
