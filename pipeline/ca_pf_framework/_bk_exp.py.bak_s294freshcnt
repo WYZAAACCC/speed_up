@@ -2766,21 +2766,8 @@ def run(a):
                 if _ev:
                     n_eng_ev += len(_ev)
                     n_ath_ev += 1
-                    # ★★★★★★ s294 修（**s293 的计数器缺陷**，实测抓到）
-                    #   s293 写的是 `if _nf > 0:`，而下面这条**退回**路径
-                    #   （`:2672` 一带）在 `fresh` 被拒时会改用 `stack` 并把那次算成功：
-                    #       `if _nf > 0 and not _ev and _ns == 0: _ev = nucleate(n_fresh=0, n_stack=1)`
-                    #   ⇒ **退回的那次也被记进 `n_fresh_ok`** ⇒ 3 次失败后 `n_fresh_ok == B`
-                    #   ⇒ `_fresh_now = (n_fresh_ok < _Bt)` **永久为假**
-                    #   ⇒ **再也不请求 fresh** ⇒ 块数永远 = 1。
-                    #   实测（`t5ETAo` step 100）：`fresh 被拒退回 stack = 3`、
-                    #   事件 #2/#3/#4 全退回、模式 5 × attach、`nblk_sig = 1`（判据 1 FAIL）。
-                    #   ## 修法（**只有引擎真的报 `fresh` 才算建了一个新块**）
-                    #   ⇒ 每次失败都**不消耗**建块预算 ⇒ 引擎继续重试 `fresh`；
-                    #     引擎侧本身已有正确的解卡机制（`windowB_surface.py:2212`：
-                    #     一个位点都没放成时**重抽整张位点表**，见 R481b 的更正 `:2193-2210`）。
-                    #   ⚠ 惰性：`--nuc-block-parallel 0` ⇒ `n_fresh_ok` 不被读 ⇒ 逐位不变 ✓
-                    if _nf > 0 and str(_ev[0][1]) == 'fresh':
+                    # ★ s293：只有**成功**且**要的是 fresh** 才记一个新块
+                    if _nf > 0:
                         n_fresh_ok += 1
                     n_mode[_ev[0][1]] = n_mode.get(_ev[0][1], 0) + 1
                     # ★★★★★ 2026-10-04（**N7：报告口径修复**；判定见
