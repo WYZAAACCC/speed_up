@@ -1224,6 +1224,12 @@ def run(a):
     #   引擎里整块由 `getattr(self, 'diag_terms_on', False)` 门控
     #   ⇒ 默认时**一行都不执行** ⇒ 归档路径逐位不变。
     g.diag_terms_on = bool(getattr(a, 'diag_terms', False))
+    # ★★★★★★ s290（**修法 A：弹性罚能折减因子 η**，物理对应**塑性弛豫 / TRIP**）
+    #   见 `windowB_surface.py` 里 `dG_cell` 那一行的长注释。
+    #   `η = 1.0`（**默认**）⇒ 与原文**逐字等价** ⇒ 归档与在跑的臂**逐位不变** ✓
+    #   `η < 1` ⇒ 只保留 η 份弹性储存能，其余视为**塑性耗散**（TRIP）
+    #   ★ 理论标定：`df(Ms) ≈ η·|ed|_plate + 2γ/t` ⇒ **η ≈ 0.375**（建议试 0.35–0.45）
+    g.ed_eta = float(getattr(a, 'ed_eta', 1.0) or 1.0)
     # ★ R238（`§135.6`）：逐变体 `ed` 分布的开关（默认关）
     g.diag_edv_on = bool(getattr(a, 'diag_edv', False))
     # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` **§186**）：面片投影的"排除掩码"开关。
@@ -3511,6 +3517,11 @@ def main():
                     help='★ s284：形核调度用 **KM 分数律** `1-exp(-a(Ms-T))`'
                          '⇒ Ms 处爆发 + 随后饱和（物理正确的 burst）；'
                          '默认 0 ⇒ 逐字走线性原式，归档逐位不变')
+    ap.add_argument('--ed-eta', type=float, default=1.0,
+                    help='★ s290：**弹性罚能折减因子 η**（塑性弛豫 / TRIP）。'
+                         '1.0 = 默认（逐字等价，逐位不变）；'
+                         '理论标定 η≈0.375 使 df(Ms) ≥ η·|ed|+2γ/t；建议试 0.35–0.45')
+
 
     # ★ R508：核的形状。默认 disc = 归档行为；ellipsoid = 光滑椭球。
     #   依据见 `nuc_cfg` 调用处的长注释与 `R507_fullclosure`。

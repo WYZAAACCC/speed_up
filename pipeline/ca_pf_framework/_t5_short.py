@@ -119,6 +119,11 @@ def build(a, switches):
             #   ⚠ **默认 `0` ⇒ 不产生任何参数** ⇒ 归档与在跑的臂**逐字不变** ✓
             (['--burst-km', str(int(getattr(a, 'burst_km', 0) or 0))]
              if int(getattr(a, 'burst_km', 0) or 0) != 0 else []) + \
+            # ★★★★★★ s290（**修法 A：弹性罚能折减因子 η**，物理对应**塑性弛豫 / TRIP**）
+            #   见 `windowB_surface.py` 的 `dG_cell` 与 `_bk_exp.py` 的 `g.ed_eta` 注释。
+            #   `η = 1.0`（**默认**）⇒ **不产生参数** ⇒ 归档与在跑的臂**逐字不变** ✓
+            (['--ed-eta', repr(float(getattr(a, 'ed_eta', 1.0) or 1.0))]
+             if float(getattr(a, 'ed_eta', 1.0) or 1.0) != 1.0 else []) + \
             # ★★★★★ R581-T5R-s122：两个透传（**默认档不传** ⇒ 归档/长跑逐字不变）
             # ★★★★★ R581-T5R-s213：两个物理开关（**默认档不传** ⇒ 归档/在跑的臂逐字不变）
             (['--eng-elong', repr(float(a.eng_elong))]
@@ -239,6 +244,10 @@ def main():
     ap.add_argument('--burst-km', type=int, default=0, choices=(0, 1),
                     help='★ s285：透传 `--burst-km`（形核用 KM 分数律 ⇒ 物理正确的 burst）；'
                          '默认 0 ⇒ 不传任何参数，归档逐字不变')
+    ap.add_argument('--ed-eta', type=float, default=1.0,
+                    help='★ s290：透传 `--ed-eta`（弹性罚能折减因子 η，塑性弛豫/TRIP）；'
+                         '默认 1.0 ⇒ 不传任何参数，归档逐字不变；理论标定 η≈0.375')
+
 
 
 
