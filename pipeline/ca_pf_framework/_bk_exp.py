@@ -1321,19 +1321,45 @@ def run(a):
               '（`limitations()` 第 1 条的适用范围之外）')
             P('      几何上界 B_max = **%.0f**（若要按"块数 × 每块根数"放开，用它作参考）'
               % _Bmax)
+        # ★★★★★★ 2026-10-05（**C-5 步数轴修正**；`R619` ②-1 判定「真（形态不同）」）
+        #   ## 缺陷（`R619` ②-1 的证据）
+        #     C-5 判据 `beta_h_min(...)` 的**步数轴**原来一律传 `a.steps`
+        #     （= `--steps`，生产 20000）。但 `--qs-clock 1` 时**真正的步进轴**是
+        #     「`--qs-max-relax`（生产 **100**）× **温度档数**」= 100 × 23 = **2300**，
+        #     而 `--steps 20000` 是**上界、根本不是实际步数**。
+        #   ⇒ 用错的轴算 `beta_h_min` ⇒ **C-5 的门槛被算错**（不是判据算术错，
+        #     是**喂进去的轴错**）。实测（`_t11_c5_axis.py`）：
+        #     `beta_h_min(20000, 62.5 nm, 510 nm)` = **7.1111** > `--beta-h 6.477`
+        #     （⇒ 报"违反"）；而正确轴 2200 上 = **4.9038** < 6.477（⇒ **满足**）。
+        #   ## 修法（**只改轴，不改公式**）
+        #     `_qs_clock` 时用 `qs_max_relax × 档数`；否则仍用 `a.steps`
+        #     ⇒ **不设 `--qs-clock` 的算例逐位不变**。
+        #   ## ⚠ 记账（**硬步骤 B**）：我早先口头说"banner 用错轴"——**这条成立**；
+        #     但同时**撤回**我当时那句"β_h 因此不满足"的推论：在**正确的轴** 2300 上
+        #     `beta_h_min` 的数值更小，**该算例并不违反 C-5**。两件事必须分开说。
+        # 档数 = 从 T_1 到 `T_end` 的档数（`T_k = M_s − k/α`）
+        _n_stage = max(int(np.floor(_alpha * max(_Tstart - _Tend, 0.0))), 1)
+        _steps_eff = (int(getattr(a, 'qs_max_relax', 0) or 0) * _n_stage
+                      if bool(int(getattr(a, 'qs_clock', 0) or 0))
+                      else int(a.steps))
+        if bool(int(getattr(a, 'qs_clock', 0) or 0)):
+            P('   ★★ **C-5 步数轴修正**：`--qs-clock 1` ⇒ 真实步进轴 = '
+              '`qs_max_relax(%d) × 档数(%d)` = **%d**（**不是** `--steps %d`）'
+              % (int(getattr(a, 'qs_max_relax', 0) or 0), _n_stage, _steps_eff, a.steps))
         P('   C-3 有序性：Δt_grow/Δt_nuc = **%.3f**（判据 ≤1）%s'
           % (_ratio_o, '' if _ok_o else '  ⚠ **违反 ⇒ 本次运行处于 burst regime，必须记账**'))
-        P('   C-3 步数下界 = %.0f（从 T_1 起）；C-5 β_h 下界 = %.3f（当前 --beta-h %.2f）'
+        P('   C-3 步数下界 = %.0f（从 T_1 起）；C-5 β_h 下界 = %.3f（当前 --beta-h %.2f，'
+          '步数轴 %d）'
           % (CL.steps_min_ordered(_alpha, _L_lath, dx, 0.15, _Tend, _Tstart),
-             CL.beta_h_min(a.steps, dx, a.plate_T * 1e-9), a.beta_h))
+             CL.beta_h_min(_steps_eff, dx, a.plate_T * 1e-9), a.beta_h, _steps_eff))
         if nv < _n_law:
             P('   ⚠⚠ **表示上限不足**：nv=%d < 导出的 n=%d ⇒ 块会被截断在 nv 根'
               % (nv, _n_law))
-        _beta_floor = CL.beta_h_min(a.steps, dx, a.plate_T * 1e-9)
+        _beta_floor = CL.beta_h_min(_steps_eff, dx, a.plate_T * 1e-9)
         if _beta_floor > a.beta_h:
             P('   ⚠⚠ **C-5 不满足**：%d 步 / Δx=%.1f nm / t=%.0f nm 需要 β_h ≥ %.3f，'
               '而当前 %.2f ⇒ 板条会增厚 ≈ e^{%.2f}× ⇒ 厚度判据 V-8b 不适用'
-              % (a.steps, dx * 1e9, a.plate_T, _beta_floor, a.beta_h,
+              % (_steps_eff, dx * 1e9, a.plate_T, _beta_floor, a.beta_h,
                  _beta_floor - a.beta_h))
     else:
         _q = float('nan'); _n_law = -1; _T_of_t = None; _dG_of_T = None
@@ -3754,7 +3780,7 @@ def run(a):
                    T_k=[float(CL.T_of_k(k, _alpha)) for k in range(1, max(_n_law, 1) + 1)],
                    steps_min_ordered=CL.steps_min_ordered(_alpha, _L_lath, dx, 0.15,
                                                           _Tend, _Tstart),
-                   beta_h_floor=CL.beta_h_min(a.steps, dx, a.plate_T * 1e-9),
+                   beta_h_floor=CL.beta_h_min(_steps_eff, dx, a.plate_T * 1e-9),
                    beta_h_T=CL.beta_h_of_T(0.5 * (float(M_S_TI64) + _Tend)),
                    beta_h_used=float(a.beta_h),
                    geometry=dict(N=N, dx_nm=dx * 1e9, L_box=dx * N,
