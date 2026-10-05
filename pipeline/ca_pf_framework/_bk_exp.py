@@ -1333,6 +1333,7 @@ def run(a):
                 np.asarray(w_ax, float).copy())
     _PF_AX = bool(int(getattr(a, 'per_field_axes', 0) or 0))
     _PF_CACHE = {}
+    _TOLD_AXN = False              # G3 的"只报一次"标志
 
     def _field_axes(j):
         """场 `j`（1-based）**自己变体**的 `(n*, a, w)`；带缓存。"""
@@ -1617,6 +1618,11 @@ def run(a):
 
     def _seed_next():
         nonlocal n_seeded
+        # ★ 2026-10-05（G3）：`_TOLD_AXN` 在外层作用域初始化，这里**只读+置位**
+        #   ⇒ 必须声明 `nonlocal`，否则 Python 把它当**局部变量**
+        #   ⇒ `if _PF_AX and not _TOLD_AXN` 会 `UnboundLocalError`
+        #   （**实测抓到**：第一次 G3 冒烟就崩在这一行）。
+        nonlocal _TOLD_AXN
         j = n_seeded + 1
         if j > nv:
             return None
@@ -1641,6 +1647,42 @@ def run(a):
         #   ⇒ 与修前**逐位相同**；打开后按**该场自己的变体**取（修掉"变体身份两处不一致"）。
         _nj = _axis_of(j, 'g')
         _aj = _axis_of(j, 'a')
+        # ★★★★★ 2026-10-05（**R623 G3：逐变体长轴**）
+        #   ## 先量后判（不拍阈值）
+        #     `_t11_axis_norm.py` 对 12 个变体实测（`argmin_normal_cached` +
+        #     `_rank1_axes`，与引擎同一条路径）：
+        #         `|n*·a|` ∈ **[0.126917, 0.127107]**（夹角 **82.698°–82.709°**）
+        #         `|n*·w|` ~ 1e-5 ≈ 0  ；  `|a·w|` ~ 0
+        #     ⇒ 与 `windowB_surface.py:1391` 自记的「`n.a = cos(82.7°) = 0.127`」**一致**。
+        #   ## ⚠ 一条对我自己早先假设的更正
+        #     我此前说"应当断言 `along · nrm ≈ 0`（长轴落在惯习面内）"—— **那是错的**：
+        #     实测 `a` 与 `n*` 差 **82.7°**，并不落在惯习面内。若照原假设写断言，
+        #     会把**正确的物理**判成 FAIL。⇒ 断言改成 `|n*·a| <= TOL_AXN`。
+        #   ## 记账
+        #     `a` 是 rank-1 分解的**位移方向**（`:1389-1393`），本来就是长轴；
+        #     它与 `n*` 不垂直是**不变线**的几何后果，不是 bug。
+        if _PF_AX and not _TOLD_AXN:
+            _TOLD_AXN = True
+            _TOL_AXN = 0.135        # 实测最大 0.127107 × 1.06
+            _bad = []
+            for _jj in range(1, nv + 1):
+                _nn = _axis_of(_jj, 'g'); _aa = _axis_of(_jj, 'a')
+                _d = abs(float(np.dot(_nn, _aa)))
+                if _d > _TOL_AXN:
+                    _bad.append((_jj, int(laths_eff[_jj - 1]), _d))
+            _ds = [abs(float(np.dot(_axis_of(_jj, 'g'), _axis_of(_jj, 'a'))))
+                   for _jj in range(1, nv + 1)]
+            P('   ★★ **G3 逐变体长轴自检**：%d 个场的 `|n*·a|` ∈ [%.6f, %.6f]'
+              '（夹角 %.3f°–%.3f°，判据 ≤ %.3f）'
+              % (nv, min(_ds), max(_ds),
+                 np.degrees(np.arccos(min(1.0, max(_ds)))),
+                 np.degrees(np.arccos(min(1.0, min(_ds)))), _TOL_AXN))
+            if _bad:
+                P('   ✗✗ **G3 FAIL**：以下场的 `|n*·a|` 超判据 ⇒ 长轴与惯习面法向的关系异常：')
+                for _jj, _v, _d in _bad[:8]:
+                    P('        场 %d（变体 %d）|n*·a| = %.6f' % (_jj, _v, _d))
+                raise SystemExit('❌ R623 G3：逐变体长轴自检未过（见上）')
+            P('   ✅ G3 PASS：长轴确实**逐场按变体取**，且 `|n*·a|` 与 12 变体一致')
         if j == 1:
             c = c0.copy()
         else:

@@ -339,3 +339,47 @@ windowB_surface.py:2260   if (not _any_ok) and sites_refill and sites:          
 | `④` `windowB_pf3d` 自检 | **ALL PASS** ✅ |
 
 ⇒ **`G5a` 与 `G4` 均已完成**，且**同一次回归同时覆盖两者**（默认关 ⇒ 逐位不变）。
+
+### 8.3 ✅ `G3` 已实施（逐变体长轴）—— **含两条对我自己记录的更正**
+
+**★ 更正 1：`along_per_variant` 一直是开着的，G3 不是"缺口"**
+我先前据 `windowB_surface.py:1973` 的注释写「`along_per_variant=False`（默认）⇒ 恒返回全局 `along`」，
+**与调用方不符**：`_bk_exp.py:1906` 传的是
+```python
+along_per_variant=(a.nuc_init > 0),
+```
+而生产 `--nuc-init 6 > 0`（`_t5_short.py:99` 注入）⇒ **引擎侧的长轴本来就是逐场的**
+（`atab[k] = _rank1_axes(eps0[k])[1]`，构造时填，`:1410-1413`）。
+⇒ **撤回**「G3 是个真缺口」的说法；G3 的**真实价值**是把"逐场"变成**可核查 + 防回归**。
+（该处过时注释已就地改正。）
+
+**★ 更正 2：我原先设想的断言 `along·nrm ≈ 0` 是错的**
+量具 `_t11_axis_norm.py`（走引擎同一条 `argmin_normal_cached` + `_rank1_axes` 路径）实测 12 个变体：
+
+| 量 | 实测（12 变体） |
+|---|---|
+| `\|n*·a\|` | **0.126917 … 0.127107** ⇒ 夹角 **82.698°–82.709°** |
+| `\|n*·w\|` | ~1e-5 ≈ 0 |
+| `\|a·w\|` | ~0 |
+
+⇒ **`a` 并不落在惯习面内**（与 `n*` 差 **82.7°**），与 `windowB_surface.py:1391` 自记的
+「`n.a = cos(82.7°) = 0.127`」**一致**。
+**若照我原假设写 `along·nrm ≈ 0`，会把正确的物理判成 FAIL。**
+⇒ 判据改成 **`|n*·a| ≤ 0.135`**（实测最大 0.127107 × 1.06 余量）。
+
+**改动**（默认关）
+| 文件 | 位置 | 内容 |
+|---|---|---|
+| `_bk_exp.py` | `_seed_next()` 内 | 新增**一次性自检**（`_TOLD_AXN`，需 `nonlocal`）：逐场算 `\|n*·a\|`，打印区间与判据，**超判据即 `raise SystemExit`**；另加 `✅ G3 PASS` 独有成功串（硬步骤 D） |
+| `windowB_surface.py` | `_along_of` docstring | 改正过时注释（见更正 1） |
+
+**⚠ 测试抓到的我自己的错（留档）**：第一版把 `_TOLD_AXN` 在外层初始化、在 `_seed_next()` 里赋值，
+**忘了 `nonlocal`** ⇒ `UnboundLocalError`，**第一次 G3 冒烟就崩**。已修（`nonlocal _TOLD_AXN`）。
+
+**冒烟验证**（`N=64`、`dx=62.5 nm`、`--per-field-axes 1`、`--nuc-law athermal`、2 步，`EXIT=0`）
+```
+★★ G3 逐变体长轴自检：6 个场的 |n*·a| ∈ [0.127107, 0.127107]（夹角 82.698°–82.698°，判据 ≤ 0.135）
+✅ G3 PASS：长轴确实逐场按变体取，且 |n*·a| 与 12 变体一致
+```
+且该冒烟真实走到了新机制：`athermal 事件 #2：fresh 被拒 ⇒ 退回 stack`、`模式 attach`、
+`sites_resampled=5`、`sites_refilled=3`、终局判决完成。

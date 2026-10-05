@@ -1968,10 +1968,18 @@ class LevelSetMulti(object):
         _dbg = c.setdefault('dbg', dict(att=0, oob=0, cov=0, exc=0, ok=0, nocand=0))
 
         def _along_of(kk):
-            """★ R31（P1-17）：该场自己的**真长轴**；取不到就退回全局 `along`。
+            """★ R31（P1-17）：该场自己的**真长轴**（`atab[kk]`）；取不到就退回全局 `along`。
 
-            `along_per_variant=False`（默认）⇒ **恒返回 `c['along']`** ⇒ 归档路径
-            逐位不变（这是 R8 的硬要求）。
+            ⚠ **2026-10-05 更正（`R623 G3`）**：原注释写
+              「`along_per_variant=False`（**默认**）⇒ 恒返回 `c['along']`」
+            —— 这**与本仓库的实际调用不符**：`_bk_exp.py:1906` 传的是
+              `along_per_variant=(a.nuc_init > 0)`
+            ⇒ 只要 `--nuc-init > 0`（**生产就是**，`_t5_short.py:99` 注入 6），
+              **该开关就是打开的** ⇒ 本函数**本来就返回逐场长轴**。
+            ⇒ 归档路径的逐位不变**不依赖**这个默认值，而依赖 `c['along']` 与
+              `atab[kk]` 在该配置下**恰好一致**（或 `atab` 取不到时回退）。
+            ⚠ 记账：`atab` 只在 `LevelSetMulti` 构造时给了 `C` 与 `eps0` 才会被填
+              （`:1394`）；两者缺一 ⇒ `atab=None` ⇒ 全部回退全局 `along`。
             """
             if not c.get('along_per_variant', False):
                 return c.get('along')
