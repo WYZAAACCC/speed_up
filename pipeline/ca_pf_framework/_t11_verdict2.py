@@ -107,6 +107,18 @@ def guess_title(txt):
             continue
         if JOURNAL_NAME.match(ln):          # ★ 期刊名整行绝不作为标题
             continue
+        # 版权/开放获取声明行（实测会顶到标题位）
+        if re.match(r"^\d{4}-\d{3,4}/©|©\s*\d{4}|the author\(s\)|published by elsevier|"
+                    r"open access article under|creative commons|cc[- ]by", ln, re.I):
+            continue
+        # 期刊卷期页行，如 "Computational Materials Science 241 (2024) 113030"
+        if re.search(r"\b(19|20)\d{2}\)\s*\d{3,6}\b", ln) or \
+           re.match(r"^[A-Z][A-Za-z &.\-]{4,60}\s+\d{1,4}\s*\(\s*(19|20)\d{2}\s*\)", ln):
+            continue
+        # 作者/单位行（多逗号 + 上标数字 + 缩写名）
+        if re.search(r"\b[A-Z]\.\s?[A-Z]?\.?\s?[A-Z][a-z]+,", ln) or \
+           len(re.findall(r",", ln)) >= 4 or re.search(r"[a-z],[a-z]", ln):
+            continue
         if re.match(r"^[\d\s.,;:()\-–—]+$", ln):
             continue
         letters = sum(c.isalpha() for c in ln)
