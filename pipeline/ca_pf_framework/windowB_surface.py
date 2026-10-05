@@ -2789,6 +2789,75 @@ class LevelSetMulti(object):
 
         return out
 
+    def _drive_on_parent(self, ed, df, which):
+        """★ 2026-10-05（**R623 G6 第二步**）：给"谁开新块 / 谁接后面"提供**物理量**。
+
+        ## 为什么需要它
+          `_bk_exp.py` 的 `_Bpar` 规则用**计数器**决定谁开新块、谁接后面
+          （`_fresh_now = (n_fresh_ok < _Bt)`）—— **规定，不是涌现**。
+          物理上应当比较**两条路的边际驱动力**：
+            * 开新块（`fresh`）：在**无主母相**里形核
+              ⇒ 相关量 = **母相胞**上的驱动力；
+            * 接后面（`stack`）：在**已有块的自由外缘**形核
+              ⇒ 相关量 = **紧邻该块的母相胞**上的驱动力
+              （与 `stack_pick_dg` 选源块用的是同一类量）。
+
+        ## 定义（先写死，不得事后挪动）
+          `T = ed + df`（`ed` 已含弹性项、`df` 是化学项 —— 与 `stack_pick_dg` 一致）
+          * `which='fresh'`：**母相胞**上 `T` 的 **max**
+            （取 max 而非 mean：形核是**局部事件**，看的是最优位点）
+          * `which='stack'`：对所有非空场 `k`，取「**紧邻 `k` 的母相胞**」上
+            `T` 的 **mean**，再对 `k` 取 **max**；返回该 `k`
+
+        返回 `(value, k_or_None)`；无候选时 `(nan, None)`。
+
+        ⚠ **纯读**（不改任何状态）⇒ 默认不被调用时对归档路径**零影响**。
+        ⚠ 记账：这是**唯象判据**（"哪条路驱动力大就走哪条"），**不是**从文献推出来的
+          率律。R-B 给的 `E_int` 判据是**位置 / 变体**判据，**不是** "fresh vs stack"
+          的判据 ⇒ 本函数是**新增的模型选择**，须如实标注、并做敏感度。
+        """
+        reg = self.region()
+        par = (reg == 0)
+        if not bool(par.any()):
+            return float('nan'), None
+        # ⚠ `ed` 的形状是 `(nv+1, N, N, N)`（**含场轴**），而 `reg`/`par` 是 `(N,N,N)`
+        #   ⇒ 索引前必须把掩码**广播到同一形状**，否则
+        #     `IndexError: boolean index did not match indexed array along axis 0`
+        #     （**实测抓到两次**：先是轴数不符，补了 `[None,…]` 又变成大小 1≠7）。
+        #   ⚠ 另：`ed` 可能含 NaN（见 `nucleate()` 里 `_ok_drv = np.isfinite(drv)` 的
+        #     守卫注释）⇒ 用 `np.where(mask & isfinite, T, -inf)` 再取 max，
+        #     避免 NaN 静默传播成"驱动力 = NaN"。
+        T = np.asarray(ed, float) + float(df)
+        parB = np.broadcast_to(par, T.shape)
+        if which == 'fresh':
+            _masked = np.where(parB & np.isfinite(T), T, -np.inf)
+            _v = float(_masked.max())
+            return (_v if np.isfinite(_v) else float('nan')), 0
+        if which != 'stack':
+            raise ValueError('_drive_on_parent: which 只能是 fresh/stack，收到 %r' % (which,))
+        best, bk = float('nan'), None
+        for k in range(1, self.nreg):
+            mk = (reg == k)
+            if not bool(mk.any()):
+                continue
+            cand = np.zeros_like(par)
+            for ax in (0, 1, 2):
+                cand |= np.roll(mk, 1, axis=ax)
+                cand |= np.roll(mk, -1, axis=ax)
+            cand &= par
+            if not bool(cand.any()):
+                continue        # 该块没有自由外缘（被完全包住）⇒ 不参选
+            # 同样的 NaN 纪律：只在有限值上取 mean（`cand` 是 (N,N,N)，`T` 含场轴
+            # ⇒ 用广播后的 `candB` 取"任一场在该胞有限"的那些胞）
+            _ok = np.isfinite(T).all(axis=0)
+            _use = cand & _ok
+            if not bool(_use.any()):
+                continue
+            v = float(T[:, _use].mean())
+            if not np.isfinite(best) or v > best:
+                best, bk = v, k
+        return best, bk
+
     def _npref_of(self, k):
         """变体 `k` 的惯习面法向（由 `advance(npref=...)` 缓存的 `self.npref_tab`）。
 

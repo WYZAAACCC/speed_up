@@ -1335,6 +1335,8 @@ def run(a):
     _PF_CACHE = {}
     _TOLD_AXN = False              # G3 的"只报一次"标志
     _TOLD_NAT = False              # R623 natural 模式的"只报一次"标志
+    _TOLD_DRV = False              # R623 G6 次序判据的"只报一次"标志
+    _drive_pick = {}               # R623 G6：fresh/stack 各被选中几次（可核查）
 
     def _field_axes(j):
         """场 `j`（1-based）**自己变体**的 `(n*, a, w)`；带缓存。"""
@@ -2897,6 +2899,41 @@ def run(a):
                     _nf, _ns = (1, 0) if _fresh_now else (0, 1)
                 else:
                     _nf, _ns = (1 if a.nuc_init > 0 else 0), 1
+                # ★★★★★★ 2026-10-05（**R623 G6 第二步：次序由驱动力决定**）
+                #   ## 缺陷
+                #     上面三条都在用**计数器 / 模运算**决定"谁开新块、谁接后面"
+                #     （`n_fresh_ok < _Bt`、`n_ath_tgt % K == 0`）—— **规定，不是涌现**。
+                #     实测后果（`t10B9` 日志）：`累计 fresh=9 stack=32`
+                #     ⇒ `fresh` **全落在一开头**，burst 的爆发形状被摊成"先建 9 个块"。
+                #   ## 物理依据（`R623 §0.3` 的 R-A/R-B 机制 + 本节定义）
+                #     两条路的**边际驱动力**谁大就走谁：
+                #       * 开新块：**母相胞**上 `T = ed + df` 的 max（`fresh`）；
+                #       * 接后面：**紧邻已有块的母相胞**上 `T` 的 max-of-mean（`stack`）。
+                #     量由引擎的 `_drive_on_parent(ed, df, which)` 给（本文件新增）。
+                #     ⚠ **记账（必须随结论报）**：这是**唯象判据**，**不是**文献率律。
+                #       R-B 的 `E_int` 判据管的是**位置 / 变体**，不管 "fresh vs stack"
+                #       ⇒ 本条属**新增模型选择**，需做敏感度。
+                #   ## 惰性（**硬要求**）
+                #     `--nuc-order-by-drive 0`（**默认**）⇒ 本段不进
+                #     ⇒ 上面那三条一行未改 ⇒ **归档逐位不变**。
+                if (bool(int(getattr(a, 'nuc_order_by_drive', 0) or 0))
+                        and a.nuc_init > 0):
+                    _d_fr, _ = g._drive_on_parent(_ed_for_nuc(), float(g.df[1]), 'fresh')
+                    _d_st, _k_st = g._drive_on_parent(_ed_for_nuc(), float(g.df[1]), 'stack')
+                    _use_fresh = bool(np.isfinite(_d_fr) and
+                                      (not np.isfinite(_d_st) or _d_fr > _d_st))
+                    _fresh_now = _use_fresh
+                    _nf, _ns = (1, 0) if _use_fresh else (0, 1)
+                    _drive_pick['fresh'] = _drive_pick.get('fresh', 0) + (1 if _use_fresh else 0)
+                    _drive_pick['stack'] = _drive_pick.get('stack', 0) + (0 if _use_fresh else 1)
+                    if not _TOLD_DRV:
+                        _TOLD_DRV = True
+                        P('   ★★★ **R623 G6：次序由驱动力决定（`--nuc-order-by-drive 1`）**')
+                        P('       定义：`T = ed + df`；`fresh` = **母相胞**上 max(T)；'
+                          '`stack` = **紧邻已有块的母相胞**上 max_of_mean(T)')
+                        P('       ⚠ 记账：**唯象判据**，非文献率律 ⇒ 需敏感度')
+                else:
+                    _d_fr = _d_st = float('nan')
                 # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` **§196**）：**接线缺口修复**。
                 #   `nucleate()` 的签名是
                 #     `nucleate(ed, …, df=0.0)`（`windowB_surface.py:1450`），
@@ -3461,6 +3498,9 @@ def run(a):
                                     g._nuc.get('dbg', {}).items()},
                                # ★ N12：记下**哪些键被降级**（不静默）
                                dbg_coercion_notes=_coerce_notes,
+                               # ★ R623 G6：fresh/stack 各被"驱动力判据"选中几次
+                               #   （**独有可核查串**；`--nuc-order-by-drive 0` 时为空 dict）
+                               drive_pick=dict(_drive_pick),
                                nuc_cfg={k: _js_key(k, v) for k, v in g._nuc.items()
                                         if k not in ('rng', 'dbg')}),
                           f, ensure_ascii=False, indent=1,
@@ -4214,6 +4254,25 @@ def main():
                     help='★ R623 G1/G6：`natural` = 根数改用 KM 体积分数律 '
                          '`N_lath(T)=f_KM·V_box/V_lath`（不用块数 B）；'
                          '`manual`（默认）= 归档的 `min(B·n(T), nv)`')
+    # ★★★★★★ 2026-10-05（**R623 G6 第二步：次序由驱动力决定**）
+    #   ## 缺陷
+    #     现行决定"谁开新块、谁接后面"的三条规则**全用计数器 / 模运算**
+    #     （`n_fresh_ok < _Bt`、`n_ath_tgt % K == 0`）—— **规定，不是涌现**。
+    #     实测（`t10B9`）：`累计 fresh=9 stack=32` ⇒ fresh 全在开头，
+    #     burst 的爆发形状被摊成"先建 9 个块"。
+    #   ## 本开关（打开后）
+    #     比较两条路的**边际驱动力**，谁大走谁：
+    #       `T = ed + df`；
+    #       `fresh` 值 = **母相胞**上 `max(T)`；
+    #       `stack` 值 = **紧邻已有块的母相胞**上 `max over k of mean(T)`。
+    #     量由引擎新增的 `LevelSetMulti._drive_on_parent(ed, df, which)` 给。
+    #   ⚠ **记账（必须随结论报）**：这是**唯象判据**，**不是**文献率律 ——
+    #     R-B 的 `E_int` 判据管的是**位置 / 变体**，不管 "fresh vs stack"
+    #     ⇒ 本条属**新增模型选择**，须做敏感度。
+    #   ⚠ 默认 **0** ⇒ 归档路径逐位不变（三条旧规则一行未改）。
+    ap.add_argument('--nuc-order-by-drive', type=int, default=0, choices=(0, 1),
+                    help='★ R623 G6：开新块 vs 接后面 由**驱动力**决定，'
+                         '不再用计数器（唯象判据，需敏感度；默认 0 = 归档）')
     ap.add_argument('--eng-seed', type=int, default=11)
     # ★ R22：关掉"有事件就强制 reinit"（**R23 起改为引擎自动**：attach 下默认关）。
     ap.add_argument('--eng-no-force-reinit', action='store_true',

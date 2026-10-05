@@ -435,3 +435,56 @@ N_lath(T) = f_KM(T) · V_box / V_lath         ← 根数由平均板条体积换
 ⇒ 这一步才真正兑现 `G6`（变体分布不再被 `--laths` 配额限制）。
 * 前置已就绪：`G5a`（解卡）、`G4`（逐变体轴）、`G3`（逐变体长轴自检）；
 * 还需（`R607`/`R608` 登记）：扩展 `_seed_undo_*` 覆盖变体指派 + 打 `[NUCASSIGN]` 独有串。
+
+### 8.5 ✅ `G6` 第二步（次序部分）：**"谁开新块 / 谁接后面"由驱动力决定**
+
+**缺陷**：决定次序的三条规则**全用计数器 / 模运算**
+（`_fresh_now = (n_fresh_ok < _Bt)`、`n_ath_tgt % K == 0`）—— **规定，不是涌现**。
+实测（`t10B9`）：`累计 fresh=9 stack=32` ⇒ `fresh` 全在开头，burst 的爆发形状被摊成"先建 9 个块"。
+
+**判据（先写死，不得事后挪动）**
+```
+T = ed + df            （ed 已含弹性项、df 是化学项 —— 与 stack_pick_dg 同一口径）
+fresh 值 = max over **母相胞** of T
+stack 值 = max over 非空场 k of [ mean over **紧邻 k 的母相胞** of T ]
+⇒ 谁大走谁
+```
+* **为什么是这个量**：`stack` 在引擎里是**沿块外缘**放的（`:2528-2531` 投影取极值）
+  ⇒ "接后面"的相关量就是**紧邻已有块的母相胞**上的驱动力；
+  而 `stack_pick_dg` 选源块用的**正是同一类量** ⇒ 可交叉核对。
+* **⚠ 记账（必须随结论报）**：这是**唯象判据**，**不是**文献率律 ——
+  R-B 的 `E_int` 判据管的是**位置 / 变体**，**不管** "fresh vs stack"
+  ⇒ 本条属**新增模型选择**，**须做敏感度**。
+
+**改动**（默认关）
+| 文件 | 位置 | 内容 |
+|---|---|---|
+| `windowB_surface.py` | `LevelSetMulti` 新增方法 | `_drive_on_parent(ed, df, which)` —— **纯读**，返回 `(值, k)` |
+| `_bk_exp.py` | `_Bpar` 三条规则**之后** | 新增 `--nuc-order-by-drive` 分支：比较两值取大，累计 `_drive_pick` |
+| `_bk_exp.py` | `nuc_dbg.json` | 新增 `drive_pick` 字段（**独有可核查串**） |
+| `_bk_exp.py` | CLI | 新增 `--nuc-order-by-drive {0,1}`（默认 0） |
+
+**⚠ 测试抓到我自己的两处错（留档）**
+1. **形状**：`ed` 是 `(nv+1,N,N,N)`（**含场轴**），而 `region()` 是 `(N,N,N)`
+   ⇒ 直接 `T[par]` 报 `IndexError`；补 `[None,…]` 后又变成"大小 1≠7"。
+   **正解**：`np.broadcast_to(par, T.shape)`。
+2. **NaN**：`ed` 可能含 NaN（引擎自己 `_ok_drv = np.isfinite(drv)` 的守卫注释写明）
+   ⇒ `max`/`mean` 会被 NaN 吞掉 ⇒ 改成 `np.where(mask & isfinite, T, -inf)` 再取。
+   **两次都是冒烟当场崩，不是我事后想到的。**
+
+**冒烟**（`N=64`、`--nuc-count-mode natural`、`--nuc-order-by-drive 1`，6 步，`EXIT=0`）
+```
+★★★ R623 G6：次序由驱动力决定（--nuc-order-by-drive 1）
+     定义：T = ed + df；fresh = 母相胞上 max(T)；stack = 紧邻已有块的母相胞上 max_of_mean(T)
+     ⚠ 记账：唯象判据，非文献率律 ⇒ 需敏感度
+```
+`nuc_dbg.json`：**`drive_pick = {"fresh": 5, "stack": 0}`** ⇒ 判据**真的在决策**
+（初始只有 1 个块、`stack` 候选面少 ⇒ 母相里的峰值驱动力明显更高 ⇒ 全走 `fresh`；
+`nslab` 序列 `1→6→6→…`，填满 `nv`）。
+另：`sites_resampled=25` 与 `sites_resampled_ungated=25` **两键分离** ⇒ `G5a` 的既有功能未被打乱。
+
+**⬜ `G6` 剩下的部分**：`R606 §5` 第 2 项 —— **槽位与变体解耦**
+（场变体无关 + `eps0`/`npref` 可按槽写入 + 空闲槽位判定）。
+⚠ 这一项**与驱动层耦合较深**：`_seed_next()` 用 `laths_eff[j-1]` 定轴、`vmap` 又来自
+`laths_eff`（`:1772`）⇒ 要动就得同步改（a）`_seed_next` 的轴查找、
+（b）`vmap` 的动态维护、（c）`_seed_undo_*` 覆盖变体指派。⇒ **单独立项做，见下一节。**
