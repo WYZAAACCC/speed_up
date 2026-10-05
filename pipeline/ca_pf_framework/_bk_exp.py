@@ -136,7 +136,26 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         'n_tip', 'n_side', 'n_wide',
         # ★★★ R47：**面间距**（三个面族）—— 「长大速率」的金标准口径。
         #   实测：包围盒跨度把它放大 2.5–2.8×；逐胞中位 dG **不预测**它。
-        'tip_sep_nm', 'side_sep_nm', 'wide_sep_nm']
+        'tip_sep_nm', 'side_sep_nm', 'wide_sep_nm',
+        # ★★★★★★ 2026-10-05（**接线 R623 第 ②-8 项 / 用户总目标 ⑧ 的明确要求**）
+        #   「**监控当板条长出盒子外时周期边界有没有正确发挥作用**」
+        #   ## 缺陷（`R619` ②-8 判定：**真 —— 监控缺口**）
+        #     `windowB_surface.py` 的 `wrap_axes` / `wrap_axes_any` / `check_wrap`
+        #     三个函数**都已实现**，且 `R619` 做过**主动 4 对照 7 判据全 PASS**
+        #     ⇒ **逻辑正确**。但 `_bk_exp.py` 里 **0 命中** ⇒ **从未被调用**
+        #     ⇒ "监控"这件事**根本没发生**。
+        #   ## 本列做什么
+        #     每步（`--wrap-every` 命中时）调 `wrap_axes_any()`（**逐变体**口径 ——
+        #     并集口径会把"网络已连通"误报成"某条板条绕盒"，见该函数的记账）
+        #     并落盘：绕盒的**场号**与**轴**。
+        #     `wrap_any` = `'k:轴|k:轴'`；无绕盒 = `''`（**空串 ≠ 0**，与既有列风格一致）。
+        #   ⚠ 记账：**只落数据**。是否"绕盒就是错"取决于判据 —— 在
+        #     `L = 10 µm`、板条可长到 ~2.4 µm 的配置下，**单根板条绕盒本不该发生**；
+        #     真发生了才说明是周期像自相互作用或量具口径问题。
+        #     ⚠ 口径警示（`AGENTS.md`）：**绕盒判定必须用"轴跨度"，不能用 `长nm`**
+        #     （`长nm` 是 PCA 主轴延伸）。本列用的是 `wrap_axes_any()` 的**周期性
+        #     连通口径**（比包围盒更严），三者不可混用。
+        'wrap_any', 'wrap_n', 'wrap_fields']
 assert len(COLS) == len(set(COLS))
 
 
@@ -263,6 +282,44 @@ def _vbf_f1frac(g, tag):
         return round(n1 / float(n), 4) if n else ''
     except (TypeError, ValueError, IndexError):
         return ''
+
+
+def _wrap_cols(g):
+    """★★★★★★ 2026-10-05（**R623 ②-8 接线**）：绕盒监控的 CSV 列。
+
+    ## 为什么需要它（`R619` ②-8 判定：**真 —— 监控缺口**）
+      `windowB_surface.py` 的三个绕盒函数（`wrap_axes` / `wrap_axes_any` /
+      `check_wrap`）**都已实现**，`R619` 还做过**主动 4 对照 7 判据全 PASS**
+      ⇒ **逻辑正确**。但 `_bk_exp.py` 里 **0 命中** ⇒ **从未被调用**
+      ⇒ 用户总目标 ⑧ 明写的「**监控当板条长出盒子外时周期边界有没有正确发挥作用**」
+      **根本没有发生**。本函数就是把它接上。
+
+    ## 口径（三个不可混用，见 `AGENTS.md`）
+      * 本函数用 **`wrap_axes_any()` 的逐变体周期连通口径** —— 最严；
+      * `region_extent()` 给的是**包围盒**（未解绕）；
+      * CSV 的 `长nm` 是 **PCA 主轴延伸**，**不能**用来判绕盒。
+      ⚠ 用**并集**口径（`wrap_axes(None)`）会把"变体网络已连通（impingement）"
+        误报成"某条板条绕盒"（见 `wrap_axes_any` 的记账，`T13_recheck_wrap.py` 实测）。
+
+    ## 返回
+      `wrap_any`    `'k:轴,轴|k:轴'`（如 `'3:x|7:y,z'`）；**无绕盒 = 空串**
+      `wrap_n`      绕盒的**场数**
+      `wrap_fields` 绕盒的**场号**（`'/'` 连接，与 `runs` 同风格）
+
+    ⚠ **只读**（不改任何状态）；异常全部吞成空串 —— 监控**绝不能**让长跑崩。
+    """
+    try:
+        wa = g.wrap_axes_any()
+        if not wa:
+            return dict(wrap_any='', wrap_n=0, wrap_fields='')
+        parts = ['%d:%s' % (int(k), ','.join(str(x) for x in ax))
+                 for k, ax in sorted(wa.items())]
+        return dict(wrap_any='|'.join(parts),
+                    wrap_n=len(wa),
+                    wrap_fields='/'.join(str(int(k)) for k in sorted(wa)))
+    except Exception as _exc:                      # noqa: BLE001
+        return dict(wrap_any='ERR:%s' % type(_exc).__name__, wrap_n=-1,
+                    wrap_fields='')
 
 
 def _blk_cols(g, reg, dx, vmap):
@@ -3216,6 +3273,10 @@ def run(a):
 
         # ★ R18：逐对 F3 面积（只在命中 `--pair-every` 时算）
         _pair_now = bool(a.pair_every > 0 and it % a.pair_every == 0)
+        # ★ 2026-10-05（R623 ②-8）：绕盒监控的节流阀。
+        #   ⚠ `--wrap-every 0`（默认）⇒ 恒 False ⇒ 三列恒为空串 ⇒ 归档逐位不变。
+        _wrap_now = bool(int(getattr(a, 'wrap_every', 0) or 0) > 0
+                         and it % max(int(getattr(a, 'wrap_every', 0) or 1), 1) == 0)
 
         def _pair_str(reg_, mm_):
             out_ = []
@@ -3373,7 +3434,14 @@ def run(a):
         nslab_nu=_nslab_dedup(mm['runs']),
         nslab_nu1=_nslab_dedup(mm['runs1']),
             nf3_col1=mm['nf3_col1'], r_col_nm=round(mm['r_col_nm'], 1),
-            col_cover_min=round(mm['col_cover_min'], 4))
+            col_cover_min=round(mm['col_cover_min'], 4),
+            # ★★★★★★ 2026-10-05（**接线 R623 ②-8：绕盒监控**）
+            #   判据量 = `wrap_axes_any()` 的**逐变体**周期连通口径。
+            #   ⚠ 只在 `--wrap-every` 命中时算（它每个场走一次连通标注，
+            #     与 `blocks()` 同量级）；**默认 `--wrap-every 0` ⇒ 全空串**
+            #     ⇒ 归档产物**逐位不变**（空串与旧行一致）。
+            **(_wrap_cols(g) if _wrap_now
+               else dict(wrap_any='', wrap_n='', wrap_fields='')))
         # ★ 防御：`cw.writerow([row[c] for c in COLS])` 里少一个键就是 KeyError，
         #   而它出现在**第 0 步写第一行**时 —— 那时构造已经花掉 60 s，
         #   且发生在长跑开头而不是起跑前。这里提前硬失败，把话说明白。
@@ -4303,6 +4371,22 @@ def main():
     ap.add_argument('--nuc-iface-nucleation', type=int, default=0, choices=(0, 1),
                     help='★ R623 G2：允许在**已有板条的界面**上形核（异变体），'
                          '对应 R-A/R-B 的第 2/3 波；默认 0 = 只许落母相（归档）')
+    # ★★★★★★ 2026-10-05（**接线 R623 ②-8：绕盒监控**）
+    #   ## 缺陷（`R619` ②-8 判定：**真 —— 监控缺口**）
+    #     `wrap_axes` / `wrap_axes_any` / `check_wrap` 三个函数**都已实现**，
+    #     `R619` 的主动 4 对照 7 判据**全 PASS** ⇒ **逻辑正确**；
+    #     但 `_bk_exp.py` 里 **0 命中** ⇒ **从未被调用** ⇒
+    #     用户总目标 ⑧ 明写的「**监控当板条长出盒子外时周期边界有没有正确发挥作用**」
+    #     **根本没有发生**。
+    #   ## 本开关
+    #     每 `--wrap-every N` 步调一次 `wrap_axes_any()`（**逐变体**周期连通口径），
+    #     落盘 `wrap_any` / `wrap_n` / `wrap_fields` 三列。
+    #   ⚠ 默认 **0 ⇒ 不算**（三列全空串）⇒ 归档产物逐位不变。
+    #   ⚠ 口径：**不能用 `长nm`（PCA 主轴延伸）判绕盒**；也不能用并集口径
+    #     （会把"网络已连通"误报成"某条板条绕盒"）。
+    ap.add_argument('--wrap-every', type=int, default=0,
+                    help='★ R623 ②-8：每 N 步查一次**逐变体绕盒**并落 CSV'
+                         '（默认 0 = 不算 ⇒ 归档逐位不变）')
     ap.add_argument('--eng-seed', type=int, default=11)
     # ★ R22：关掉"有事件就强制 reinit"（**R23 起改为引擎自动**：attach 下默认关）。
     ap.add_argument('--eng-no-force-reinit', action='store_true',
