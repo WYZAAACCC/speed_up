@@ -1966,6 +1966,14 @@ def run(a):
                   #   ⚠ 默认 **0** ⇒ 归档路径逐位不变。
                   #   打开后新增诊断键 `sites_resampled_ungated`（硬步骤 D 可核查）。
                   sites_resample_always=bool(int(getattr(a, 'nuc_resample_ungated', 0))),
+                  # ★★★★★★ 2026-10-05（**R623 G2：放开异变体界面形核**）
+                  #   原判据只许落在**母相**上 ⇒ R-A/R-B 的第 2/3 波发生不了。
+                  #   打开后允许覆盖区 = 母相 ∪ **恰好一个**已转变场，且新场变体
+                  #   **不同于**该场变体（"异"变体界面形核）。
+                  #   ⚠ 残留差距：**没有** R-B 的 `σ·ε` 张量缩并（引擎没有 `σ`），
+                  #     也**没有**"共用位点被更负者抢占" ⇒ 后者是独立缺口。
+                  #   ⚠ 默认 **0** ⇒ 归档逐位不变。
+                  nuc_iface_nucleation=bool(int(getattr(a, 'nuc_iface_nucleation', 0))),
                   occ_guard=bool(int(getattr(a, 'nuc_occ_guard', 0))),   # ★ s300 占用守卫
                   # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` **§200**）：
                   #   **接线缺口 #3 的修复** —— 把 `dG` 接到"选哪个块做 sympathetic 源"上。
@@ -4273,6 +4281,28 @@ def main():
     ap.add_argument('--nuc-order-by-drive', type=int, default=0, choices=(0, 1),
                     help='★ R623 G6：开新块 vs 接后面 由**驱动力**决定，'
                          '不再用计数器（唯象判据，需敏感度；默认 0 = 归档）')
+    # ★★★★★★ 2026-10-05（**R623 G2：放开异变体界面形核**）
+    #   ## 缺陷（`R623 §3/§5`；R-A/R-B 的第 2/3 波）
+    #     引擎 stack/offset 通道的守卫是 `(reg[cover] == 0).all()`
+    #     —— **只许落在母相上**。覆盖区里只要有**任何**已转变胞就拒（`cov += 1`）
+    #     ⇒ "**在已有板条的界面上继续形核**"这条机制**在本引擎里发生不了**。
+    #     R-A 结论 (5)(6) / R-B 结论 (3) 说的正是它（异变体 edge-to-edge 链式反应）。
+    #   ## 本开关（打开后）
+    #     允许覆盖区 = 母相 ∪ **恰好一个**已转变场 `ksrc`，**且新场变体必须不同于
+    #     `ksrc` 的变体**（这才是"**异**变体"界面形核；同变体贴同变体仍走原语义）。
+    #     独有可核查串（`dbg`）：`iface_ok` / `iface_pair`（如 `"1>4"`）/
+    #     `iface_samevar` / `iface_multi`。
+    #   ## ⚠ 残留差距（**必须随结论报**）
+    #     R-B 的判据是 `E_int(r,p) = −σ_ij^{V1}(r)·ε_ij^{Vp}`，而**引擎没有 `σ` 张量
+    #     这个量**（`elastic_driving()` 给的是每变体的**弹性能变化** `ed`）
+    #     ⇒ **不臆造 `σ`**。本开关只落 R-B 判据里**可算**的那两条：
+    #       (a) 几何："贴着某一根已有板条"；(b) 取向："异变体"。
+    #     **未实现**：`σ·ε` 缩并、以及"**共用位点时 `E_int` 更负者抢占**"
+    #     ⇒ 后者是 `R623 §0.3(c)` 的**独立缺口**，另立一项，不在此开关里假装做了。
+    #   ⚠ 默认 **0** ⇒ 归档路径逐位不变。
+    ap.add_argument('--nuc-iface-nucleation', type=int, default=0, choices=(0, 1),
+                    help='★ R623 G2：允许在**已有板条的界面**上形核（异变体），'
+                         '对应 R-A/R-B 的第 2/3 波；默认 0 = 只许落母相（归档）')
     ap.add_argument('--eng-seed', type=int, default=11)
     # ★ R22：关掉"有事件就强制 reinit"（**R23 起改为引擎自动**：attach 下默认关）。
     ap.add_argument('--eng-no-force-reinit', action='store_true',

@@ -1545,6 +1545,7 @@ class LevelSetMulti(object):
                 var_rule='ed', use_fcrit=False,
                 supercrit=False, sites_refill=False, sites_margin=4,
                 sites_resample_always=False,
+                nuc_iface_nucleation=False,
                 occ_guard=False,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
                 nfsv_diag=False, periodic_seed=False,
@@ -1642,6 +1643,21 @@ class LevelSetMulti(object):
                          #   ⚠ **默认 False** ⇒ 归档路径逐位不变。
                          #   打开后单独计数键 = `sites_resampled_ungated`（可核查）。
                          sites_resample_always=bool(sites_resample_always),
+                         # ★★★★★★ 2026-10-05（**R623 G2：放开异变体界面形核**）
+                         #   原判据 `(reg[cover]==0).all()`（`nucleate()` 的 stack/offset
+                         #   通道）只许落在**母相**上 ⇒ 覆盖区里只要有**任何**已转变胞
+                         #   就拒（`cov += 1`）⇒ R-A/R-B 的第 2/3 波
+                         #   （**在已有板条界面上继续形核**、异变体 edge-to-edge）
+                         #   **发生不了**。
+                         #   打开后：覆盖区 = 母相 ∪ **恰好一个**已转变场 `ksrc`，
+                         #   且新场变体**必须不同于** `ksrc` 的变体
+                         #   （"异"变体界面形核）；同变体贴同变体仍走原 `stack` 语义。
+                         #   ⚠ **残留差距（必须随结论报）**：**没有**用 R-B 的
+                         #     `E_int = −σ_ij^{V1}·ε_ij^{Vp}` 张量缩并（**引擎没有 `σ`**），
+                         #     也**没有**实现"`E_int` 更负者抢占共用位点"
+                         #     ⇒ 后者是 `R623 §0.3(c)` 的**独立缺口**，另立一项。
+                         #   ⚠ **默认 False** ⇒ 归档路径逐位不变。
+                         nuc_iface_nucleation=bool(nuc_iface_nucleation),
                          # ★★★ R11（2026-09-29）：**块的"可表示性"与"界面 regime"**
                          #   两个开关。默认全关 ⇒ 与归档逐位相同。
                          #
@@ -2700,7 +2716,52 @@ class LevelSetMulti(object):
                                 _dbg.setdefault('empty', 0)
                                 _dbg['empty'] += 1
                                 continue
-                            if not bool((reg[cover] == 0).all()):
+                            # ★★★★★★ 2026-10-05（**R623 G2：放开异变体界面形核**）
+                            #   ## 缺陷（`R623 §3/§5`）
+                            #     原判据 `(reg[cover] == 0).all()` 只许落在**母相**上
+                            #     ⇒ 覆盖区里只要有**任何**已转变胞就拒（`cov += 1`）
+                            #     ⇒ R-A/R-B 描述的第 2/3 波（**在已有板条界面上继续形核**、
+                            #       异变体 edge-to-edge）**在本引擎里发生不了**。
+                            #   ## 依据与**可算等价量**（诚实记账）
+                            #     R-B 的判据是 `E_int(r,p) = −σ_ij^{V1}(r)·ε_ij^{Vp}`
+                            #     但**引擎没有 `σ` 张量这个量**（`elastic_driving()` 给的
+                            #     是每变体的**弹性能变化** `ed`）⇒ **不臆造 `σ`**，
+                            #     改用**可算且同向**的量：
+                            #       `T_p = ed[p] + df`（该变体在该胞的**总驱动力**）
+                            #     R-B 的大意是"二次 α 出现在**它自己有利**、且**紧贴初生
+                            #     板条**的位置"⇒ 本实现把它落成**两条**：
+                            #       (a) **几何**：覆盖区 = 母相 ∪ **恰好一个**已转变场 `ksrc`
+                            #           （即"贴着某一根已有板条"）；
+                            #       (b) **取向**：新场变体必须**不同于** `ksrc` 的变体
+                            #           —— 这才是"**异**变体界面形核"；
+                            #           同变体贴同变体走原来的 `stack` 语义（不受本开关影响）。
+                            #     ⚠ 残留差距（**必须随结论报**）：本实现**没有**用 R-B 的
+                            #       `σ·ε` 张量缩并，也没有实现"**`E_int` 更负者抢占共用位点**"
+                            #       ⇒ 那是 `R623 §0.3(c)` 的一条**独立缺口**，另立一项。
+                            #   ## 惰性（**硬要求**）
+                            #     `nuc_iface_nucleation=False`（**默认**）⇒ 走原判据
+                            #     ⇒ 归档逐位不变（由 `_r30_regress.sh` 把关）。
+                            _iface_ok = False
+                            if bool(c.get('nuc_iface_nucleation', False)):
+                                # ★ 与单元测试**共用同一份逻辑**（`_test_stack_iface_ok`）
+                                #   —— 避免"测的"与"跑的"是两份实现这种自欺。
+                                _iface_ok, _why = self._test_stack_iface_ok(
+                                    cover, reg, k_new, getattr(self, 'vmap', None))
+                                if _iface_ok:
+                                    _dbg['iface_ok'] = _dbg.get('iface_ok', 0) + 1
+                                    _vm3 = getattr(self, 'vmap', None) or {}
+                                    _ksrc3 = [int(x) for x in np.unique(reg[cover])
+                                              if int(x) != 0]
+                                    if _ksrc3:
+                                        _dbg['iface_src'] = _ksrc3[0]
+                                        _dbg['iface_pair'] = '%d>%d' % (
+                                            int(_vm3.get(_ksrc3[0], -1)),
+                                            int(_vm3.get(k_new, -1)))
+                                elif _why == 'samevar':
+                                    _dbg['iface_samevar'] = _dbg.get('iface_samevar', 0) + 1
+                                elif _why == 'multi':
+                                    _dbg['iface_multi'] = _dbg.get('iface_multi', 0) + 1
+                            if not (_iface_ok or bool((reg[cover] == 0).all())):
                                 _dbg['cov'] += 1
                                 continue
                             try:
@@ -2788,6 +2849,35 @@ class LevelSetMulti(object):
             c['sites'] = sites
 
         return out
+
+    def _test_stack_iface_ok(self, cover, reg, k_new, vmap):
+        """★ 2026-10-05（**R623 G2**）：把 `nucleate()` stack 通道里那条
+        "异变体界面形核"守卫**抽出来**，供单元测试直接调用。
+
+        ## 为什么要有这个钩子
+          那段代码埋在 `nucleate()` 的 `if n_stack > 0` → `attach 失败后` →
+          `for _try in range(16)` → `for j in range(4)` **四层嵌套**里
+          ⇒ **肉眼与 grep 都很难验证它到底走没走到**。
+          R581 **P43** 的教训正是"判据必须先证明它有分辨力"。
+          ⇒ 抽出成纯函数：单元测试可以**直接喂** `cover/reg/vmap` 造出
+            "覆盖区里恰好有一个别的场"的几何，**确定性地**打到这条判据，
+            不必去凑真实的 nucleation 几何。
+
+        返回 `(ok, why)`；`why` ∈ `{'parent','iface','samevar','multi'}`。
+        ⚠ **纯函数**，不读不写任何状态 ⇒ 不影响归档路径。
+        """
+        if bool((reg[cover] == 0).all()):
+            return True, 'parent'
+        vm = vmap or {}
+        oth = [int(x) for x in np.unique(reg[cover]) if int(x) != 0]
+        if len(oth) != 1:
+            return False, ('multi' if len(oth) > 1 else 'parent')
+        ksrc = oth[0]
+        vsrc = int(vm.get(ksrc, -1))
+        vnew = int(vm.get(k_new, -1))
+        if vsrc > 0 and vnew > 0 and vsrc != vnew:
+            return True, 'iface'
+        return False, 'samevar'
 
     def _drive_on_parent(self, ed, df, which):
         """★ 2026-10-05（**R623 G6 第二步**）：给"谁开新块 / 谁接后面"提供**物理量**。
