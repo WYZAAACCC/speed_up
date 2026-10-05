@@ -1334,6 +1334,7 @@ def run(a):
     _PF_AX = bool(int(getattr(a, 'per_field_axes', 0) or 0))
     _PF_CACHE = {}
     _TOLD_AXN = False              # G3 的"只报一次"标志
+    _TOLD_NAT = False              # R623 natural 模式的"只报一次"标志
 
     def _field_axes(j):
         """场 `j`（1-based）**自己变体**的 `(n*, a, w)`；带缓存。"""
@@ -2741,10 +2742,58 @@ def run(a):
                 _n_blk = int(round(_N_end * _f_km))
             else:
                 _n_blk = int(np.floor(CL.alpha_km_n_lath(_Tnow, _alpha) + 1e-12))
-            if _Bt > 0:
+            # ★★★★★★ 2026-10-05（**R623 G1+G6：`--nuc-mode natural`**）
+            #   ## 依据
+            #     `R606_NATURAL_NUCLEATION_DESIGN.md` §3（用户指示「取消每变体场配额、
+            #     只留 nv 上限，让其自然演化」）：
+            #       KM 律本身是**体积分数**律 ⇒ 根数由**平均板条体积**换算：
+            #           `f_KM(T) = 1 − exp[−α_KM(M_s − T)]`
+            #           `N_lath(T) = f_KM(T) · V_box / V_lath`
+            #       ⇒ **不再需要 `B`**。
+            #   ## 为什么这就修掉了 `G1`
+            #     `manual` 走 `_tgt = min(B · n_blk, nv)` —— `n_blk` 是
+            #     **C-2 对「一个堆叠块」导出的板条数**（`limitations()` 第 1 条：
+            #     C-2 只对堆叠型块成立）⇒ 拿它乘块数 `B` **没有推导支持**。
+            #     `natural` 改用全盒体积律 ⇒ `B` 那个乘子自然消失。
+            #   ## ⚠ 预登记的后果（`R606 §3`，必须随结论一起报）
+            #     `α_KM = 0.041739`、`T_end = 298 K` ⇒ `f_KM(T_end) = 1 − e^{−24} ≈ 1.0`
+            #     ⇒ `N_lath ≈ V_box/V_lath`。生产 `V_box = 1000 µm³`、
+            #       `V_lath = t·L·W = 2500×640×510 nm = 0.816 µm³`
+            #     ⇒ **约 1225 根，远超 `nv = 220`** ⇒ **本盒受 `nv` 上限截断**
+            #       （达到的分数 `f ≈ 220·V_lath/V_box ≈ 18%`，不是 100%）。
+            #     ⇒ **必须如实标注"受 nv 上限截断"**，不得说成"自然长满了"。
+            #   ## 惰性（**硬要求**）
+            #     `--nuc-count-mode manual`（**默认**）⇒ 本段不进 ⇒ `_n_blk` 用上式、
+            #     再走下面的 `_tgt = min(_Bt · _n_blk, nv)` ⇒ **归档逐位不变**。
+            _NATMODE = str(getattr(a, 'nuc_count_mode', 'manual')) == 'natural'
+            _V_lath = (float(a.plate_T) * 1e-9) * (float(a.plate_L) * 1e-9) \
+                * (float(a.plate_W) * 1e-9)
+            _V_box = float(L) ** 3
+            if _NATMODE:
+                _n_blk = int(round(_V_box / max(_V_lath, 1e-300)
+                                   * (1.0 - np.exp(-_alpha * max(M_S_TI64 - _Tnow, 0.0)))))
+            if _Bt > 0 and not _NATMODE:
                 _tgt = min(_Bt * _n_blk, nv)
             else:
+                # ⚠ natural 模式**不乘 `_Bt`** —— 体积律 `N_lath(T)` 已是**全盒**总数，
+                #   再乘块数会把它抵消掉（`G1` 的同一个病）。
                 _tgt = min(_n_blk, nv)
+            # ★ R623 G1/G6：natural 的**独有可核查串**（硬步骤 D）+ 上限截断记账。
+            if _NATMODE and not _TOLD_NAT:
+                _TOLD_NAT = True
+                _f_end = 1.0 - np.exp(-_alpha * max(M_S_TI64 - float(a.T_end), 0.0))
+                _N_phys = _V_box / max(_V_lath, 1e-300) * _f_end
+                P('   ★★★ **R623 natural 模式（`--nuc-count-mode natural`）**')
+                P('       律：`N_lath(T) = f_KM(T)·V_box/V_lath`（`R606 §3`）'
+                  ' ⇒ **不使用块数 `B`**')
+                P('       `V_box` = %.3f µm³ ；`V_lath` = t·L·W = %.0f×%.0f×%.0f nm'
+                  ' = **%.4f µm³**' % (_V_box * 1e18, a.plate_T, a.plate_L, a.plate_W,
+                                       _V_lath * 1e18))
+                P('       `f_KM(T_end=%.0f K)` = %.6f ⇒ **物理要求 N_lath ≈ %.0f 根**'
+                  % (a.T_end, _f_end, _N_phys))
+                P('       ⚠⚠ **受 `nv = %d` 上限截断**：本盒最多只能表示 %d 根'
+                  '（= 物理要求的 **%.1f%%**）⇒ 结论必须标注"截断"，'
+                  '**不得**说成"自然长满了"' % (nv, nv, 100.0 * nv / max(_N_phys, 1e-30)))
             # ★★★★★★ s291（**用户总目标第 4 项：修 burst 至物理正确 —— 第二处缺陷**）
             #   ## 缺陷（**记账错，且是原代码就带的**）
             #     `:2150` 自己写明 `n_ath_tgt` 是「**当前的累计根数**」
@@ -2949,10 +2998,14 @@ def run(a):
                       #     ⇒ 这一列会涨到 **`45/23`**，**看着像超额 2 倍，实际正确**。
                       #   ## 修法（**加法式**：两个口径都给，旧日志仍可解析）
                       #     `累计 n/本档目标（本档目标；每块口径 _n_law）`
-                      '，df=%.4e，场 %d（累计 %d/%d（本档目标；每块口径 %d）；'
+                      # ★ 2026-10-05（R623 G1/G6）：`natural` 下 **没有"块"这个先验**
+                      #   ⇒ 该列**不得**再写"每块口径"（它会谎报一个不存在的量）。
+                      #   `manual` 下保持原字符串**逐字不变**（旧日志仍可解析）。
+                      '，df=%.4e，场 %d（累计 %d/%d（本档目标%s）；'
                       '模式 **%s**；累计 fresh=%d stack=%d）'
                       % (it, _Tnow, _kpb, CL.T_of_k(_kpb, _alpha), _kpb, _B_eff,
-                         float(g.df[1]), _ev[0][0], n_ath_tgt, _tgt, _n_law,
+                         float(g.df[1]), _ev[0][0], n_ath_tgt, _tgt,
+                         ('' if _NATMODE else '；每块口径 %d' % _n_law),
                          _ev[0][1], n_mode.get('fresh', 0), n_mode.get('stack', 0)))
                 else:
                     P('   ⚠ athermal 形核**被引擎拒**（无可用空场/落位失败）@ step %d'
@@ -4138,6 +4191,29 @@ def main():
     #     而「只给 `--grow-stack`」这一新写法自动拿到**已验的引擎路径**。
     ap.add_argument('--nuc-mode', default='auto',
                     choices=['auto', 'driver', 'engine'])
+    # ★★★★★★ 2026-10-05（**R623 G1+G6**）：**根数从哪来**（`R606 §3` 的体积律）
+    #   ## 为什么**不**复用 `--nuc-mode`
+    #     `--nuc-mode`（上一行）已经占用了 `auto/driver/engine`，语义是
+    #     「**谁来形核**」（驱动层节奏 vs 引擎自发）。而 `R606` 的设计本意是
+    #     「**谁决定变体与根数**」—— **两件事不同**。
+    #     ⚠ 若把 `manual/natural` 塞进 `--nuc-mode` 的 choices，`getattr(...)=='natural'`
+    #       仍能工作，但**同一个开关名承载两套语义**会误导后来人 ⇒ **另起新名**。
+    #   ## 语义
+    #     `manual`（**默认**）：`_tgt = min(B · n(T), nv)`，`n = floor(α_KM(M_s − T))`
+    #       —— `n` 是 **C-2 对「一个堆叠块」**导出的板条数，乘块数 `B` **无推导支持**（`G1`）。
+    #     `natural`：`_tgt = min(N_lath(T), nv)`，
+    #       `N_lath(T) = f_KM(T)·V_box/V_lath`（**体积分数律**，`R606 §3`）⇒ **不用 `B`**。
+    #   ## ⚠ 预登记后果（`R606 §3`，必须随结论报）
+    #     生产 `V_box = 1000 µm³`、`V_lath = t·L·W = 510×2400×640 nm = 0.816 µm³`
+    #     ⇒ 物理要求 ≈ **1225 根** ≫ `nv = 220` ⇒ **受 `nv` 上限截断**（约 18%）。
+    #     ⇒ 结论必须标注"截断"，不得说成"自然长满"。
+    #   ## 惰性
+    #     默认 `manual` ⇒ 与修前**逐位相同**（由 `_r30_regress.sh` 把关）。
+    ap.add_argument('--nuc-count-mode', default='manual',
+                    choices=['manual', 'natural'],
+                    help='★ R623 G1/G6：`natural` = 根数改用 KM 体积分数律 '
+                         '`N_lath(T)=f_KM·V_box/V_lath`（不用块数 B）；'
+                         '`manual`（默认）= 归档的 `min(B·n(T), nv)`')
     ap.add_argument('--eng-seed', type=int, default=11)
     # ★ R22：关掉"有事件就强制 reinit"（**R23 起改为引擎自动**：attach 下默认关）。
     ap.add_argument('--eng-no-force-reinit', action='store_true',

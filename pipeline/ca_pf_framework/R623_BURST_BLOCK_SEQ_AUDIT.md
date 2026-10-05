@@ -383,3 +383,55 @@ along_per_variant=(a.nuc_init > 0),
 ```
 且该冒烟真实走到了新机制：`athermal 事件 #2：fresh 被拒 ⇒ 退回 stack`、`模式 attach`、
 `sites_resampled=5`、`sites_refilled=3`、终局判决完成。
+
+### 8.4 ✅ `G1`+`G6` 第一步：`--nuc-count-mode natural`（根数改用体积律，**不用块数 `B`**）
+
+**依据**：`R606_NATURAL_NUCLEATION_DESIGN.md` §3（用户指示「取消每变体场配额、只留 `nv` 上限」）：
+```
+f_KM(T)  = 1 − exp[−α_KM(M_s − T)]          ← KM 律本身是**体积分数**律
+N_lath(T) = f_KM(T) · V_box / V_lath         ← 根数由平均板条体积换算 ⇒ **不用 B**
+```
+
+**⚠ 开关命名（一处刻意的偏离，已记账）**
+`R606` 原文写的是 `--nuc-mode {manual, natural}`，但 **`--nuc-mode` 这个名字已被占用**
+（`_bk_exp.py` 的 `choices=['auto','driver','engine']`，语义是「**谁来形核**」）。
+两者是**不同的事**（一个管"谁形核"、一个管"根数从哪来"）⇒ **另起新名**
+**`--nuc-count-mode {manual, natural}`**（默认 `manual`），**不改动** `--nuc-mode`
+（否则会破坏所有归档臂的 `--nuc-mode` 语义）。
+
+**改动**（默认关，`manual` 路径一字不动）
+| 文件 | 位置 | 内容 |
+|---|---|---|
+| `_bk_exp.py` | athermal 块的 `_n_blk` 计算后 | 新增 `_NATMODE` 分支：`_n_blk = round(V_box/V_lath · f_KM(T))` |
+| `_bk_exp.py` | `_tgt` 计算 | `natural` 下**不乘 `_Bt`**（`_tgt = min(_n_blk, nv)`） |
+| `_bk_exp.py` | 同上 | 新增**独有可核查串**（硬步骤 D）：打印律、`V_box`、`V_lath`、`f_KM(T_end)`、**物理要求根数**、以及**受 `nv` 截断的百分比** |
+| `_bk_exp.py` | 形核打印 | **修报告缺陷**：`natural` 下那句「每块口径 %d」会**谎报一个不存在的量** ⇒ 改为按模式给文案；`manual` 下字符串**逐字不变**（旧日志仍可解析） |
+| `_bk_exp.py` | CLI | 新增 `--nuc-count-mode {manual,natural}`（默认 `manual`） |
+
+**⚠ 预登记后果（`R606 §3`，已随串打印，必须随结论一起报）**
+`f_KM(T_end) ≈ 1.0` ⇒ 物理要求 `N_lath ≈ V_box/V_lath`：
+* 生产（`V_box = 1000 µm³`、`V_lath = 0.816 µm³`）⇒ **≈ 1225 根 ≫ `nv = 220`** ⇒ 约 **18%**；
+* 小盒冒烟（`N=64` ⇒ `V_box = 64 µm³`、`V_lath = 0.384 µm³`）⇒ **≈ 167 根 ≫ `nv = 6`** ⇒ **3.6%**。
+⇒ **本盒受 `nv` 上限截断**，结论**不得**说成"自然长满了"。
+⇒ 但用户要的「两百多根（≤ `nv`）」正好落在 `nv = 220` 附近 ⇒ **两者相容**（`R606 §3` 已记）。
+
+**冒烟验证**（`N=64`、`--nuc-count-mode natural`、`--nuc-block-target 0`、`--per-field-axes 1`，6 步，`EXIT=0`）
+```
+★★★ R623 natural 模式（--nuc-count-mode natural）
+     律：N_lath(T) = f_KM(T)·V_box/V_lath（R606 §3） ⇒ 不使用块数 B
+     V_box = 64.000 µm³ ；V_lath = t·L·W = 250×2400×640 nm = 0.3840 µm³
+     f_KM(T_end=298 K) = 1.000000 ⇒ 物理要求 N_lath ≈ 167 根
+     ⚠⚠ 受 nv = 6 上限截断：本盒最多只能表示 6 根（= 物理要求的 3.6%）
+```
+* `nslab` 序列 = **1 → 6 → 6 → 6 → 6** ⇒ **填满 `nv`**（正是"截断"的预期表现）；
+* **无死锁**（`N2` 判据方向）；「每块口径」在该模式日志里出现 **0 次**（报告缺陷已修）。
+
+**回归**（`_r30_regress.sh`，18:05–18:12，`EXIT=0`）：`manual` 默认路径
+**共有列差异 = 0** ✅ / Traceback **0** / 顶层异常 **0** / 量具 **FAIL=0** ✅ / `pf3d` **ALL PASS** ✅。
+
+**⬜ `G1`+`G6` 的第二步（未做，下一步）**：`R606 §5` 的第 2 项 ——
+**槽位与变体解耦**（场变体无关 + `eps0`/`npref` 可按槽写入 + 空闲槽位判定），
+并把「谁开新块 / 谁接后面」从计数器改成**由驱动力决定**。
+⇒ 这一步才真正兑现 `G6`（变体分布不再被 `--laths` 配额限制）。
+* 前置已就绪：`G5a`（解卡）、`G4`（逐变体轴）、`G3`（逐变体长轴自检）；
+* 还需（`R607`/`R608` 登记）：扩展 `_seed_undo_*` 覆盖变体指派 + 打 `[NUCASSIGN]` 独有串。
