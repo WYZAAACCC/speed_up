@@ -1544,6 +1544,7 @@ class LevelSetMulti(object):
                 harden_f=1.0, sym_gap_cells=2, max_per_step=1, seed=11,
                 var_rule='ed', use_fcrit=False,
                 supercrit=False, sites_refill=False, sites_margin=4,
+                sites_resample_always=False,
                 occ_guard=False,
                 vgroup=None, nfsv=False, attach=False, attach_overlap=0.0,
                 nfsv_diag=False, periodic_seed=False,
@@ -1628,6 +1629,19 @@ class LevelSetMulti(object):
                          #   ⚠ **默认 False** ⇒ 归档行为逐位不变（池子用尽即止）。
                          sites_refill=bool(sites_refill),
                          sites_margin=int(sites_margin),
+                         # ★★★★★ 2026-10-05（**R623 G5a：解卡路径去门控**）
+                         #   上面那段"整张位点表重抽"（`nucleate()` 内的
+                         #   `if (not _any_ok) and sites_refill and sites:`）写在
+                         #   `if sites and n_fresh > 0:` 的**内部** ⇒
+                         #   **`n_fresh == 0` 时永不执行**。
+                         #   而 `fresh` 名额用尽后 `n_fresh` 恒为 0 ⇒
+                         #   只剩 `stack`/`attach`，且**唯一解卡机制被挡在门外**
+                         #   ⇒ 每步重复同一批"放不下"的位点 ⇒ **步进永不推进**。
+                         #   实测（`t10B9`，`R617`）：`fresh_cand=9`、`empty=387`、
+                         #   `sites_refilled=7`，而 `sites_resampled` **一次都没出现**。
+                         #   ⚠ **默认 False** ⇒ 归档路径逐位不变。
+                         #   打开后单独计数键 = `sites_resampled_ungated`（可核查）。
+                         sites_resample_always=bool(sites_resample_always),
                          # ★★★ R11（2026-09-29）：**块的"可表示性"与"界面 regime"**
                          #   两个开关。默认全关 ⇒ 与归档逐位相同。
                          #
@@ -2031,6 +2045,12 @@ class LevelSetMulti(object):
                                                exc=0, ok=0, nocand=0))
                 _c7['sites_refilled'] = _c7.get('sites_refilled', 0) + _gen
                 c['sites'] = sites
+        # ★ 2026-10-05（R623 G5a）：`_any_ok` 在**进入下面的 `if` 之前**就初始化。
+        #   虽然 G5a 的最终判据（文末 `not out`）已不读它，但旧路径
+        #   （`if (not _any_ok) and sites_refill and sites:`）读它，
+        #   而那个 `if` 也在 `if sites and n_fresh > 0:` **内部** ⇒ 目前不会
+        #   在未定义时被读到。**保留此行只为把"未定义名"这条隐患消掉**，不改数值。
+        _any_ok = False           # 本轮是否有位点**放成**（fresh 通道内使用）
         if sites and n_fresh > 0:            # ★★ Round 103 修（`WINDOWB_AUDIT_REGISTER.md` A8）：原来写
             #   `cl = np.clip(ed[1:], None, None)` —— **两端都是 `None` ⇒ 恒等变换**
             #   （实测 `np.clip([-1,2],None,None) == [-1,2]`），却每步**复制**一整个
@@ -2719,6 +2739,46 @@ class LevelSetMulti(object):
             _dbg['forced_reinit'] = (_dbg.get('forced_reinit', 0)
                                      + (1 if c.get('force_reinit_after_event', True)
                                         else 0))
+
+        # ★★★★★ 2026-10-05（**R623 G5a：解卡路径去门控**）
+        #   ## 缺陷（`R617` 实测定位；`t10B9` 卡在 step 1 一小时）
+        #     唯一的解卡机制 —— "整张位点表重抽" —— 写在
+        #         `if sites and n_fresh > 0:`        ← 本函数（`fresh` 通道内）
+        #     的**内部** ⇒ **`n_fresh == 0` 时永不执行**。
+        #     而 `--nuc-init > 0` 的名额用尽后 `n_fresh` 恒为 0
+        #     （`_bk_exp.py` 的 `_Bpar` 规则：`n_fresh_ok == _Bt` 之后
+        #      全部事件改走 `stack`）⇒ 只剩 `stack`/`attach` 在跑，
+        #     而**解卡机制被挡在门外** ⇒ 每个时间步重复同一批"放不下"的位点
+        #     ⇒ **步进永不推进**。
+        #     运行期独有串（`_w2_t5_short_t10B9.log` 末行）：
+        #       `fresh_cand=9  empty=387  sites_refilled=7`，
+        #       而 **`sites_resampled` 字段一次都没出现过**。
+        #   ## 修法（**只在开关打开时生效 ⇒ 归档路径逐位不变**）
+        #     把重抽挪到**所有通道之后**，判据从"fresh 名额还在"
+        #     改成 **「本次调用一个事件都没放成」（`not out`）** ——
+        #     这正是"位点表里卡着一个几何上永远不合格的位置"的定义
+        #     （见 `:2250-2258` 的长注释：位点代表母相里**预存**的异质位置，
+        #      会被长过来的板条吞掉 ⇒ 正确做法就是**重抽**）。
+        #     ⚠ 判据里**不需要**"本轮是否尝试过"：`not out` 已经蕴含
+        #       "尝试了但都没成，或者压根没东西可试" —— 两种情况下
+        #       重抽都是对的（旧的坏位点不该继续堵着）。
+        #   ## 惰性
+        #     `sites_resample_always` 默认 **False** ⇒ 本段不进
+        #     ⇒ 与修前**逐位相同**（由 `_r30_regress.sh` 把关）。
+        #   ## 可核查（硬步骤 D）
+        #     打开后**必然**出现 `sites_resampled_ungated` 键，且**只**在
+        #     `not out` 时增长。**不是** `sites_resampled`（那个仍归旧路径）。
+        if (bool(c.get('sites_resample_always', False))
+                and bool(c.get('sites_refill', False))
+                and sites and not out):
+            _pad3 = c['R'] + 2 * self.dx
+            for _ii in range(len(sites)):
+                sites[_ii] = (int(rng.integers(1, self.nreg)),
+                              rng.random(3) * (self.L - 2 * _pad3) + _pad3)
+            _dbg['sites_resampled_ungated'] = (
+                _dbg.get('sites_resampled_ungated', 0) + len(sites))
+            c['sites'] = sites
+
         return out
 
     def _npref_of(self, k):

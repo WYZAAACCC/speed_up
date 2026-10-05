@@ -1866,6 +1866,16 @@ def run(a):
                   #     它只保证"**不会因为池子空而停**"。
                   #   ⚠ 默认 **0** ⇒ 归档路径逐位不变。
                   sites_refill=bool(int(getattr(a, 'nuc_sites_refill', 0))),
+                  # ★★★★★ 2026-10-05（**R623 G5a：解卡路径去门控**）
+                  #   缺陷：唯一的解卡机制（整张位点表重抽，`nucleate()` 内）
+                  #   写在 `if sites and n_fresh > 0:` **内部** ⇒
+                  #   `fresh` 名额用尽（`n_fresh` 恒 0）后**永不执行** ⇒
+                  #   `stack`/`attach` 每步重复同一批"放不下"的位点 ⇒ **步进永不推进**。
+                  #   实测（`t10B9`，见 `R617`）：`fresh_cand=9`、`empty=387`、
+                  #   `sites_refilled=7`，而 `sites_resampled` **一次都没出现**。
+                  #   ⚠ 默认 **0** ⇒ 归档路径逐位不变。
+                  #   打开后新增诊断键 `sites_resampled_ungated`（硬步骤 D 可核查）。
+                  sites_resample_always=bool(int(getattr(a, 'nuc_resample_ungated', 0))),
                   occ_guard=bool(int(getattr(a, 'nuc_occ_guard', 0))),   # ★ s300 占用守卫
                   # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` **§200**）：
                   #   **接线缺口 #3 的修复** —— 把 `dG` 接到"选哪个块做 sympathetic 源"上。
@@ -3720,6 +3730,24 @@ def main():
     ap.add_argument('--nuc-sites-refill', type=int, default=0, choices=(0, 1),
                     help='形核位点池用尽时按同一分布继续抽（位点代表'
                          '**预先存在的异质位置**，物理上不应"用尽"）')
+    # ★★★★★ 2026-10-05（**R623 G5a：解卡路径去门控**）
+    #   ## 缺陷（`R617` 实测定位；`t10B9` 卡在 step 1 一小时）
+    #     唯一的解卡机制 —— "整张位点表重抽" —— 写在
+    #       `if sites and n_fresh > 0:`            （`windowB_surface.py` 内）
+    #     的**内部** ⇒ `n_fresh == 0` 时**永不执行**。
+    #     而 `--nuc-init > 0` 的名额用尽后 `n_fresh` 恒为 0
+    #     ⇒ 只剩 `stack`/`attach`，解卡机制被挡在门外
+    #     ⇒ 每个时间步重复同一批"放不下"的位点 ⇒ **步进永不推进**。
+    #   运行期独有串（`_w2_t5_short_t10B9.log` 末行）：
+    #     `fresh_cand=9  empty=387  sites_refilled=7`，
+    #     而 **`sites_resampled` 字段一次都没出现过**。
+    #   ## 本开关
+    #     把重抽提到 `n_fresh` 门之外，判据 = 「本轮**尝试过**位点且**一个都没放成**」；
+    #     新增诊断键 `sites_resampled_ungated`（**硬步骤 D：可核查**）。
+    #   ⚠ 默认 **0** ⇒ 归档路径逐位不变（由 `_r30_regress.sh` 把关）。
+    ap.add_argument('--nuc-resample-ungated', type=int, default=0, choices=(0, 1),
+                    help='★ R623 G5a：让"位点表重抽"（唯一解卡机制）不再被 '
+                         '`n_fresh > 0` 门控 ⇒ fresh 名额用尽后不再死锁')
     # ★★★★★ 2026-10-04（**N11**）：`nfsv_nofield` 的**取证**开关。
     #   背景：`--laths` 从 `12×6=72` 抬到 `12×10=120`（`nv` **+67%**），
     #   而 `nfsv_nofield` 只从 **22 → 21** ⇒ **"变体碰撞/场不够"这个假设被 A/B 否掉**。
