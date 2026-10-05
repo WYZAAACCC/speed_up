@@ -2957,23 +2957,10 @@ class LevelSetMulti(object):
                 except Exception:
                     pass
             self._seed_undo_note(k, sdf, undo)
-            # ★★★★★★ s304：(1) **写前**先记"谁会被擦到"（修好恒为 0 的坏量具）；
-            #          (2) **保护已有实质核**（真实板条不会因邻片形核而消失）。
-            _carved = [j for j in range(self.nreg)
-                       if j != k and (-sdf > self.phi[j]).any()]
-            _prot = set()
-            if os.environ.get('SEED_PROTECT') == '1':
-                _pmin = int(os.environ.get('SEED_PROTECT_MIN', '100') or 100)
-                for j in _carved:
-                    if int((self.phi[j] < 0).sum()) >= _pmin:
-                        _prot.add(j)
             self.phi[k] = np.minimum(self.phi[k], sdf)
             for j in range(self.nreg):
-                if j != k and j not in _prot:
+                if j != k:
                     self.phi[j] = np.maximum(self.phi[j], -sdf)
-            if os.environ.get('SEED_CARVED_DBG') == '1' and _carved:
-                print('[SEEDCARVED] k=%d carved=%s protected=%s'
-                      % (k, _carved, sorted(_prot)), flush=True)
             # ★ s301b：真实播种后清理——**本场 k 以及本次被 `max` 擦过的每个 j**
             #   （第一版只清 k ⇒ 实测与守卫档逐位相同，因为 k 在"自己播完"那一刻
             #    仍是单连通；第二块是**之后**被别的籽晶擦出来的。）
@@ -3029,22 +3016,10 @@ class LevelSetMulti(object):
             sdf = (_r - 1.0) * min(t / 2, R)
         # ★ R479：**先记账再写**（`undo=None` 时是空操作 ⇒ 归档路径逐位不变）
         self._seed_undo_note(k, sdf, undo)
-        # ★ s304：(1) 写前先记"谁会被擦到"；(2) 保护已有实质核（同 along 分支）
-        _carved = [j for j in range(self.nreg)
-                   if j != k and (-sdf > self.phi[j]).any()]
-        _prot = set()
-        if os.environ.get('SEED_PROTECT') == '1':
-            _pmin = int(os.environ.get('SEED_PROTECT_MIN', '100') or 100)
-            for j in _carved:
-                if int((self.phi[j] < 0).sum()) >= _pmin:
-                    _prot.add(j)
         self.phi[k] = np.minimum(self.phi[k], sdf)
         for j in range(self.nreg):
-            if j != k and j not in _prot:
+            if j != k:
                 self.phi[j] = np.maximum(self.phi[j], -sdf)
-        if os.environ.get('SEED_CARVED_DBG') == '1' and _carved:
-            print('[SEEDCARVED] k=%d carved=%s protected=%s'
-                  % (k, _carved, sorted(_prot)), flush=True)
         # ★ s301b：真实播种后清理——**本场 k 以及本次被 `max` 擦过的每个 j**（同 along 分支）
         # ★ s301c：门控改读环境变量（同 along 分支）
         if undo is None and os.environ.get('SEED_CLEAN') == '1':
