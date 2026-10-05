@@ -155,7 +155,15 @@ COLS = ['step', 't_s', 'wall_s', 'dt', 'V0', 'Vt', 'M', 'nreg_used',
         #     ⚠ 口径警示（`AGENTS.md`）：**绕盒判定必须用"轴跨度"，不能用 `长nm`**
         #     （`长nm` 是 PCA 主轴延伸）。本列用的是 `wrap_axes_any()` 的**周期性
         #     连通口径**（比包围盒更严），三者不可混用。
-        'wrap_any', 'wrap_n', 'wrap_fields']
+        'wrap_any', 'wrap_n', 'wrap_fields',
+        # ★★★★★★ 2026-10-05（**R623 G5b 取证：事件落点重合**）
+        #   判据（`R623 §7` 的第 8 条）：「形核**钝化**：某形核面饱和后不再出现
+        #   该处的新事件」⇒ 反例 = **同一位置反复出新事件**。
+        #   ⚠ **先取证再改代码**（`R619` 纪律）：`R623 §5` 的原始表述可能把
+        #     "位点表老化"误当成"饱和面被反复形核" ⇒ 本四列就是判决量。
+        #   `evloc_dup` **应为 0**；`evloc_min_nm` 是全体落点对的**最小**距离。
+        'evloc_min_nm', 'evloc_dup', 'evloc_n', 'evloc_pairs', 'evloc_same_min_nm',
+        'evloc_pts']
 assert len(COLS) == len(set(COLS))
 
 
@@ -320,6 +328,69 @@ def _wrap_cols(g):
     except Exception as _exc:                      # noqa: BLE001
         return dict(wrap_any='ERR:%s' % type(_exc).__name__, wrap_n=-1,
                     wrap_fields='')
+
+
+def _evloc_cols(_ed):
+    """★★★★★★ 2026-10-05（**R623 G5b 取证**）：形核**事件落点**的重合检查。
+
+    ## 要证的命题（`R623 §5` 的原始表述）
+      「**钝化**：某形核面饱和后不再出现该处的新事件」
+      ⇒ 反例 = **同一位置反复出新事件**。
+    ## 为什么必须**先取证再改代码**（`R619` 的纪律）
+      `R623 §5` 的原始表述来自 `:2250-2258` 的长注释，而那条注释把"卡死"归因到
+      **"一个几何上永远不合格的位点留在队里被反复重试"** —— 那是**位点表老化**
+      问题（`sites_refill` 的重抽），**不是**"饱和面被反复形核"。
+      ⇒ **证不出就不改代码**。
+    ## 口径（先写死，不得事后挪动）
+      * 落点 = 该场**所有胞的质心**（`region()==k` 的 `mean`），周期折回盒内；
+      * 两个落点之间的距离用**最小镜像**（动力学是周期的，`np.roll`）；
+      * **判据阈值** `--evloc-min-nm`（默认 250 nm = 4Δx）：
+        任意两个事件的落点距离 **< 阈值** ⇒ 计为一次"重合"。
+      * ⚠ 阈值**不是** 0 —— 同一摞里的相邻板条本来就贴在一起（那是 `stack` 的本意），
+        所以本判据只在**明显异地重开**的意义上说话：**重合计数应为 0**。
+    ## ⚠⚠ 两处**量具更正**（2026-10-05，都是我自己第一版错的）
+      1. 第一版用 `g.region_center(_kk2)`，而 `region_center(self)` **没有参数**、
+         返回**全部 φ<0 胞的形心** ⇒ 5 个事件算出**同一个点** ⇒ 假重合。
+         （还用了 `hasattr` + `try/except` **静默吞掉**参数错误 ⇒ 量具坏了不报。）
+         ⇒ 正解：按场号取 `region()==k` 的胞质心。
+      2. 第一版阈值 **250 nm 恰好等于 `plate_T`**（板条厚度）⇒ 它把
+         "**沿堆叠方向的相邻板条**"（block 长大本来就该这样，实测 `2-4:250nm`）
+         判成了"重合" ⇒ **阈值打在了板条厚度上，判据没有分辨力**。
+    ## 正确的判据（分离成两个量）
+      * `evloc_dup`：**跨变体**的落点重合对数 —— 只有**不同变体**在同一处反复出事件
+        才叫"饱和面被反复形核"（同变体沿法向挨着放 = block 长大，**不算**）。
+      * `evloc_same_min_nm`：**同变体**落点对的**最小**距离 —— 这是"同一块里板条
+        间距"的**直接读数**，可与 `plate_T` 对照（明显小于板条厚度才可疑）。
+      * `evloc_min_nm`：全体落点对的最小距离（仅诊断，**不用作判据**）。
+    ## 返回
+      `evloc_min_nm`      全体落点对最小距离（nm；<2 个事件时留空）
+      `evloc_dup`         **跨变体**重合对数（**判据量，应为 0**）
+      `evloc_n`           已记录事件数
+      `evloc_pairs`       跨变体重合对明细
+      `evloc_same_min_nm` 同变体落点对最小距离（nm）
+    ## ⚠ 惰性
+      `--evloc 0`（**默认**）⇒ 恒空串 ⇒ 归档逐位不变。
+    """
+    if not _ed:
+        return dict(evloc_min_nm='', evloc_dup='', evloc_n='', evloc_pairs='',
+                    evloc_same_min_nm='', evloc_pts='')
+    _n = int(_ed.get('n', 0))
+    # ★ 原始落点（诊断用；`k:x,y,z`，nm）—— 让"距离为 0 是哪两个场"**一眼可见**，
+    #   不必再靠猜（本列是为查一个实测到的 `min_nm = 0.0` 而加的）。
+    _pts_s = '|'.join('%d:%.0f,%.0f,%.0f' % (k, p[0] * 1e9, p[1] * 1e9, p[2] * 1e9)
+                      for k, p in _ed.get('pts', []))
+    # ⚠⚠ **单位更正（2026-10-05，我第三处自己的错）**：`min_nm` / `same_min_nm`
+    #   在 `_evloc` 里存的是**米**，而这里原来直接 `round(x, 1)` ⇒
+    #   `160e-9 → 0.0` ⇒ **把"落点分得很开"报成"完全重合"**（实测踩到）。
+    #   正解：先 ×1e9 换成 nm 再 round。
+    def _nm(_v):
+        return round(float(_v) * 1e9, 1) if np.isfinite(_v) else ''
+    return dict(evloc_min_nm=(_nm(_ed['min_nm']) if _n >= 2 else ''),
+                evloc_dup=int(_ed.get('dup', 0)),
+                evloc_n=_n,
+                evloc_pairs=str(_ed.get('pairs', '')),
+                evloc_same_min_nm=(_nm(_ed['same_min_nm']) if _n >= 2 else ''),
+                evloc_pts=_pts_s)
 
 
 def _blk_cols(g, reg, dx, vmap):
@@ -1394,6 +1465,9 @@ def run(a):
     _TOLD_NAT = False              # R623 natural 模式的"只报一次"标志
     _TOLD_DRV = False              # R623 G6 次序判据的"只报一次"标志
     _drive_pick = {}               # R623 G6：fresh/stack 各被选中几次（可核查）
+    # ★ 2026-10-05（R623 G5b 取证）：形核事件落点
+    _evloc = {'pts': [], 'n': 0, 'min_nm': float('nan'), 'dup': 0, 'pairs': ''}
+    _evloc_on = bool(int(getattr(a, 'evloc', 0) or 0))
 
     def _field_axes(j):
         """场 `j`（1-based）**自己变体**的 `(n*, a, w)`；带缓存。"""
@@ -3049,6 +3123,62 @@ def run(a):
                     #   ⚠ 惰性：`--nuc-block-parallel 0` ⇒ `n_fresh_ok` 不被读 ⇒ 逐位不变 ✓
                     if _nf > 0 and str(_ev[0][1]) == 'fresh':
                         n_fresh_ok += 1
+                    # ★★★★★★ 2026-10-05（**R623 G5b 取证**）：记录本次事件的**落点**。
+                    #   口径：该场**所有胞的质心**（`region()==k` 的 mean），周期折回盒内；
+                    #   两落点距离用**最小镜像**。判据量 `evloc_dup`（应为 0）。
+                    #   ⚠ `--evloc 0`（默认）⇒ 整段不进 ⇒ 归档逐位不变。
+                    if _evloc_on:
+                        try:
+                            _kk2 = int(_ev[0][0])
+                            # ⚠⚠ **量具更正（2026-10-05，第一版错了）**：
+                            #   第一版写的是 `g.region_center(_kk2)`，而
+                            #   `region_center(self)` **没有参数**、返回的是
+                            #   **全部 φ<0 胞的形心**（与场号无关）
+                            #   （`windowB_surface.py:676`）⇒ 5 个事件算出**同一个点**
+                            #   ⇒ 距离 0 ⇒ **报出假重合**。
+                            #   更糟的是我用了 `hasattr` 兜底 + `try/except` **静默吞掉**
+                            #   参数错误 ⇒ 量具坏了却**不报**（`R580` 的"静默失效"同款）。
+                            #   ⇒ 正解：**按场号**取 `region()==k` 的胞质心。
+                            _idx2 = np.argwhere(g.region() == _kk2)
+                            _rc = (((_idx2 + 0.5).mean(0)) * g.dx
+                                   if _idx2.size else None)
+                            if _rc is not None:
+                                _p = np.asarray(_rc, float) % float(g.L)
+                                _evloc['pts'].append((_kk2, _p))
+                                _evloc['n'] = len(_evloc['pts'])
+                                _thr = float(getattr(a, 'evloc_min_nm', 250.0)) * 1e-9
+                                _mn, _dups = float('inf'), []
+                                _same_mn = float('inf')
+                                _vm4 = getattr(g, 'vmap', None) or {}
+                                for _i2 in range(len(_evloc['pts'])):
+                                    for _j2 in range(_i2 + 1, len(_evloc['pts'])):
+                                        _d2 = _evloc['pts'][_i2][1] - _evloc['pts'][_j2][1]
+                                        _d2 = _d2 - g.L * np.round(_d2 / g.L)   # 最小镜像
+                                        _dd = float(np.linalg.norm(_d2))
+                                        _mn = min(_mn, _dd)
+                                        _v1 = int(_vm4.get(_evloc['pts'][_i2][0], -1))
+                                        _v2 = int(_vm4.get(_evloc['pts'][_j2][0], -1))
+                                        if _v1 == _v2 and _v1 > 0:
+                                            _same_mn = min(_same_mn, _dd)
+                                        # ★ 判据：只有**跨变体**在同一处反复出事件
+                                        #   才叫"饱和面被反复形核"；同变体沿法向挨着放
+                                        #   = block 长大，**不算**。
+                                        if _dd < _thr and _v1 != _v2:
+                                            _dups.append('%d(V%d)-%d(V%d):%.0fnm'
+                                                         % (_evloc['pts'][_i2][0], _v1,
+                                                            _evloc['pts'][_j2][0], _v2,
+                                                            _dd * 1e9))
+                                _evloc['min_nm'] = _mn
+                                _evloc['same_min_nm'] = _same_mn
+                                _evloc['dup'] = len(_dups)
+                                _evloc['pairs'] = '|'.join(_dups[:6])
+                        except Exception as _ex2:                # noqa: BLE001
+                            # ⚠ **不许静默**（`R580` 的教训）：量具坏了必须看得见。
+                            _evloc['err'] = _evloc.get('err', 0) + 1
+                            _evloc['errmsg'] = '%s: %s' % (type(_ex2).__name__, _ex2)
+                            if _evloc['err'] == 1:
+                                P('   ⚠⚠ **G5b 落点量具异常**（%s）⇒ `evloc_*` 读数'
+                                  '**不可信**' % _evloc['errmsg'])
                     n_mode[_ev[0][1]] = n_mode.get(_ev[0][1], 0) + 1
                     # ★★★★★ 2026-10-04（**N7：报告口径修复**；判定见
                     #   `R2_PARAM_VERDICTS.md §0 N7`）
@@ -3441,7 +3571,10 @@ def run(a):
             #     与 `blocks()` 同量级）；**默认 `--wrap-every 0` ⇒ 全空串**
             #     ⇒ 归档产物**逐位不变**（空串与旧行一致）。
             **(_wrap_cols(g) if _wrap_now
-               else dict(wrap_any='', wrap_n='', wrap_fields='')))
+               else dict(wrap_any='', wrap_n='', wrap_fields='')),
+            # ★★★★★★ 2026-10-05（**R623 G5b 取证**）：事件落点重合检查
+            #   ⚠ `--evloc 0`（默认）⇒ `_evloc` 为空字典 ⇒ 四列全空/0 ⇒ 归档逐位不变。
+            **_evloc_cols(_evloc))
         # ★ 防御：`cw.writerow([row[c] for c in COLS])` 里少一个键就是 KeyError，
         #   而它出现在**第 0 步写第一行**时 —— 那时构造已经花掉 60 s，
         #   且发生在长跑开头而不是起跑前。这里提前硬失败，把话说明白。
@@ -4387,6 +4520,18 @@ def main():
     ap.add_argument('--wrap-every', type=int, default=0,
                     help='★ R623 ②-8：每 N 步查一次**逐变体绕盒**并落 CSV'
                          '（默认 0 = 不算 ⇒ 归档逐位不变）')
+    # ★★★★★★ 2026-10-05（**R623 G5b 取证**）
+    #   判据（`R623 §7` 第 8 条）：「形核**钝化**：某形核面饱和后不再出现该处的新事件」。
+    #   ⚠ **先取证再改代码**（`R619` 纪律）：`R623 §5` 的原始表述可能把
+    #     "位点表老化（`sites_refill` 的重抽）"误当成"饱和面被反复形核"
+    #     ⇒ 本开关落盘「每个事件的落点」与「落点对的最小距离 / 重合对数」，
+    #       判据 = **`evloc_dup` 应为 0**（明显异地重开才算重合）。
+    #   ⚠ 默认 **0** ⇒ 不记录 ⇒ 归档逐位不变。
+    ap.add_argument('--evloc', type=int, default=0, choices=(0, 1),
+                    help='★ R623 G5b 取证：记录形核**事件落点**并查重合'
+                         '（落 CSV 的 evloc_* 四列；默认 0 = 不记）')
+    ap.add_argument('--evloc-min-nm', type=float, default=250.0,
+                    help='事件落点判为"重合"的距离阈值（nm，默认 250 = 4Δx）')
     ap.add_argument('--eng-seed', type=int, default=11)
     # ★ R22：关掉"有事件就强制 reinit"（**R23 起改为引擎自动**：attach 下默认关）。
     ap.add_argument('--eng-no-force-reinit', action='store_true',
