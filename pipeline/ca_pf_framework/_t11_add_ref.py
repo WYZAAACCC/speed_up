@@ -54,6 +54,10 @@ def main() -> int:
     tag = ""
     if "--tag" in sys.argv:
         tag = sys.argv[sys.argv.index("--tag") + 1]
+    # ★ 允许对**内文无 DOI**的印刷版 PDF 手工指定 DOI（留档：我如何得知）
+    doi_manual = ""
+    if "--doi" in sys.argv:
+        doi_manual = sys.argv[sys.argv.index("--doi") + 1]
     fn = find_pdf(sub)
     if fn is None:
         print(f"!! 没找到含 {sub!r} 的 PDF")
@@ -128,16 +132,29 @@ def main() -> int:
     else:
         print(f"全文已存在 → {tp}")
 
+    # 手工 DOI 优先（并记进 doi_all 供溯源）
+    if doi_manual:
+        print(f"⚠ 内文未出现 DOI；采用**手工指定**值：{doi_manual}（--doi）")
+        if doi_manual not in dois:
+            dois.insert(0, doi_manual)
     row = dict(file=fn, doi=dois[0] if dois else "", doi_all=";".join(dois),
                journal=jr, volume=vol, pages=pg, year=yr,
                title=title[:200], n_pages=n, local_txt=tp, tag=tag)
-    new = not os.path.exists(REFS)
-    with open(REFS, "a", encoding="utf-8", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(row), delimiter="\t")
-        if new:
-            w.writeheader()
-        w.writerow(row)
-    print(f"已登记 → {REFS}")
+    # ---- upsert（按 file 去重；不是 append，避免重复行）----
+    HEAD = ["file", "doi", "doi_all", "journal", "volume", "pages", "year",
+            "title", "n_pages", "local_txt", "tag"]
+    rows = []
+    if os.path.exists(REFS):
+        with open(REFS, encoding="utf-8") as fh:
+            rows = [r for r in csv.DictReader(fh, delimiter="\t")
+                    if r.get("file") != fn]
+    rows.append(row)
+    with open(REFS, "w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=HEAD, delimiter="\t", extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+    print(f"已 upsert → {REFS}（共 {len(rows)} 条）")
 
     # ---- 合并进 verdict2.tsv（补 doi 列，不动既有判定）----
     vp = os.path.join(DST, "verdict2.tsv")

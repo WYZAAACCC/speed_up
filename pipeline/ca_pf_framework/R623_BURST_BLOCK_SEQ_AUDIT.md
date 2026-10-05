@@ -14,11 +14,13 @@
 | # | 出处 | 本地全文 | 用途 |
 |---|---|---|---|
 | **R-A** | **R. Shi, Y. Wang**, "Variant selection during α precipitation in Ti–6Al–4V under the influence of local stress – A simulation study", *Acta Materialia* **61**(16) (2013) 6553–6568，**DOI `10.1016/j.actamat.2013.06.042`**（PII `S1359645413004820`；关键词含 `Correlated nucleation`） | `F:\参考论文\马氏体仿真\Variant selection during α precipitation in Ti–6Al–4V under the influence of local stress – A simulation study.pdf`（33 页）+ `_litidx/lit_txt/Variant_selection_during_precipitation_…A_simulation_study.txt` | **本专项的主依据**：burst 后由应力选变体、edge-to-edge 顺序形核、`E_int` 判据、自协调三变体簇 |
-| **R-B** | "Effect of autocatalysis on variant selection of α precipitates during phase transformation in Ti-6Al-4V alloy", *Computational Materials Science*（2016），PII `S0927025616303597`，DOI `10.1016/j.commatsci.2016.06.028`【DOI 待 Crossref 复核】 | 未取到（`F:\参考论文\马氏体仿真` 内**暂无**此篇） | **自催化的定量率律** —— 正是本项目缺的那一条 |
+| **R-B** | "Effect of autocatalysis on variant selection of α precipitates during phase transformation in Ti-6Al-4V alloy", ***Computational Materials Science*（2016）**，**DOI `10.1016/j.commatsci.2016.07.032`**（Elsevier PII `S0927025616303597`）。⚠ **卷/页未查实** | `F:\参考论文\马氏体仿真\Effect of autocatalysis on variant selection of α precipitates during phase transformation in Ti-6Al-4V alloy.pdf`（17 页）+ `_litidx/lit_txt/Effect_of_autocatalysis_…Ti-6Al-4V_alloy.txt` | **顺序形核 / 自催化的定量判据**（比 R-A 更进一层，见 §0.3） |
+| （登记表） | `_litidx/refs.tsv`（工具 `_t11_add_ref.py`；`verdict2.tsv` 已加 `doi` 列） | — | 所有正式引用集中在此 |
 
-⚠ **记账（硬步骤 B）**：R-B 的 DOI 是我由 PII 推出的，**未复核**；R-A 的卷/期/页由 Infona 的期刊卷期索引（`Volume 61, Number 16, 2013`）与 Mendeley 记录交叉确认，**DOI 已确认**。
-⚠ **跨机制警告照旧适用**：R-A 是**扩散型 α 析出**（`t=1073 K`、parabolic 增厚、Al/V 配分、ledge 长大）⇒ 其 **`λ₂/λ₁=10`、`Lφ=6.0e-8 J/m³/s` 不可搬**；可搬的只有**晶体学、应变、界面能、簇结构、"变体由应力场选"这个机制**。
-⚠ 修复时若需要"自催化率律"的定量形式，**优先找 R-B**（本库里没有就去取），而不是用 `p_auto` 那个已被撤回的自设值（`windowB_closure.py:762-763` 记「本项目自设；原引 Bhadeshia (5.24) 已撤」）。
+⚠ **记账（硬步骤 B）**：R-A 的卷/期/页由 Infona 期刊卷期索引（`Volume 61, Number 16, 2013`）与 Mendeley 记录交叉确认，**DOI 已确认**。
+⚠ **一次自我更正（留档）**：R-B 的 DOI 我最初**由 PII 推算**成 `…2016.06.028`，**是错的**；网络检索命中 `libgen … --- 10.1016/j.commatsci.2016.07.032.pdf` 后确认**正确值是 `10.1016/j.commatsci.2016.07.032`**。**教训：连"推算出来的 DOI"也必须验**（这恰好是 ③ 纪律第 6/7 条要防的事）。
+⚠ **R-B 的卷/页**：Elsevier 页面被反爬拦截，多轮检索未得 ⇒ **标"未查实"**，不编（纪律第 7 条）。
+⚠ **跨机制警告照旧适用**：R-A/R-B 都是**扩散型 α 析出**（`t=1073 K`、parabolic 增厚、Al/V 配分、ledge 长大）⇒ 其 **`λ₂/λ₁=10`、`Lφ=6.0e-8 J/m³/s` 不可搬**；可搬的只有**晶体学、应变、界面能、簇结构、"变体由应力场选"这个机制**。
 
 ### 0.2 三条物理的标准
 
@@ -28,7 +30,46 @@
 | **② 块（同取向）** | **同一变体 + 互相接触**的板条连成一块（块 = 一摞平行板条）。能贴脸叠的物理原因是每个变体有**不变线**（沿它挪位长度不变） | **R-A**；`lat_*` 系列（Morito 2003：block 内同变体） |
 | **②′ 块（不同取向的抵消）** | **不同变体凑成组、整体形状变化互相抵消** ⇒ 能量低 ⇒ 高频出现。最好的是 **V1+V4+V6**（`60°/[11̄20]α`），次之 **V1+V9+V11**（`63.26°/[10̄553]α`） | **R-A** §4（转述 Wang et al.）+ 该文自己的相场复现 |
 | **③ 顺序形核** | **在已有板条的界面上**继续形核，一代接一代（`edge-to-edge`），块往外长。位置与变体由**已有板条应力场里的弹性相互作用能 `E_int`** 决定（`E_int<0` 促进、`>0` 抑制，最负处在板条边缘，且**远超**化学驱动力） | **R-A** `:645-679`、`:941-962` |
-| **③′ 自催化** | R-A 结论(6)：观察到的是 **"coherency stress-induced correlated nucleation（即 autocatalytic effect）"**，**而非**经典 SN（后者源于二次/初生 α 间较低的晶界能） | **R-A** 结论 (6)（末页）；定量率律见 **R-B** |
+| **③′ 自催化** | R-A 结论(6)：观察到的是 **"coherency stress-induced correlated nucleation（即 autocatalytic effect）"**，**而非**经典 SN（后者源于二次/初生 α 间较低的晶界能） | **R-A** 结论 (6)（末页）；定量判据见 **R-B**（下节 §0.3） |
+
+### 0.3 ★★ R-B 给出的**可编码定量判据**（顺序形核的正确物理；修复 G2/G5b 时以此为准）
+
+**（a）弹性相互作用能（该文 Eq. (13)）**
+```
+E_int(r, p) = − σ_ij^{V1}(r) · ε_ij^{Vp}
+```
+`σ_ij^{V1}(r)` = 初生 α 板条（V1）的应力场；`ε_ij^{Vp}` = 变体 `p` 的相变应变。
+原文判据：「局部 `E_int(r,p) < 0` ⇒ 初生板条**促进** Vp 在 r 处形核（降低总自由能）；`> 0` ⇒ **抑制**。」（用**相场微弹性理论**算应力场。）
+**择优形核区** = `E_int(r,p) ~ 0.3 · E_min_int(p)` 的区域。
+
+**（b）★ 变体按"择优形核**位置**"分三组**
+
+| 组 | 变体 | 择优位置 |
+|---|---|---|
+| 1 | V2, V3, V5, V8, V9, V11 | **V1 的惯习面（宽面）上** |
+| 2 | **V7**（仅此一个） | **V1 的棱边/顶端** |
+| 3 | **V4, V6**, V10, V12 | **棱边为主，略向惯习面铺开** |
+
+**（c）★ 竞争规则（"有限择优位点"的抢占）**
+> 多个变体可能**共用同一形核位点**；此时 **`E_int` 更负者更"有竞争力"、从而占据该位点**。
+> 实测：V2/V3/V5/V8/V10/V12 **不出现**，因为它们的负值区与**更负者重叠**。
+⇒ **这解释了"为什么只有一部分变体出现"** —— 不是没有驱动，而是**抢位点抢输了**。
+
+**（d）判据要同时满足两条（该文结论 (1)）**
+> 局部应力松弛更有效 ⟺ 二次 α 同时有 **i) 与初生板条的 `E_int` 高度为负** 且 **ii) 惯习面取向尽量接近初生板条的**。
+
+**（e）该文结论 (2)(3)**
+- (2) 最受青睐的三个正是实验最常见的：`⟨11-20⟩60°`、`⟨10-553⟩63.26°`、`[0001]10.53°`；
+- (3) **篮网状（basketweave）结构由"三变体间的弹性相互作用"以「链式反应（chain reaction）」方式形成** —— 这是**对"块如何成网、块之间如何相互影响"的直接文献答案**。
+
+**（f）★ 对我此前口头叙述的一处订正（硬步骤 B）**
+我说过「V4/V6 长在 V1 的**宽面**上」。**R-B 的量算更细**：**惯习面（宽面）组是 V2/V3/V5/V8/V9/V11**；**V4/V6 属"棱边为主、略向惯习面铺开"那一组**（R-A 的行文说 V4/V6 在 broad face 附近 —— 两文侧重不同）。
+⇒ **修复 G2 时不要硬编码"贴在哪个面"**，而应**直接算 `E_int(r,p)`、按其符号与幅值放行**；这样无论哪一组都自动正确。
+
+**（g）⚠ 记账：R-B 给的是**判据**，不是**率律**
+它给的是"**能不能在 r 处形核、谁抢到位点**"，**没有给** `dN/dt` 形式的形核率。
+⇒ **档目标量**（每档投几根）仍来自 **KM 分数律**（见 §1）；**R-B 负责"投到哪里、投哪个变体"**。
+⇒ 两者**正交**，修复时不要混（详见 §1 的待定项）。
 
 ---
 
@@ -131,8 +172,9 @@ windowB_surface.py:2260   if (not _any_ok) and sites_refill and sites:          
 1. **`fresh` 用尽后 `n_fresh` 恒 0 ⇒ 解卡路径永不执行** ⇒ `stack/attach` 反复重试同一批放不下的位点 ⇒ **步进永不推进**。
    **实测（`t10B9`）**：`fresh_cand=9`、`empty=387`、`sites_refilled=7` 而 **`sites_resampled` 字段不存在**（`R617`）。
 2. **没有"钝化"**：物理上，一旦某个面的新片长满、应力被松弛，那个面**就不再促发形核**了。引擎里 `E_int` 的符号是算得出来的，但**没有任何地方用它来关闭已饱和的形核面** ⇒ 会一直"往同一个地方挤"。
-   ⚠ **自催化的定量形式**：R-A 只给机制（"coherency stress-induced correlated nucleation"）与定性判据（`E_int` 符号），**没有率律**；本项目 `p_auto` 那个自设值已撤（`windowB_closure.py:762-763`）。
-   ⇒ **要率律就去取 R-B**（`Effect of autocatalysis on variant selection …`，*Comput. Mater. Sci.* 2016），**不要自己编**。
+   **★ 正确判据（R-B，详见 §0.3）**：形核位置的必要条件应为 **`E_int(r,p) < 0` 且 `|E_int|` 达到择优阈值（原文取 `~0.3·E_min_int(p)`）**；位点被占满 ⇒ 该处 `E_int` 被松弛 ⇒ **自然不再出事件** ⇒ **"钝化"不需要另加规则，它是 `E_int` 判据的推论**。
+   **★ 竞争规则（R-B）**：多个变体共用同一位置时，**`E_int` 更负者抢占** ⇒ 实现时应在**同一位置**对 12 个变体比较 `E_int` 并取最负者，而不是各变体独立放行。
+   ⚠ **R-B 给的是判据不是率律**（§0.3(g)）：**投几根**仍用 KM 分数律；**投到哪、投哪个变体**用 `E_int`。
 
 **修复方案**
 - **去门控**：解卡（位点重抽）不再依赖 `n_fresh > 0`；
@@ -145,11 +187,11 @@ windowB_surface.py:2260   if (not _any_ok) and sites_refill and sites:          
 | # | 缺口 | 代码位置 | 影响 | 依赖 |
 |---|---|---|---|---|
 | **G1** | burst 的 `_tgt` 乘了块数 `B`；顺序形核次序被 `_Bpar` 打乱 | `_bk_exp.py:2648`、`:2745-2751` | 目标量在 natural 下无意义；爆发形状失真 | 无 |
-| **G2** | 异变体贴面/界面形核被 `cov` 守卫关死 | `windowB_surface.py:2612-2615`、`:2675-2677` | 文献的第 2/3 波**发生不了** | **R-A** §3.3 / 结论(5)(6) |
+| **G2** | 异变体贴面/界面形核被 `cov` 守卫关死 | `windowB_surface.py:2612-2615`、`:2675-2677` | 文献的第 2/3 波**发生不了** | **R-A** §3.3 / 结论(5)(6)；判据用 **R-B** Eq.(13) |
 | **G3** | 新核长轴取全局 `along`（非逐变体） | `windowB_surface.py:1956-1963` | natural 下用错长轴 | 需先做 G4 |
 | **G4** | 驱动层播种用单一 `n_hab/a_ax`；`_variant_axes` 只在 `multi_block` 分支 | `_bk_exp.py:962-968`、`:1632-35`、`:1297-1319` | 220 片几何同一取向；堆叠方向 112 µm 装不下 | 无 |
 | **G5a** | 解卡路径被 `n_fresh > 0` 门控 | `windowB_surface.py:2260` | `fresh` 用尽即死锁（`t10B9` 实测） | **必须最先做** |
-| **G5b** | 无"钝化"（`E_int` 未用于关闭饱和形核面） | 引擎全局缺失 | 会一直往同一处挤 | 依赖 G5a；率律取 **R-B** |
+| **G5b** | 无"钝化"（`E_int` 未用于关闭饱和形核面） | 引擎全局缺失 | 会一直往同一处挤 | 依赖 G5a；判据用 **R-B §0.3**（钝化是 `E_int` 判据的**推论**，不需另加规则） |
 | **G6** | 变体分布仍被 `--laths` 配额限制（`argmax` 只能选已分配的场号） | `_bk_exp.py:2746` + `windowB_surface.py:2104` | 配额墙：偏斜变体用光 22 槽位后选不到 | 与 G1 同一处改 |
 
 **修复次序（依赖决定）**：`G5a`（解卡）→ `G4`（逐变体轴）→ `G3`（逐变体长轴）→ `G1/G6`（`--nuc-mode natural`：去配额 + 去 B + 驱动力决定次序）→ `G2`（放开界面形核 + `E_int` 判据）→ `G5b`（钝化）。
