@@ -2965,11 +2965,6 @@ class LevelSetMulti(object):
             if os.environ.get('SEED_PROTECT') == '1':
                 _pmin = int(os.environ.get('SEED_PROTECT_MIN', '100') or 100)
                 for j in _carved:
-                    # ★ s304b：**场 0（母相 β）绝不保护** —— 新板条形核处母相必须被擦成正
-                    #   值，否则 `region = argmin(φ)` 仍选母相 ⇒ 板条在物理相口径下不出现
-                    #   （`t10PRT` 的 `[SEEDCARVED] protected=[0,…]` 当场暴露此缺陷）。
-                    if j == 0:
-                        continue
                     if int((self.phi[j] < 0).sum()) >= _pmin:
                         _prot.add(j)
             self.phi[k] = np.minimum(self.phi[k], sdf)
@@ -3041,8 +3036,6 @@ class LevelSetMulti(object):
         if os.environ.get('SEED_PROTECT') == '1':
             _pmin = int(os.environ.get('SEED_PROTECT_MIN', '100') or 100)
             for j in _carved:
-                if j == 0:
-                    continue          # ★ s304b：母相不保护（同 along 分支）
                 if int((self.phi[j] < 0).sum()) >= _pmin:
                     _prot.add(j)
         self.phi[k] = np.minimum(self.phi[k], sdf)
