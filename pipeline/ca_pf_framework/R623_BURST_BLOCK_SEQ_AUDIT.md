@@ -9,12 +9,26 @@
 
 ## 0. 三条物理的正确图景（先立标准，再对代码）
 
+### 0.1 ★ 参考文献（用户指定，**修复时以此为准**）
+
+| # | 出处 | 本地全文 | 用途 |
+|---|---|---|---|
+| **R-A** | **R. Shi, Y. Wang**, "Variant selection during α precipitation in Ti–6Al–4V under the influence of local stress – A simulation study", *Acta Materialia* **61**(16) (2013) 6553–6568，**DOI `10.1016/j.actamat.2013.06.042`**（PII `S1359645413004820`；关键词含 `Correlated nucleation`） | `F:\参考论文\马氏体仿真\Variant selection during α precipitation in Ti–6Al–4V under the influence of local stress – A simulation study.pdf`（33 页）+ `_litidx/lit_txt/Variant_selection_during_precipitation_…A_simulation_study.txt` | **本专项的主依据**：burst 后由应力选变体、edge-to-edge 顺序形核、`E_int` 判据、自协调三变体簇 |
+| **R-B** | "Effect of autocatalysis on variant selection of α precipitates during phase transformation in Ti-6Al-4V alloy", *Computational Materials Science*（2016），PII `S0927025616303597`，DOI `10.1016/j.commatsci.2016.06.028`【DOI 待 Crossref 复核】 | 未取到（`F:\参考论文\马氏体仿真` 内**暂无**此篇） | **自催化的定量率律** —— 正是本项目缺的那一条 |
+
+⚠ **记账（硬步骤 B）**：R-B 的 DOI 是我由 PII 推出的，**未复核**；R-A 的卷/期/页由 Infona 的期刊卷期索引（`Volume 61, Number 16, 2013`）与 Mendeley 记录交叉确认，**DOI 已确认**。
+⚠ **跨机制警告照旧适用**：R-A 是**扩散型 α 析出**（`t=1073 K`、parabolic 增厚、Al/V 配分、ledge 长大）⇒ 其 **`λ₂/λ₁=10`、`Lφ=6.0e-8 J/m³/s` 不可搬**；可搬的只有**晶体学、应变、界面能、簇结构、"变体由应力场选"这个机制**。
+⚠ 修复时若需要"自催化率律"的定量形式，**优先找 R-B**（本库里没有就去取），而不是用 `p_auto` 那个已被撤回的自设值（`windowB_closure.py:762-763` 记「本项目自设；原引 Bhadeshia (5.24) 已撤」）。
+
+### 0.2 三条物理的标准
+
 | 阶段 | 物理 | 出处 |
 |---|---|---|
 | **① burst** | 过冷度一大，转变量按 **KM 分数律** `f = 1 − exp[−α_KM(M_s − T)]` 爆发（首档即 ~63%）；核事件出现在 `T_k = M_s − k/α_KM`，**与步数无关** | Koistinen–Marburger 1959；Ti-64 用 KM 律见 Nitzler 2021 eq.(5) |
-| **② 块（同取向）** | **同一变体 + 互相接触**的板条连成一块（块 = 一摞平行板条）。能贴脸叠的物理原因是每个变体有**不变线**（沿它挪位长度不变） | 用户指定那篇；`lat_*` 系列（Morito 2003：block 内同变体） |
-| **②′ 块（不同取向的抵消）** | **不同变体凑成组、整体形状变化互相抵消** ⇒ 能量低 ⇒ 高频出现。最好的是 **V1+V4+V6**（`60°/[11̄20]α`），次之 **V1+V9+V11**（`63.26°/[10̄553]α`） | 用户指定那篇 §4（转述 Wang et al.）+ 该文自己的相场复现 |
-| **③ 顺序形核** | **在已有板条的界面上**继续形核，一代接一代（`edge-to-edge`），块往外长。位置与变体由**已有板条应力场里的弹性相互作用能 `E_int`** 决定（`E_int<0` 促进、`>0` 抑制，最负处在板条边缘，且**远超**化学驱动力） | 用户指定那篇 `:645-679`、`:941-962` |
+| **② 块（同取向）** | **同一变体 + 互相接触**的板条连成一块（块 = 一摞平行板条）。能贴脸叠的物理原因是每个变体有**不变线**（沿它挪位长度不变） | **R-A**；`lat_*` 系列（Morito 2003：block 内同变体） |
+| **②′ 块（不同取向的抵消）** | **不同变体凑成组、整体形状变化互相抵消** ⇒ 能量低 ⇒ 高频出现。最好的是 **V1+V4+V6**（`60°/[11̄20]α`），次之 **V1+V9+V11**（`63.26°/[10̄553]α`） | **R-A** §4（转述 Wang et al.）+ 该文自己的相场复现 |
+| **③ 顺序形核** | **在已有板条的界面上**继续形核，一代接一代（`edge-to-edge`），块往外长。位置与变体由**已有板条应力场里的弹性相互作用能 `E_int`** 决定（`E_int<0` 促进、`>0` 抑制，最负处在板条边缘，且**远超**化学驱动力） | **R-A** `:645-679`、`:941-962` |
+| **③′ 自催化** | R-A 结论(6)：观察到的是 **"coherency stress-induced correlated nucleation（即 autocatalytic effect）"**，**而非**经典 SN（后者源于二次/初生 α 间较低的晶界能） | **R-A** 结论 (6)（末页）；定量率律见 **R-B** |
 
 ---
 
@@ -117,6 +131,8 @@ windowB_surface.py:2260   if (not _any_ok) and sites_refill and sites:          
 1. **`fresh` 用尽后 `n_fresh` 恒 0 ⇒ 解卡路径永不执行** ⇒ `stack/attach` 反复重试同一批放不下的位点 ⇒ **步进永不推进**。
    **实测（`t10B9`）**：`fresh_cand=9`、`empty=387`、`sites_refilled=7` 而 **`sites_resampled` 字段不存在**（`R617`）。
 2. **没有"钝化"**：物理上，一旦某个面的新片长满、应力被松弛，那个面**就不再促发形核**了。引擎里 `E_int` 的符号是算得出来的，但**没有任何地方用它来关闭已饱和的形核面** ⇒ 会一直"往同一个地方挤"。
+   ⚠ **自催化的定量形式**：R-A 只给机制（"coherency stress-induced correlated nucleation"）与定性判据（`E_int` 符号），**没有率律**；本项目 `p_auto` 那个自设值已撤（`windowB_closure.py:762-763`）。
+   ⇒ **要率律就去取 R-B**（`Effect of autocatalysis on variant selection …`，*Comput. Mater. Sci.* 2016），**不要自己编**。
 
 **修复方案**
 - **去门控**：解卡（位点重抽）不再依赖 `n_fresh > 0`；
@@ -129,11 +145,11 @@ windowB_surface.py:2260   if (not _any_ok) and sites_refill and sites:          
 | # | 缺口 | 代码位置 | 影响 | 依赖 |
 |---|---|---|---|---|
 | **G1** | burst 的 `_tgt` 乘了块数 `B`；顺序形核次序被 `_Bpar` 打乱 | `_bk_exp.py:2648`、`:2745-2751` | 目标量在 natural 下无意义；爆发形状失真 | 无 |
-| **G2** | 异变体贴面/界面形核被 `cov` 守卫关死 | `windowB_surface.py:2612-2615`、`:2675-2677` | 文献的第 2/3 波**发生不了** | 无 |
+| **G2** | 异变体贴面/界面形核被 `cov` 守卫关死 | `windowB_surface.py:2612-2615`、`:2675-2677` | 文献的第 2/3 波**发生不了** | **R-A** §3.3 / 结论(5)(6) |
 | **G3** | 新核长轴取全局 `along`（非逐变体） | `windowB_surface.py:1956-1963` | natural 下用错长轴 | 需先做 G4 |
 | **G4** | 驱动层播种用单一 `n_hab/a_ax`；`_variant_axes` 只在 `multi_block` 分支 | `_bk_exp.py:962-968`、`:1632-35`、`:1297-1319` | 220 片几何同一取向；堆叠方向 112 µm 装不下 | 无 |
 | **G5a** | 解卡路径被 `n_fresh > 0` 门控 | `windowB_surface.py:2260` | `fresh` 用尽即死锁（`t10B9` 实测） | **必须最先做** |
-| **G5b** | 无"钝化"（`E_int` 未用于关闭饱和形核面） | 引擎全局缺失 | 会一直往同一处挤 | 依赖 G5a |
+| **G5b** | 无"钝化"（`E_int` 未用于关闭饱和形核面） | 引擎全局缺失 | 会一直往同一处挤 | 依赖 G5a；率律取 **R-B** |
 | **G6** | 变体分布仍被 `--laths` 配额限制（`argmax` 只能选已分配的场号） | `_bk_exp.py:2746` + `windowB_surface.py:2104` | 配额墙：偏斜变体用光 22 槽位后选不到 | 与 G1 同一处改 |
 
 **修复次序（依赖决定）**：`G5a`（解卡）→ `G4`（逐变体轴）→ `G3`（逐变体长轴）→ `G1/G6`（`--nuc-mode natural`：去配额 + 去 B + 驱动力决定次序）→ `G2`（放开界面形核 + `E_int` 判据）→ `G5b`（钝化）。
