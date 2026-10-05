@@ -129,9 +129,25 @@ Ti64:  w_静水 = 7.47e7 J/m³                 （全约束的 10.0%）
 
 ## 5. 还缺的外部输入（**登记，不自己编**）
 **母相 β-Ti（Ti64）在 M_s ≈ 873 K 附近的屈服强度 `σ_y(T)`。**
-* 结论对它不敏感（§4），但**出处必须登记**；
-* 已有的粗量级参照：常温 β-Ti 约 800–1000 MPa；近 M_s 高温显著软化，
-  文献常用区间 **100–500 MPa** —— **此句尚未核实到具体文献，标注为待补**。
+
+* **状态：候选出处已登记，数值待从原文提取 —— 我不编数字。**
+* 2026-10-05 两轮检索（`web_search`）只返回文献标题/摘要，**没有可直接引用的数值**；
+  要拿到值须逐篇取原文（PDF/付费墙），代价较大，而**结论对它不敏感**（§4）⇒ 不阻塞。
+* **候选出处（待逐篇核实并登记页码/表号）**：
+  1. *Mechanical behavior of Ti–6Al–4V at high and moderate temperatures — Part I:
+     Experimental results*, Mater. Sci. Eng. A（2002）—
+     <https://www.sciencedirect.com/science/article/abs/pii/S0921509301015076>
+  2. NASA NTRS 技术报告（Ti-6Al-4V 高温力学数据表）—
+     <https://ntrs.nasa.gov/api/citations/19720022814/downloads/19720022814.pdf>
+  3. *Analysis of the Deformation Behavior of Ti-6Al-4V at Elevated Temperatures*,
+     Key Eng. Mater. 554–557 —
+     <https://katalog.slub-dresden.de/id/ai-49-aHR0cDovL2R4LmRvaS5vcmcvMTAuNDAyOC93d3cuc2NpZW50aWZpYy5uZXQva2VtLjU1NC01NTcuMjk>
+  4. β 钛合金力学性能汇总表（含 Ti-3Al-8V-6Cr-4Mo-4Zr 等，给出温度区间强度）—
+     <https://www.ipme.ru/e-journals/RAMS/no_23212/05_23212_veiga.pdf>
+* **为什么可以先用着**：§4 已证 `η_物理` 只由**静水占比**决定，只要
+  `σ_y²/(6μ) ≪ w_偏量`；σ_y 高到约 **2 GPa** 该不等式仍成立
+  ⇒ 只要 σ_y 落在 **0.1–2 GPa** 这个很宽的带内，结论不变。
+  **⇒ 待补的是"出处"，不是"结论"。**
 
 ---
 
