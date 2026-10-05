@@ -3752,6 +3752,11 @@ def run(a):
                                # ★ R623 G6：fresh/stack 各被"驱动力判据"选中几次
                                #   （**独有可核查串**；`--nuc-order-by-drive 0` 时为空 dict）
                                drive_pick=dict(_drive_pick),
+                               # ★ R623 G7 取证：**越界候选落点**的纯记录
+                               #   （`windowB_surface.LevelSetMulti._oobcap()` 写）
+                               #   ⚠ 纯记录、不改数值；空列表表示本次没发生越界。
+                               oob_geom=list(getattr(g, '_oob_geom', []) or []),
+                               oob_why=dict(getattr(g, '_oob_why', {}) or {}),
                                nuc_cfg={k: _js_key(k, v) for k, v in g._nuc.items()
                                         if k not in ('rng', 'dbg')}),
                           f, ensure_ascii=False, indent=1,

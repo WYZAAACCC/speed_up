@@ -1391,6 +1391,12 @@ class LevelSetMulti(object):
         #   （实测 n.a = cos(82.7deg) = 0.127），n x (n x a) = n(n.a) - a
         #   => 偏离真 a 约 7.3deg。现在直接给 atab。
         self.atab = None      # (nreg,3); 真长轴 a
+        # ★ 2026-10-06（R623 G7 取证）：越界候选落点的**纯记录**容器
+        #   （最多 24 条 + 按撞面分类计数；`_oobcap()` 写，落 `nuc_dbg.json`）
+        #   为什么放在这里：不走 `nuc_cfg()` 的路径（如驱动层播种）也能有容器，
+        #   避免 `AttributeError`（`N13` 那类坑：`self._nuc` 只在 `nuc_cfg()` 里建）。
+        self._oob_geom = []
+        self._oob_why = {}
         if C is not None and eps0 is not None:
             _w = np.full((self.nreg, 3), np.nan)
             _a = np.full((self.nreg, 3), np.nan)
@@ -2643,6 +2649,8 @@ class LevelSetMulti(object):
                             if not _per_seed and (np.any(cc < R + 0.3e-6)
                                                   or np.any(cc > self.L - R - 0.3e-6)):
                                 _dbg['oob'] += 1
+                                # ★ R623 G7 取证：**纯记录**落点（不改数值）
+                                self._oobcap('attach', cc, R, _t_use, nrm, c0)
                                 continue
                             rel = self.XYZ - cc
                             dd = rel @ nrm
@@ -2702,6 +2710,8 @@ class LevelSetMulti(object):
                             if not _per_seed and (np.any(cc < R + 0.3e-6)
                                                   or np.any(cc > self.L - R - 0.3e-6)):
                                 _dbg['oob'] += 1
+                                # ★ R623 G7 取证：**纯记录**落点（不改数值）
+                                self._oobcap('offset', cc, R, t, nrm, c0)
                                 continue
                             rel = self.XYZ - cc
                             dd = rel @ nrm
@@ -2947,6 +2957,49 @@ class LevelSetMulti(object):
             if not np.isfinite(best) or v > best:
                 best, bk = v, k
         return best, bk
+
+    def _oobcap(self, why, cc, R, t, nrm, c0=None):
+        """★ 2026-10-06（**R623 G7 取证**）：**纯记录**越界拒绝的候选落点。
+        ## 为什么需要它
+          `dbg['oob']` 只给一个**总数**（`ifaceON` 实测 **2067**），
+          而"越界"这个词本身**不含几何信息** ⇒ 无法判断是
+            「块太大撞壁」还是「单个候选中心落在盒外」。
+          我先前正是**靠推理**判成前者，而用 `region` 量的实测（`§15.2`）显示
+          α′ 集合在 `n*` 上只占 **0.558 L**、`w` 上只占 **0.188 L**
+          ⇒ **块根本没有撞壁** ⇒ **推理被推翻**。
+          ⇒ 必须**把落点记下来**（`R581 P43`：判据先证有分辨力）。
+
+        ## 记录什么（滚动保留前 `cap` 个，避免长跑爆内存）
+          `_oob_geom`  最多 `cap` 条 `dict(why, face, cc[µm], R_nm, c0[µm], L_um)`
+          `_oob_why`   按撞哪几个面分类计数（`'x'` / `'xz'` / …）
+
+        ⚠ **纯记录，不改任何数值/分支** ⇒ 对归档路径零影响。
+        """
+        cap = 24
+        try:
+            cc = np.asarray(cc, float).ravel()[:3] * 1e6      # → µm
+            lo = R + 0.3e-6
+            hi = self.L - R - 0.3e-6
+            _bad = []
+            if cc[0] < lo * 1e6 or cc[0] > hi * 1e6:
+                _bad.append('x')
+            if cc[1] < lo * 1e6 or cc[1] > hi * 1e6:
+                _bad.append('y')
+            if cc[2] < lo * 1e6 or cc[2] > hi * 1e6:
+                _bad.append('z')
+            key = ''.join(_bad) or '?'
+            self._oob_why[key] = self._oob_why.get(key, 0) + 1
+            lst = self._oob_geom
+            if len(lst) < cap:
+                lst.append(dict(why=why, face=key,
+                                cc=[round(float(v), 4) for v in cc],
+                                R_nm=round(float(R) * 1e9, 1),
+                                c0=([round(float(v) * 1e6, 4) for v in
+                                     np.asarray(c0, float).ravel()[:3]]
+                                    if c0 is not None else None),
+                                L_um=round(float(self.L) * 1e6, 4)))
+        except Exception:                                      # noqa: BLE001
+            pass
 
     def _npref_of(self, k):
         """变体 `k` 的惯习面法向（由 `advance(npref=...)` 缓存的 `self.npref_tab`）。
