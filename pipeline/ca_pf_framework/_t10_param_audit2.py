@@ -58,9 +58,17 @@ for k in sorted(cli):
 
 # ── 2) 收集文本：*.md + *.py ──
 texts = {}
-SELF = ("_t10_param_audit.py", "_t10_param_audit2.py")   # ★ 排除自身！
+# ★ 修（本会话第 14 次自查）：自污染的范围比第一版以为的**广**。
+#   第一次只排除 `_t10_param_audit*.py`，结果扫描器又在
+#   `_t10_prov_ctx.py`（含 TARGETS + KEY 表）与 `_t10_nvar_derive.py` 里
+#   "找到"了 `mob` / `nvar` 的出处 ⇒ **假阳性换了个文件继续出现**。
+#   ⇒ 规则：**排除全部会话工具脚本**（`_t10_*.py` / `_t10_*.sh`），
+#     因为这类脚本天生同时含"参数名"与"出处关键词"。
+def _is_instrument(fn):
+    return fn.startswith("_t10_") or fn in ("_t5_patch_seeddbg.py",)
+
 for fn in os.listdir(HERE):
-    if fn in SELF:                                       # ← 修：量具不得扫自己
+    if _is_instrument(fn):
         continue
     if fn.endswith(".md") or fn.endswith(".py"):
         try:
@@ -68,19 +76,26 @@ for fn in os.listdir(HERE):
             if os.path.getsize(p) > 4_000_000:
                 continue
             _t = open(p, encoding="utf-8", errors="replace").read()
-            # 再排除任何"含关键词表"的文件（例如别的审计脚本）—— 否则同样自我污染
             if "__SELFTEST_KEYWORDS__" in _t:
                 continue
             texts[fn] = _t
         except Exception:
             pass
-print("\n  扫描文本：%d 个（*.md + *.py，**已排除审计脚本自身**）" % len(texts))
+print("\n  扫描文本：%d 个（*.md + *.py，**已排除全部会话工具脚本**）" % len(texts))
 
 def best(pname):
-    """返回 (最强级别名, 证据串)"""
+    """返回 (最强级别名, 证据串)
+
+    ★ 修（本会话第 13 次自查）：v2 首版用 `re.escape(pname)` 做**子串**匹配
+      ⇒ `mob` 命中 `_prodmob_mid60` / `mob_beta` / `mobility` 等**巧合子串**，
+      把"无出处"错判成"文献/DOI"（假阳性）。
+      ⇒ 改用**词边界**：参数名两侧不得紧邻字母/数字/下划线。
+      正对照：`sigma_y` 应仍为"无出处"、`DS_REF` 应仍为"文献/DOI"（已读原文确认）。
+    """
+    pat = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(pname) + r"(?![A-Za-z0-9_])")
     bi, ev = 0, []
     for fn, txt in texts.items():
-        for m in re.finditer(re.escape(pname), txt):
+        for m in pat.finditer(txt):
             seg = txt[max(0, m.start() - 300): m.start() + 300]
             for kw, lv in LV.items():
                 if kw in seg and lv > bi:
