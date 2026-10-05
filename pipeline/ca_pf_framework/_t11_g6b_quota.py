@@ -35,9 +35,15 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PY = "/root/miniconda3/envs/ml/bin/python"
 OUT = "/mnt/f/speed_up/_exp/_bk_t5"
-NV = 10
-LATHS_A = ','.join(str(v) for v in range(1, NV + 1))
-LATHS_B = ','.join('1' for _ in range(NV))
+NV = 8
+# ★★★ 决定性设计（`R623 §12.5`）：**两臂都恰好 2 个不同变体**（可及集合大小相同），
+#   只换**是哪两个** ⇒ **单因素**（教训 21）。
+#   若两臂的事件数与变体分布显著不同 ⇒ "哪些变体在场"确实由 `--laths` 决定
+#   （`G6` 缺口成立）；若相同 ⇒ 配额表**不影响**物理（**撤案**）。
+_AB_A = [1, 2, 1, 2, 1, 2, 1, 2]      # 变体 {1,2}
+_AB_B = [1, 5, 1, 5, 1, 5, 1, 5]      # 变体 {1,5}
+LATHS_A = ','.join(str(v) for v in _AB_A)
+LATHS_B = ','.join(str(v) for v in _AB_B)
 
 COMMON = [
     "--N", "64", "--dx-nm", "62.5", "--steps", "12", "--every", "1",
@@ -78,11 +84,10 @@ def summarize(tag):
 
 def main():
     print("=" * 96)
-    print("**只播前 %d 个场**（两臂同样的场号序列 ⇒ **同样的位置**），"
-          "只换这些场的**变体**" % NV)
-    print(f"  臂 A（10 个不同变体）: --laths {LATHS_A}")
-    print(f"  臂 B（全是同一个变体）: --laths {LATHS_B}")
-    print("  ⚠ 两臂**可及变体集合不同**（这正是「配额」本身），不是纯顺序置换")
+    print("**两臂都恰好 2 个不同变体**（可及集合大小相同），**只换是哪两个** ")
+    print(f"  臂 A（变体 {{1,2}}）: --laths {LATHS_A}")
+    print(f"  臂 B（变体 {{1,5}}）: --laths {LATHS_B}")
+    print("  ⇒ 变体数相同、几何相同、场号相同 ⇒ **单因素**")
     print("=" * 96)
     res = {}
     for tag, laths in (("g6bA", LATHS_A), ("g6bB", LATHS_B)):
@@ -106,12 +111,13 @@ def main():
     print(f"事件数：A={a['n_events']}  B={b['n_events']}  ⇒ {'相同' if same_n else '不同'}")
     print(f"变体分布：{'**完全相同**' if same_hist else '**不同**'}")
     if same_hist and same_n:
-        print("   ⇒ 换配额顺序 ⇒ 结果**不变** ⇒ `natural` **不依赖** `--laths` 排列 ✓")
+        print("   ⇒ 换「哪两个变体」⇒ 结果**不变** ⇒ 配额表**不影响**物理"
+              " ⇒ `G6` 缺口**不成立**（撤案）")
     else:
-        print("   ⇒ 换配额顺序 ⇒ 结果**变了** ⇒ **配额表仍在影响物理**"
-              "（这正是 `G6` 的缺口）")
-    print("   ⚠ 记账：本判据只测**顺序置换**（变体池相同）。"
-          "若要测「变体池大小」本身的影响，需另做一组（改 M_PER_VAR）。")
+        print("   ⇒ 换「哪两个变体」⇒ 结果**变了** ⇒ **`G6` 缺口成立**"
+              "（哪些变体在场由 `--laths` 决定）")
+    print("   ⚠ 记账：本判据**固定「变体数 = 2」**，只测**是哪两个**。"
+          "「变体数本身」的效应由 `R623 §12.3` 的实测单独记账（8 事件 → 0）。")
     print("=" * 96)
     return 0
 
