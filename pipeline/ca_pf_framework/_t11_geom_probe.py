@@ -79,17 +79,35 @@ print(f"\n变体 1 的三轴：n*={np.round(n_hat,4)}  a={np.round(a_hat,4)}  "
       f"w={np.round(w_hat,4)}")
 
 pos = (np.argwhere(m_all).astype(float) + 0.5) * dx
-print(f"\n{'方向':>6} {'min(µm)':>10} {'max(µm)':>10} {'跨度(µm)':>10} "
-      f"{'跨度/L':>9}  判定")
+print(f"\n{'方向':>6} {'朴素跨度':>10} {'/L':>7} {'周期最小跨度':>12} {'/L':>7}  判定")
+
+
+def _min_arc(pp, L):
+    """★ 周期盒里的**最小包围弧长**（不是朴素包围盒！）。
+
+    为什么必须换口径（`R623 §14.12`）：在周期盒里，若分布**绕过了边界**，
+    朴素包围盒**必然 > L**（`max − min` 把两侧都算进去）—— 那是**几何假象**，
+    不是"板条真的长到 1.6 L"。正确口径：把投影排序，找**最大间隙**，
+    则最小包围弧长 = `L − 最大间隙`（= 能盖住全部点的最短周期区间）。
+    ⚠ 这不改变任何物理，只改**读数**（`AGENTS.md` 的"量具"纪律）。
+    """
+    q = np.sort(np.mod(pp, L))
+    if q.size < 2:
+        return 0.0
+    gaps = np.diff(np.concatenate([q, [q[0] + L]]))
+    return float(L - gaps.max())
+
+
 for nm, ax in (("n*（堆叠）", n_hat), ("a（长轴）", a_hat), ("w（宽轴）", w_hat)):
     p = pos @ ax
-    lo, hi = float(p.min()), float(p.max())
-    span = hi - lo
-    frac = span / L
-    verdict = ("**接近/超出盒子 ⇒ 该方向撞壁**" if frac > 0.85
-               else ("偏紧" if frac > 0.6 else "有余量"))
-    print(f"{nm:>10} {lo*1e6:>10.3f} {hi*1e6:>10.3f} {span*1e6:>10.3f} "
-          f"{frac:>9.3f}  {verdict}")
+    span = float(p.max() - p.min())
+    marc = _min_arc(p, L)
+    frac, mfrac = span / L, marc / L
+    verdict = ("**绕盒（朴素跨度失真，看周期跨度）**" if frac > 1.0
+               else ("接近/超出盒子 ⇒ 该方向撞壁" if frac > 0.85
+                     else ("偏紧" if frac > 0.6 else "有余量")))
+    print(f"{nm:>10} {span*1e6:>10.3f} {frac:>7.3f} {marc*1e6:>12.3f} "
+          f"{mfrac:>7.3f}  {verdict}")
 
 print(f"\n（对照）L_box = {L*1e6:.3f} µm ；plate_t = "
       f"{float(ea.get('plate_T', 510))*1e-9*1e6:.3f} µm ；"
