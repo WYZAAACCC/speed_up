@@ -1294,8 +1294,26 @@ def run(a):
     #     （`[1,1,1,2,2,2]` ⇒ 2 块，各 3 根）。
     #   ★ 布局：块心沿**块 0 的长轴 `a_0`** 排开，间距 `--block-gap-nm`（默认 2000 nm）
     #     ⇒ 两块**相向长大**、在盒内相遇（`§7.2` 的 P-SA-2）。
+    # ★★★★★ 2026-10-05（**R623 G4：把"逐变体轴"从 `multi_block` 分支里解放**）
+    #   ## 缺陷（`R623 §3/§4`；`R30_AUDIT_LEDGER` **P1-13** 已登记过同一件事）
+    #     原写法：`n_hab/a_ax/w_ax` 只在 `:969-975` 从 **`laths[0]`**（= 第 1 个场
+    #     的变体）取**一次**，而 `_seed_next()` 对**每一片**都用这三个全局量
+    #     （`:1639 c = c0 + (...) * n_hab`、`:1641 seed_plate(j, c, n_hab, …, along=a_ax)`）
+    #     ⇒ 一旦 `--laths` 里的变体不止一个，**变体 2 的板条也会被沿变体 1 的惯习面摆**
+    #     ⇒ 220 片**几何上同一个取向**，而 `npref` 却按 `laths_eff` **逐场**给
+    #     （`:1025 npref = {i+1: NPF[v] …}`）⇒ **变体身份两处不一致**。
+    #     修它的 `_variant_axes` 只写在 `if a.multi_block:`（`:1328`）**内部**，
+    #     而生产 `multi_block=False` ⇒ **修复从不生效**。
+    #   ## 本条做什么
+    #     把 `_variant_axes` 提到**模块层**（本处），并新增
+    #       `_field_axes(j)` —— 按**该场自己的变体**取轴（由 `--per-field-axes` 门控）；
+    #       `_axis_of(j, kind)` —— `kind='g'` 走全局（归档）、`'f'` 走逐场。
+    #     `_seed_next()` 与 `_block_span_n()` 改用这两个辅助函数。
+    #   ## 惰性（**硬要求**）
+    #     `--per-field-axes 0`（**默认**）⇒ `_axis_of` 恒返回全局量
+    #     ⇒ 与修前**逐位相同**（由 `_r30_regress.sh` 把关）。
     def _variant_axes(v):
-        """变体 v 的 (n*, a, w) —— 与 `:221-227` **同一套定义**，只是按变体取。
+        """变体 v 的 `(n*, a, w)` —— 与 `:221-227`、`:969-975` 同一套定义，只是按变体取。
 
         ★ R131（用户裁定 C）：`--rank1-swap invariant` 时，对**判据说该换**的变体
           把 `n*` 与 `a` **对调**（`w` 不变：`cross(a,n) = −cross(n,a)`，同一条线）。
@@ -1309,6 +1327,28 @@ def run(a):
         if v in _SWAP:                          # ★ R131：对调 n* 与 a
             nv_, av_ = av_, nv_
         return nv_, av_, wv_
+
+    _GLOB_AX = (np.asarray(n_hab, float).copy(),
+                np.asarray(a_ax, float).copy(),
+                np.asarray(w_ax, float).copy())
+    _PF_AX = bool(int(getattr(a, 'per_field_axes', 0) or 0))
+    _PF_CACHE = {}
+
+    def _field_axes(j):
+        """场 `j`（1-based）**自己变体**的 `(n*, a, w)`；带缓存。"""
+        if j not in _PF_CACHE:
+            _v = int(laths_eff[j - 1])
+            _PF_CACHE[j] = _variant_axes(_v)
+        return _PF_CACHE[j]
+
+    def _axis_of(j, kind):
+        """`kind='g'` ⇒ 全局轴（**归档行为**）；`'f'` ⇒ 该场自己的轴。
+
+        ⚠ `--per-field-axes 0`（默认）⇒ 两种 kind 都返回全局 ⇒ 逐位不变。
+        """
+        if not _PF_AX:
+            return _GLOB_AX[{'g': 0, 'a': 1, 'w': 2}[kind]]
+        return _field_axes(j)[{'g': 0, 'a': 1, 'w': 2}[kind]]
 
     _blk = []                                   # [(variant, [field ids 1-based])]
     for _i, _v in enumerate(laths_eff, start=1):
@@ -1596,11 +1636,16 @@ def run(a):
         o = a.nuc_overlap_nm * 1e-9
         _fr = float(a.nuc_compensate_frac)
         Tj = (T + _fr * (o if j < nv else 0.5 * o)) if (o > 0 and a.nuc_compensate) else T
+        # ★★★★★ 2026-10-05（**R623 G4**）：本片的**堆叠方向**与**长轴**取哪个
+        #   —— `--per-field-axes 0`（默认）⇒ `_nj`/`_aj` 就是全局 `n_hab`/`a_ax`
+        #   ⇒ 与修前**逐位相同**；打开后按**该场自己的变体**取（修掉"变体身份两处不一致"）。
+        _nj = _axis_of(j, 'g')
+        _aj = _axis_of(j, 'a')
         if j == 1:
             c = c0.copy()
         else:
-            sp = _block_span_n(g, n_hab, BM)
-            cproj = float(c0 @ n_hab)
+            sp = _block_span_n(g, _nj, BM)
+            cproj = float(c0 @ _nj)
             if sp is None:
                 c = c0.copy()
             else:
@@ -1629,10 +1674,10 @@ def run(a):
                 #   零水平集，台阶对不上的地方就留 1 胞 β（阶梯错位伪影，非物理）。
                 #   ⇒ 用 `--nuc-overlap-nm` 让新片**咬进**旧片（物理上就是
                 #     "在界面上形核"，共用一张界面，不是隔缝相望）。
-                c = c0 + ((edge - cproj) + side * (Tj / 2 - o)) * n_hab
+                c = c0 + ((edge - cproj) + side * (Tj / 2 - o)) * _nj
                 c = c - L * np.floor(c / L)          # 周期折回
-        g.seed_plate(j, c, n_hab, a.plate_W * 0.5e-9, Tj,
-                     elong=a.plate_L / a.plate_W, along=a_ax, flat_end=True)
+        g.seed_plate(j, c, _nj, a.plate_W * 0.5e-9, Tj,
+                     elong=a.plate_L / a.plate_W, along=_aj, flat_end=True)
         n_seeded = j
         return j
 
@@ -3748,6 +3793,22 @@ def main():
     ap.add_argument('--nuc-resample-ungated', type=int, default=0, choices=(0, 1),
                     help='★ R623 G5a：让"位点表重抽"（唯一解卡机制）不再被 '
                          '`n_fresh > 0` 门控 ⇒ fresh 名额用尽后不再死锁')
+    # ★★★★★ 2026-10-05（**R623 G4：逐变体轴**）
+    #   ## 缺陷（`R623 §3/§4`；`R30_AUDIT_LEDGER` **P1-13** 同记）
+    #     `n_hab/a_ax/w_ax` 只在构造期从 **`laths[0]`**（第 1 个场的变体）取**一次**，
+    #     而 `_seed_next()` 对**每一片**都用这三个全局量
+    #     ⇒ **变体 2 的板条也被沿变体 1 的惯习面摆**
+    #     ⇒ 与 `:1025` 的 `npref = {i+1: NPF[v] …}`（**逐场**给）**不一致**。
+    #     修它的 `_variant_axes` 原先只活在 `if a.multi_block:` 分支里，
+    #     而生产 `multi_block=False` ⇒ **修复从不生效**。
+    #   ## 本开关
+    #     打开后 `_seed_next()` 用**该场自己的** `(n*, a)`：
+    #       堆叠方向 = 该场的 `n*`（惯习面法向）、长轴 = 该场的 `a`。
+    #   ⚠ 默认 **0** ⇒ `_axis_of` 恒返回全局 ⇒ **归档路径逐位不变**
+    #     （由 `_r30_regress.sh` 的"共有列差异 0"把关）。
+    ap.add_argument('--per-field-axes', type=int, default=0, choices=(0, 1),
+                    help='★ R623 G4：每片板条的堆叠方向与长轴按**该场自己的变体**取'
+                         '（修掉"变体身份两处不一致"）；默认 0 = 全局轴 = 归档行为')
     # ★★★★★ 2026-10-04（**N11**）：`nfsv_nofield` 的**取证**开关。
     #   背景：`--laths` 从 `12×6=72` 抬到 `12×10=120`（`nv` **+67%**），
     #   而 `nfsv_nofield` 只从 **22 → 21** ⇒ **"变体碰撞/场不够"这个假设被 A/B 否掉**。
