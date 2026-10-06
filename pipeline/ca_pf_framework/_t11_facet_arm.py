@@ -31,6 +31,11 @@ bh = sys.argv[4] if len(sys.argv) > 4 else "6.477"      # ★ 物理值 A/B（�
 #   ⚠ 记账：第一版把 `STEP` 定义在 `argv` **之后** ⇒ 静默失效（同 `bw` 的坑）；
 #     现提到 `argv` 之前，并**显式打印**以便核对（`P44`：要看独有成功串）。
 STEP = sys.argv[11] if len(sys.argv) > 11 else "300"
+# ★★★ `R642`：**盒尺寸**（`N`）。`R635 §7` 曾测到 `N=128` 用 24 GB ⇒ 放弃 8 µm 盒；
+#   但 `_t11_mem_scaling.py` 复测标度：`N=48/64/96` 的构造 RSS = 258/515/1569 MB
+#   ⇒ **近似 ∝ N³** ⇒ 外推 `N=128` = **4.02 GB**（不是 24 GB）
+#   ⇒ **先前那 24 GB 是多进程并存的测量混淆** ⇒ 8 µm 盒**可行**。
+NN = sys.argv[12] if len(sys.argv) > 12 else "64"
 dip = sys.argv[5] if len(sys.argv) > 5 else "0.0"       # ★ 45° 凹陷（`R30 §46`：与凸化配套）
 iform = sys.argv[6] if len(sys.argv) > 6 else "exp2"    # ★ 面内角函数（`R64 §52`：ellipse ⇒ ratio 恰兑现）
 rmode = sys.argv[7] if len(sys.argv) > 7 else ""        # ★ `R634` 重初始化档（'' = 不设 ⇒ sussman）
@@ -57,7 +62,7 @@ fproj = sys.argv[10] if len(sys.argv) > 10 else "0"
 
 argv = [
     PY, "-u", "_bk_exp.py",
-    "--N", "64", "--dx-nm", "62.5", "--steps", STEP,
+    "--N", NN, "--dx-nm", "62.5", "--steps", STEP,
     "--every", "25", "--snap-every", "25", "--pair-every", "200",
     "--norm-smooth", "0", "--nthreads", "4", "--arm", "dry",
     "--plate-L", nuc, "--plate-W", nuc, "--plate-T", nuc,
