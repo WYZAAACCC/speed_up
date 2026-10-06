@@ -35,13 +35,18 @@ rmode = sys.argv[7] if len(sys.argv) > 7 else ""        # ★ `R634` 重初始�
 #   仓库 `_r59_wulff3d.py` 实测（`beta_h=6.477, beta_w=2.3`）：
 #     `dip_c=0` ⇒ **3.51**；`dip_c=4` ⇒ **9.73**（与 2D 的 3.45/8.98 一致）✅
 bw = sys.argv[8] if len(sys.argv) > 8 else "2.3"
+# ★★★ 2026-10-07 **第五个设计缺陷的修法**：核尺寸。
+#   4 µm 盒（`N=64`）+ 250 nm 核时，形状会长到 3.4–3.9 µm ⇒ **撞盒**（`R635 §6.4`）
+#   而 8 µm 盒在 `nv=220` 下要 **24+ GB**（`R635 §7`）⇒ **不可行**。
+#   ⇒ 改为**小核**：125 nm 立方 + 4 µm 盒 ⇒ 形状可长到 ~2.4 µm 仍留余量。
+nuc = sys.argv[9] if len(sys.argv) > 9 else "125.0"
 
 argv = [
     PY, "-u", "_bk_exp.py",
     "--N", "64", "--dx-nm", "62.5", "--steps", "300",
     "--every", "25", "--snap-every", "25", "--pair-every", "200",
     "--norm-smooth", "0", "--nthreads", "4", "--arm", "dry",
-    "--plate-L", "250.0", "--plate-W", "250.0", "--plate-T", "250.0",
+    "--plate-L", nuc, "--plate-W", nuc, "--plate-T", nuc,
     "--nuc-shape", "disc", "--grow-stack",
     "--nuc-every", "0", "--nuc-init", "0",
     "--nuc-law", "cadence", "--nuc-block-target", "0",
