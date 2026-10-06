@@ -92,6 +92,16 @@ def build(over):
         argv += ['--' + reg, s_(v)]
 
     EXCL = {'tag', 'out'}                     # 输出位置必须由本脚本决定
+    # ★★ 我犯的错（留档）：`EXCL` 把 `out` 从**全量透传**里排除，
+    #   而 `over` 里**只有 `tag`** ⇒ `--out` **两边都漏** ⇒ 引擎用解析器默认
+    #   `_exp/_bk_block`（**不是** `t10B9` 的 `_exp/_bk_t5`）
+    #   ⇒ 生产跑一整轮都写错目录（实测 `_t11_check_cmd.py` 报 `--out` 出现 **0** 次）。
+    #   ⇒ **修法**：凡在 `EXCL` 里的键，**必须**在 `over` 里有确定值，否则**硬失败**。
+    for _k in EXCL:
+        if _k not in over:
+            raise SystemExit(
+                '❌ `%s` 在 EXCL 里但 `over` 里没有值 ⇒ 它会**两边都漏**、'
+                '静默用解析器默认值。必须在 `over` 里给确定值。' % _k)
     argv = []
     for k in sorted(ea):
         if k in EXCL or k in over:
@@ -103,6 +113,11 @@ def build(over):
     for k in sorted(over):
         reg = k if k in META else NORM.get(_norm(k), k)
         argv += ['--' + reg, s_(over[k])]
+    # ---- 自查（不通过就硬失败，不再靠"我记得传了"）----
+    _miss = [x for x in ('out', 'tag')
+             if ('--' + x) not in argv]
+    if _miss:
+        raise SystemExit('❌ 生成的自查失败：命令里缺 %s' % _miss)
     cmd = [PY, "-u", "_bk_exp.py"] + argv
     nv = int(ea.get("nv", m.get("nv", 220)))
     n_l = len(str(ea.get("laths", "")).split(',')) if ea.get("laths") else nv
@@ -122,6 +137,8 @@ if __name__ == "__main__":
     over = {k: v for k, v in (('steps', a.steps), ('pf_phi', a.pf_phi),
                               ('ckpt_every', a.ckpt_every)) if v is not None}
     over['tag'] = a.tag
+    # ★ `--out` **必须显式给**（见 `build()` 里的留档：漏它会让引擎静默用默认目录）
+    over.setdefault('out', '_exp/_bk_t5')
     cmd, nv, nl = build(over)
     print(f"参数来源 = {SRC}/meta.json（回读）  nv={nv}  laths={nl} 个")
     print("\n命令：")
