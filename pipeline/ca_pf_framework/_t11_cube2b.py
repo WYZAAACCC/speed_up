@@ -31,11 +31,14 @@ OUT = "_exp/_bk_t5"
 DX = 62.5e-9
 N = 128
 CUBE = 250.0
-STEPS = 240
+# ★ v2.2 修正（读归档轨迹后）：`dry_t5AB_A` 跑到 **1400 步**才定形
+#   ⇒ 240 步太短。按实测速率 ≈13 nm/步、8 µm 盒的 60% 绕盒线 = 4800 nm
+#   ⇒ 从 250 nm 起 **1000 步**时跨度约 2.4 µm，**仍在线内** ⇒ 取 1000 步、每 100 步快照。
+STEPS = 1000
 
 COMMON = [
     "--N", str(N), "--dx-nm", "62.5", "--steps", str(STEPS),
-    "--every", "40", "--snap-every", "40", "--pair-every", "200",
+    "--every", "100", "--snap-every", "100", "--pair-every", "200",
     "--norm-smooth", "0", "--nthreads", "8", "--arm", "dry",
     "--plate-L", str(CUBE), "--plate-W", str(CUBE), "--plate-T", str(CUBE),
     "--nuc-shape", "disc",
