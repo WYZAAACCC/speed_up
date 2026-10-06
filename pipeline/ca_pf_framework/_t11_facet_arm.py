@@ -40,6 +40,15 @@ bw = sys.argv[8] if len(sys.argv) > 8 else "2.3"
 #   而 8 µm 盒在 `nv=220` 下要 **24+ GB**（`R635 §7`）⇒ **不可行**。
 #   ⇒ 改为**小核**：125 nm 立方 + 4 µm 盒 ⇒ 形状可长到 ~2.4 µm 仍留余量。
 nuc = sys.argv[9] if len(sys.argv) > 9 else "125.0"
+# ★★★ 2026-10-07 **第六个设计缺陷的修法**：`--facet-proj`（保面机制）。
+#   `windowB_surface.py:4335-4343`（逐字）：
+#     「实测平坦端面在界面走过 ~5Δx 就被数值扩散抹掉（f_flat 0.172 → 0.005），
+#       而三个来源**全部排除**（平流格式/延拓带宽/再初始化）
+#       ⇒ 是"光滑 φ 等值面"表示的**内禀**问题。」
+#   ⇒ 这正是 `R637` 独立测到的「oblique 55%、界面粗糙」的根因。
+#   算子已过正对照（解析长方体上幂等 s=1.000、体积变化 0.0%）。
+#   ⚠ 默认 0（关）；语义 = **每 N 步做一次面片投影**。
+fproj = sys.argv[10] if len(sys.argv) > 10 else "0"
 
 argv = [
     PY, "-u", "_bk_exp.py",
@@ -55,7 +64,7 @@ argv = [
     "--qs-clock", "1", "--qs-max-relax", "100",
     "--beta-h", bh, "--beta-w", bw, "--ed-eta", "0.253",
     "--mob-iform", iform, "--mob-ratio", "9.0", "--mob-dip", dip,
-    "--facet-proj", "0", "--rank1-swap", "none", "--var-rule", "ed",
+    "--facet-proj", fproj, "--rank1-swap", "none", "--var-rule", "ed",
     "--nuc-sites-refill", "1",
     "--band-cells", band,
     "--out", OUT, "--tag", tag,
