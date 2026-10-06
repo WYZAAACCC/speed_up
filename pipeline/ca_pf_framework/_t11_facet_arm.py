@@ -24,6 +24,7 @@ OUT = "_exp/_bk_t5"
 tag = sys.argv[1]
 wulff = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 band = sys.argv[3] if len(sys.argv) > 3 else "20"
+bh = sys.argv[4] if len(sys.argv) > 4 else "6.477"      # ★ 物理值 A/B（默认=生产值）
 
 argv = [
     PY, "-u", "_bk_exp.py",
@@ -37,7 +38,7 @@ argv = [
     "--gamma0", "0.25", "--gamma-film", "0.6",
     "--alpha-km", "0.041739", "--T-end", "298.0", "--cool-rate", "2352400.0",
     "--qs-clock", "1", "--qs-max-relax", "100",
-    "--beta-h", "6.477", "--beta-w", "0.0", "--ed-eta", "0.253",
+    "--beta-h", bh, "--beta-w", "0.0", "--ed-eta", "0.253",
     "--mob-iform", "exp2", "--mob-ratio", "9.0", "--mob-dip", "0.0",
     "--facet-proj", "0", "--rank1-swap", "none", "--var-rule", "ed",
     "--nuc-sites-refill", "1",
