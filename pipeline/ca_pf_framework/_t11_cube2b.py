@@ -104,7 +104,7 @@ def measure(tag):
 
 
 print("=" * 104)
-print("★ 立方核生长 v2.1：盒 %.1f um (N=%d)、核 %.0f nm 立方、%d 步、每 40 步快照"
+print("★ 立方核生长 v2.2: box %.1f um (N=%d), cube %.0f nm, %d steps, every 100"
       % (N * DX * 1e6, N, CUBE, STEPS))
 print("=" * 104, flush=True)
 for tag, bh in ARMS:

@@ -39,11 +39,16 @@ for t in ("c2Eq0", "c2B647", "c2B15"):
     L.append("   %-8s %5d 行  最新 step=%-5s mtime=%s"
              % (t, txt.count("\n"), steps[-1] if steps else "—", mt))
 # ③ 主控日志（已完成臂的结果表）
-f = os.path.join(ROOT, "_w2_cube2b.log")
-if os.path.exists(f):
+for _cand in ("_w2_cube2c.log", "_w2_cube2b.log", "_w2_cube2.log"):
+    f = os.path.join(ROOT, _cand)
+    if os.path.exists(f) and os.path.getsize(f) > 0:
+        break
+else:
+    f = None
+if f:
     txt = open(f, encoding="utf-8", errors="replace").read()
-    L.append("③ 主控 `_w2_cube2b.log`（%d 行，mtime=%s）："
-             % (txt.count("\n"),
+    L.append("③ 主控 `%s`（%d 行，mtime=%s）："
+             % (os.path.basename(f), txt.count("\n"),
                 time.strftime('%H:%M:%S', time.localtime(os.path.getmtime(f)))))
     for ln in txt.splitlines()[-14:]:
         L.append("   " + ln[:150])
