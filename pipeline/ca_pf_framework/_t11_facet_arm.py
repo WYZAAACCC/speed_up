@@ -25,6 +25,8 @@ tag = sys.argv[1]
 wulff = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 band = sys.argv[3] if len(sys.argv) > 3 else "20"
 bh = sys.argv[4] if len(sys.argv) > 4 else "6.477"      # ★ 物理值 A/B（默认=生产值）
+dip = sys.argv[5] if len(sys.argv) > 5 else "0.0"       # ★ 45° 凹陷（`R30 §46`：与凸化配套）
+iform = sys.argv[6] if len(sys.argv) > 6 else "exp2"    # ★ 面内角函数（`R64 §52`：ellipse ⇒ ratio 恰兑现）
 
 argv = [
     PY, "-u", "_bk_exp.py",
@@ -39,7 +41,7 @@ argv = [
     "--alpha-km", "0.041739", "--T-end", "298.0", "--cool-rate", "2352400.0",
     "--qs-clock", "1", "--qs-max-relax", "100",
     "--beta-h", bh, "--beta-w", "0.0", "--ed-eta", "0.253",
-    "--mob-iform", "exp2", "--mob-ratio", "9.0", "--mob-dip", "0.0",
+    "--mob-iform", iform, "--mob-ratio", "9.0", "--mob-dip", dip,
     "--facet-proj", "0", "--rank1-swap", "none", "--var-rule", "ed",
     "--nuc-sites-refill", "1",
     "--band-cells", band,
