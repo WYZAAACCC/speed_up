@@ -40,7 +40,6 @@ COMMON = [
     "--N", str(N), "--dx-nm", "62.5", "--steps", str(STEPS),
     "--every", "100", "--snap-every", "100", "--pair-every", "200",
     "--norm-smooth", "0", "--nthreads", "8", "--arm", "dry",
-    "--plate-L", str(CUBE), "--plate-W", str(CUBE), "--plate-T", str(CUBE),
     "--nuc-shape", "disc",
     "--grow-stack",
     "--nuc-every", "0", "--nuc-init", "0",
@@ -55,11 +54,33 @@ COMMON = [
     "--nuc-sites-refill", "1",
     "--out", OUT,
 ]
-ARMS = [("c2Eq0", "0.0"), ("c2B647", "6.477"), ("c2B15", "15.0")]
+# ★★★ v2.3（读归档轨迹后新增）：**正对照臂**。
+#   实测（`dry_t5AB_B` 场 4）：「伸长在形核后很早就完成」—— 场 4 出生时 L/T 已是 **9.46**，
+#   此后 1000 步几乎不变（9.46 → 9.33）；场 2 在 step 320 达峰 8.55 后停滞。
+#   ⇒ 若只跑"等轴核"，全 FAIL 也**无法区分**"机制不行"还是"我的装置测不出高长厚比"
+#     ⇒ 违反 `P24`（负对照要有分辨力）⇒ **必须加正对照**。
+#   ⚠ 尺寸经过**压实测**（`_t11_pos_dry2.py`）：
+#     第一版用 `250×250×27.8 nm`（厚 **0.11 格**）⇒ 实测 `nslab=0`、显著分量 **0**、
+#     包围跨度仅 **7 nm** ⇒ **量具测不到** ⇒ 放大到 **1250×1250×138.9 nm**
+#     （厚 **2.22 格**）⇒ 实测 `nslab=1`、显著分量 **1**、跨度 **136 nm** ✅ 能测。
+POS_SIDE = 1250.0
+POS_T = POS_SIDE / 9.0        # 138.9 nm ⇒ 核 L/T = 9.00
+# ★ v2.4：把 L/T=3 那一档也做成**真的扁核**（对齐 arch3 的核厚），
+#   否则"立方核 + beta_h=15"改的是形状而不是伸长（也违反单变量原则）。
+CUBE_T_ARCH3 = CUBE / 3.0
+
+ARMS = [("c2Eq0", "0.0"), ("c2B647", "6.477"), ("c2B15", "15.0"),
+        ("c2PosA", "6.477"), ("c2Arch3", "6.477")]
+# 每个臂的 (plate_L, plate_W, plate_T)：默认 250/250/250 = **立方**
+ARMDIM = {"c2PosA": (POS_SIDE, POS_SIDE, POS_T),   # 正对照：核 L/T = 9（1250 nm 级）
+          "c2Arch3": (CUBE, CUBE, CUBE_T_ARCH3)}   # 归档式扁核：核 L/T = 3
 
 
 def run(tag, bh):
-    cmd = [PY, "-u", "_bk_exp.py"] + COMMON + ["--beta-h", bh, "--tag", tag]
+    pl, pw, pt = ARMDIM.get(tag, (CUBE, CUBE, CUBE))
+    cmd = ([PY, "-u", "_bk_exp.py"] + COMMON
+           + ["--plate-L", str(pl), "--plate-W", str(pw), "--plate-T", str(pt),
+              "--beta-h", bh, "--tag", tag])
     log = "/mnt/f/speed_up/_w2_%s.log" % tag
     with open(log, "w") as fh:
         rc = subprocess.call(cmd, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT)

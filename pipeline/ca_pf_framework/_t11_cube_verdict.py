@@ -22,7 +22,10 @@ import numpy as np
 
 ROOT = "/mnt/f/speed_up/pipeline/ca_pf_framework/_exp/_bk_t5"
 DX = 62.5e-9
-ARMS = [("c2Eq0", 0.0), ("c2B647", 6.477), ("c2B15", 15.0)]
+ARMS = [("c2Eq0", 0.0), ("c2B647", 6.477), ("c2B15", 15.0),
+        ("c2PosA", 6.477), ("c2Arch3", 6.477)]
+# 各臂的核几何（用于打印"核本来的 L/T"）：默认立方 250³
+NUC_LT = {"c2PosA": 9.0, "c2Arch3": 3.0}
 
 
 def ncomp(mask):
@@ -105,6 +108,20 @@ print()
 eq = f.get("c2Eq0")
 b6 = f.get("c2B647")
 b15 = f.get("c2B15")
+pos = f.get("c2PosA")
+arch3 = f.get("c2Arch3")
+
+# ★ 正对照闸（新增，`P24`）：核 L/T = 9 的臂 ⇒ 量具**必须**给出 ≈9
+if pos is None:
+    print("  ⓪ 正对照闸（核 L/T=9 的臂是否被量出 ≈9）：**无法判定**（c2PosA 无读数）")
+else:
+    v = pos[1]['ar_lt']
+    print("  ⓪ 正对照闸（核 L/T=9）：实测 L/T = %.2f ⇒ %s"
+          % (v, "✅ PASS（量具有分辨力）" if v >= 6.0
+             else "❌ **FAIL ⇒ 量具测不出高长厚比，② 的 FAIL 不可信**"))
+if arch3 is not None:
+    print("  ⓪b 归档式扁核（核 L/T=3）：实测 L/T = %.2f" % arch3[1]['ar_lt'])
+
 # 判据①
 if eq is None:
     print("  ① 负对照闸：**无法判定**（c2Eq0 无可用读数）")
@@ -126,7 +143,7 @@ if eq and (b6 or b15):
 else:
     print("  ② 主判据：**无法判定**")
 # 判据③
-for nm, ff in (("c2B647", b6), ("c2B15", b15)):
+for nm, ff in (("c2B647", b6), ("c2B15", b15), ("c2PosA", pos), ("c2Arch3", arch3)):
     if ff is not None:
         v = ff[1]['ar_lt']
         print("  ③ %s 对靶 ≈9：L/T = %.2f ⇒ %s"
