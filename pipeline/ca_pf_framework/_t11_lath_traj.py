@@ -24,8 +24,15 @@ from _t11_shape2 import ncomp, shape_metrics  # noqa: E402
 ROOT = "/mnt/f/speed_up/pipeline/ca_pf_framework/_exp/_bk_t5"
 DX = 62.5e-9
 tag = sys.argv[1]
+# ★ 容忍两种写法：`c2Eq0` 与 `dry_c2Eq0`（否则会拼成 `dry_dry_...` ⇒ glob 恒为 0，
+#   而工具**不会报错**，只会打印"快照 0 个" ⇒ 这是必须防的静默失效）
+tag = tag[4:] if tag.startswith('dry_') else tag
 fields = [int(x) for x in sys.argv[2:]] or [1]
 sns = sorted(glob.glob(os.path.join(ROOT, "dry_%s" % tag, "snap_*.npz")))
+if not sns:
+    sys.exit("❌ 找不到快照：%s（目录存在=%s）"
+             % (os.path.join(ROOT, "dry_%s" % tag),
+                os.path.isdir(os.path.join(ROOT, "dry_%s" % tag))))
 print("=" * 104)
 print("【%s】逐场伸化轨迹（基无关 R_i = √(5λ_i)）  快照 %d 个" % (tag, len(sns)))
 print("=" * 104)
