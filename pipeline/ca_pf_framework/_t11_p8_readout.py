@@ -89,6 +89,25 @@ print(f"  末行 step={last.get('step')}  nblk_sig={nb}  blk_laths={bl!r}  "
       f"blk_span_nm={sp!r}")
 print(f"  期望块数（--nuc-block-target） = {B_TARGET}")
 
+# ★★ 4.6.10 的绕盒闸：先把「自贯通」这一项打出来（⑧ 明确要求监控周期边界）
+try:
+    _L_um = float(last.get('L_um') or 0) or None
+except (TypeError, ValueError):
+    _L_um = None
+_sp = None
+try:
+    _sp = float(str(last.get('blk_span_nm', '')).split('/')[0])
+except (TypeError, ValueError):
+    pass
+print(f"\n  ⚠ **绕盒闸（`R625 §4.6.10`）**：生产盒 10 µm vs 引擎核长轴 "
+      f"`2R·elong` = 2×320nm×7 = **4.48 µm**（占盒长 **44.8%**）"
+      f"\n     ⇒ 判 `blk_alen_nm`/`blk_wlen_nm`/长宽比时**必须**同时报"
+      f"「自贯通场数」；否则会把绕盒体读成等轴体"
+      f"（`t5AD_700` 就是这个坑：20/21 场自贯通）")
+if _sp is not None and _L_um:
+    print(f"     本行 `blk_span_nm` = {_sp:.0f} nm ⇒ 占盒长 {_sp / (_L_um * 1000):.1%}")
+
+
 # 主判据
 if nb is not None:
     ok_blk = (nb == B_TARGET)
