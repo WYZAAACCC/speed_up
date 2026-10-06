@@ -14,6 +14,7 @@
   · `--steps 300`、`--snap-every 25` ⇒ 12 个点，够量速度比
   · `--band-cells` 可传（默认 20）
 """
+import os
 import subprocess
 import sys
 
@@ -27,6 +28,13 @@ band = sys.argv[3] if len(sys.argv) > 3 else "20"
 bh = sys.argv[4] if len(sys.argv) > 4 else "6.477"      # ★ 物理值 A/B（默认=生产值）
 dip = sys.argv[5] if len(sys.argv) > 5 else "0.0"       # ★ 45° 凹陷（`R30 §46`：与凸化配套）
 iform = sys.argv[6] if len(sys.argv) > 6 else "exp2"    # ★ 面内角函数（`R64 §52`：ellipse ⇒ ratio 恰兑现）
+rmode = sys.argv[7] if len(sys.argv) > 7 else ""        # ★ `R634` 重初始化档（'' = 不设 ⇒ sussman）
+# ★★★ 2026-10-07 **重大更正**：`--beta-w` 默认改为 **2.3**（仓库设计值）。
+#   此前七个臂全用 `0.0` ⇒ **凸化后 `h(a)/h(w)` 被填平成 1.000**（`_t11_wulff_audit.py` 实测）
+#   ⇒ **等于在"面内各向异性为零"的配置下测面内各向异性 ⇒ 那七个臂的数据全部作废**。
+#   仓库 `_r59_wulff3d.py` 实测（`beta_h=6.477, beta_w=2.3`）：
+#     `dip_c=0` ⇒ **3.51**；`dip_c=4` ⇒ **9.73**（与 2D 的 3.45/8.98 一致）✅
+bw = sys.argv[8] if len(sys.argv) > 8 else "2.3"
 
 argv = [
     PY, "-u", "_bk_exp.py",
@@ -40,7 +48,7 @@ argv = [
     "--gamma0", "0.25", "--gamma-film", "0.6",
     "--alpha-km", "0.041739", "--T-end", "298.0", "--cool-rate", "2352400.0",
     "--qs-clock", "1", "--qs-max-relax", "100",
-    "--beta-h", bh, "--beta-w", "0.0", "--ed-eta", "0.253",
+    "--beta-h", bh, "--beta-w", bw, "--ed-eta", "0.253",
     "--mob-iform", iform, "--mob-ratio", "9.0", "--mob-dip", dip,
     "--facet-proj", "0", "--rank1-swap", "none", "--var-rule", "ed",
     "--nuc-sites-refill", "1",
@@ -50,7 +58,14 @@ argv = [
 if wulff:
     argv.append("--mob-wulff")
 log = "/mnt/f/speed_up/_w2_%s.log" % tag
-print("tag=%s  mob_wulff=%d  band_cells=%s" % (tag, wulff, band), flush=True)
+env = dict(os.environ)
+if rmode:
+    env['REINIT_MODE'] = rmode            # ★ `R634`：重初始化档（不设 ⇒ 默认 sussman）
+    print("tag=%s  mob_wulff=%d  dip=%s  iform=%s  **REINIT_MODE=%s**"
+          % (tag, wulff, dip, iform, rmode), flush=True)
+else:
+    print("tag=%s  mob_wulff=%d  dip=%s  iform=%s  REINIT_MODE=(默认 sussman)"
+          % (tag, wulff, dip, iform), flush=True)
 with open(log, "w") as fh:
-    rc = subprocess.call(argv, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT)
+    rc = subprocess.call(argv, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, env=env)
 print("退出码 = %d  日志=%s" % (rc, log))
