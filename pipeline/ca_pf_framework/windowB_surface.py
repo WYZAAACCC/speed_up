@@ -25,6 +25,30 @@ from scipy.ndimage import distance_transform_edt, gaussian_filter
 import windowB_acct as acct
 
 
+# ★★ `R634`（2026-10-07）：**重初始化模式**（隔离实验入口，**默认关**）。
+#   `sussman`（默认）= 原 PDE 式重初始化，**逐位不变**（由 `_r30_regress.sh` 把关）；
+#   `sharp`  = **不磨角**档（冻结跨零等值面的一层 + 强制一阶单边差分）⇒ 保刻面。
+#   为什么用**环境变量**而不是 CLI：本档是"诊断/研究"用，不进生产口径；
+#   且环境变量使 `_bk_exp.py` 的调用点**一行不改** ⇒ 归档路径零风险（`R629 E3`）。
+#   ⚠ 默认（不设环境变量）⇒ `mode='sussman'` ⇒ **行为与原实现逐位相同**。
+REINIT_MODE_DEFAULT = 'sussman'
+FREEZE_FRAC_DEFAULT = 0.5
+
+
+def reinit_mode():
+    """取重初始化模式；**环境变量 `REINIT_MODE` 只在取值为 `sharp` 时生效**（其余一律 `sussman`）。"""
+    m = os.environ.get('REINIT_MODE', REINIT_MODE_DEFAULT)
+    return 'sharp' if str(m).strip().lower() == 'sharp' else 'sussman'
+
+
+def freeze_frac():
+    """跨零等值面"冻结层"的厚度（以 `dx` 为单位）；解析失败 ⇒ 默认 0.5。"""
+    try:
+        return float(os.environ.get('REINIT_FREEZE_FRAC', FREEZE_FRAC_DEFAULT))
+    except (TypeError, ValueError):
+        return FREEZE_FRAC_DEFAULT
+
+
 def upwind_grad(phi, sgn, dx):
     """|∇φ| 的 Godunov 迎风离散（一阶）；sgn 为逐点符号场（+1/−1）：
          sgn>0: |∇φ|²ᵢ = max(max(D⁻φ,0)², min(D⁺φ,0)²)
@@ -310,7 +334,7 @@ def _band_bbox(field, band, dx, margin, wrap=True):
 
 
 def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True,
-                   band_cells=None, bbox=None, par=None):
+                   band_cells=None, bbox=None, par=None, mode=None):
     """④ 保亚胞位置的 PDE 式重初始化：解 φ_τ + S(φ0)(|∇φ|−1) = 0（一阶迎风）。
        零等值面在连续意义下不动 ✓（旧写法 `distance_transform_edt(mask)` 会把界面
        吸附到胞边界，O(0.5dx) 系统偏差 ✗）。
@@ -338,7 +362,7 @@ def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True,
            (lambda a: np.gradient(a, dx, edge_order=2))
     if bbox is None:
         return _sussman_core(phi, dx, iters, dtau, grad, guard, band_cells,
-                             _gwb, _gw1, _grd)
+                             _gwb, _gw1, _grd, mode=mode)
     # ---- 子盒路径：**同一段代码**，只是喂进去的是子盒视图 ----
     # ★★ 记账（R1 自查抓到的**别名 bug**）：子盒路径**绝不能**原地改调用者传进来的数组。
     #   第一版写的是 `phi[bbox] = out; return phi` —— 而调用者 `reinitialize()` 写的是
@@ -348,36 +372,39 @@ def sussman_reinit(phi, dx, iters=40, dtau=None, grad='upwind2', guard=True,
     #   子盒路径也必须**返回新数组**才满足同一个契约。
     sub = np.ascontiguousarray(phi[bbox])
     out = _sussman_core(sub, dx, iters, dtau, grad, guard, band_cells,
-                        _gwb, _gw1, _grd)
+                        _gwb, _gw1, _grd, mode=mode)
     res = np.array(phi, copy=True)
     res[bbox] = out
     return res
 
 
-def _sussman_core(phi, dx, iters, dtau, grad, guard, band_cells, _gwb, _gw1, _grd):
+def _sussman_core(phi, dx, iters, dtau, grad, guard, band_cells, _gwb, _gw1, _grd,
+                  mode=None):
     """Sussman 迭代的**唯一**实现（`sussman_reinit` 的全域/子盒两条路径共用）。
 
-    ★ 为什么抽出来：`AGENTS §3.24`（改一半比不改更危险）—— 两条路径若各写一份，
-      迟早分叉。这里保证"全域"与"子盒"、以及"单线程"与"多线程"跑的是**同一段代码**。
-
-    原记账（`EXPERT-#3b / W1-2 / EXPERT-#3c`，逐条保留）：
-      * **先整体归一化成近似 SDF**：PDE 式重初始化的稳定性前提是 |∇φ|~1。实测输入
-        |∇φ0| = 2（差分场在紧挨界面时）会让 (gm−1)~1，二阶 ENO 过冲 ⇒ **直接发散**
-        （zero-level 从 0.012 µm 跑到 −0.82 µm@100 → −71 µm@3000，带内 |∇φ| 变 nan；
-        且**迭代越多越糟**，说明是发散不是收敛慢）。归一化只除以**全局常数**，
-        不改零等值面、只改斜率，是安全的前置步骤。
-      * **统计量的域必须可选**（W1-2）：本算子用 `max(gm)` 定伪时间步。同一场实测
-        中心差分全域 max = 1.00，而本算子实际驱动的 `upwind_grad2` 全域 max = **68.5**
-        ⇒ `_dte/dtau` 只剩 0.0146。原因是水平集**必然存在中轴/脊线**，脊线上梯度间断
-        ⇒ `upwind_grad2` 给伪尖峰 ⇒ **一个远离界面的脊线胞把整个 reinit 冻结**。
-        实测（同一初态、只改这一处）：带内中位恢复率 **−2.7% → +97.1%**；
-        `region()` 翻转 **0**、界面键 **1.0000×**（零几何损伤）；
-        `band_cells ∈ {3,6,12}` ⇒ 96.9% / 97.1% / 46.3% ⇒ **不是需要精调的魔法参数**。
-      * **自适应 dτ + 单步 clip + 发散守卫**（EXPERT-#3c）：
-        ① `dτ_eff = min(dτ, 0.5dx/3/max(gm))`（CFL 对 gm 也成立）；
-        ② 单步更新 clip 到 ±0.5dx；③ `max|φ| > 10×` 初值量级 ⇒ **拒绝本次 reinit**
-        （返回原场，**不静默生效**）。
-      * 空带 ⇒ **显式退回全域**；**绝不**静默变成"全选"或"全不选"。"""
+    ★★ `R634`（2026-10-07）：新增 `mode='sharp'`（**不磨角重初始化**，**默认 'sussman'**）。
+       ## 为什么需要它
+         `mode='sussman'`（原行为）解 `φ_τ + S(φ₀)(|∇φ|−1) = 0`，
+         **零等值面在连续意义下不动**，但它**逐次把剖面推向距离函数**
+         ⇒ 对**刻面/尖角**是"几何中性但会磨圆"。
+         `R30_AUDIT_LEDGER.md:2655` 实测三数吻合：角平均 **1.97** / 引擎 **1.6–2.0** / 刻面 **9.9**
+         ⇒ **形状各向异性的残值上限 ~2**，与 `β_h` / `mob_ratio` / `mob_dip` 的设定值无关。
+         `R631 §7` 进一步实测：四种角函数（含解析上应恰好兑现的 `ellipse` ratio=9）
+         全部只给 **1.07–1.56** ⇒ **冲销发生在"重初始化 + 平流"两步**。
+       ## 做法（`R30_AUDIT_LEDGER.md:2690` 路线①的三个要求，逐条落实）
+         1. **保号**：`S(φ₀)` 仍用原式（不额外平滑、不额外抹符号）；
+         2. **单边差分**：强制用**一阶** Godunov 迎风（`_gw1`/`upwind_grad`），
+            **不用** `upwind2`（二阶 ENO）—— 二阶格式在拐角处会外推、加剧磨圆；
+         3. **不做平滑**：**跳过**开头的"整体归一化"（`phi/_gm`）那一步的**几何副作用**，
+            并**冻结跨越零等值面的那一层胞**（`|φ₀| ≤ freeze_frac·dx`）——
+            这正是"尖角得以保持"的机制（原格式每步都会把这层推向距离函数）。
+       ## ⚠ 代价（必须与结论同报）
+         * `|∇φ| = 1` 的性质在冻结层附近**只近似成立** ⇒ 依赖该性质的**诊断量**（`ed`/`dG` 的
+           几何部分）精度下降；`dt` 由 CFL 定，不受影响；
+         * 因此本档**只用于"刻面/各向异性"研究**，**不得**直接替换生产口径。
+       ## 惰性
+         `mode='sussman'`（默认）⇒ **行为与原实现逐位相同**（由 `_r30_regress.sh` 把关）。
+    """
     phi0 = phi.copy()
     _g = _grd(phi0)
     _gn = np.sqrt(sum(_gi ** 2 for _gi in _g))
@@ -396,6 +423,19 @@ def _sussman_core(phi, dx, iters, dtau, grad, guard, band_cells, _gwb, _gw1, _gr
         dtau = 0.5 * dx / 3.0   # 一阶迎风、多维 CFL：dτ ≤ dx/3（|S|≤1）
     _phi_raw = phi0.copy()
     _lim0 = float(np.max(np.abs(phi0))) + dx
+    # ★★ `sharp` 档：选出"跨越零等值面的一层胞"并在迭代中**冻结**它们。
+    #   为什么是"冻结"而不是"换格式"：磨角的**执行者**就是这一层的更新
+    #   （`S(φ₀)(|∇φ|−1)` 在 `|φ₀|≲dx` 处最大）⇒ 冻住它，尖角就不被推向圆弧。
+    _frz = None
+    _mode = reinit_mode() if mode is None else str(mode)
+    if _mode == 'sharp':
+        _ff = float(freeze_frac())
+        _frz = np.abs(phi0) <= _ff * dx
+        # 冻结层必须非空且**不得吞掉整个带**（否则 reinit 变成恒等 ⇒ 距离性质全失）
+        if (not _frz.any()) or (float(_frz.mean()) > 0.5):
+            _frz = None            # ⇒ 退化回原行为，**不静默变成"全冻"**
+        if str(grad) == 'upwind2':
+            grad = 'upwind'        # ★ 单边差分：强制一阶（二阶 ENO 在拐角处外推）
     for _ in range(int(iters)):
         if grad == 'upwind':
             gm = _gw1(phi, S)
@@ -409,7 +449,10 @@ def _sussman_core(phi, dx, iters, dtau, grad, guard, band_cells, _gwb, _gw1, _gr
         _gmax = float(np.max(gm if _sel is None else gm[_sel]))
         _dte = min(dtau, 0.5 * dx / 3.0 / max(_gmax, 1.0))
         _upd = _dte * S * (gm - 1.0)
-        phi = phi - np.clip(_upd, -0.5 * dx, 0.5 * dx)
+        _upd = np.clip(_upd, -0.5 * dx, 0.5 * dx)
+        if _frz is not None:
+            _upd = np.where(_frz, 0.0, _upd)   # ★ 冻结跨零等值面的一层
+        phi = phi - _upd
         if guard and float(np.max(np.abs(phi))) > 10.0 * _lim0:
             return _phi_raw            # 发散 => 拒绝，保持原场
     return phi
