@@ -17,9 +17,14 @@
 import os
 import sys
 
-# tag → 允许的核
+# tag → 允许的核（默认计划；可用命令行覆盖 `tag=0,1,2,3`）
 PLAN = {"c2Eq0": [0, 1, 2, 3],
-        "c2B647": [4, 5, 6, 7]}
+        "c2B647": [4, 5, 6, 7],
+        "c2B15": [8, 9, 10, 11]}
+for arg in sys.argv[1:]:
+    if '=' in arg:
+        t, cs = arg.split('=', 1)
+        PLAN[t] = [int(x) for x in cs.split(',') if x.strip()]
 NICE = 10
 
 
