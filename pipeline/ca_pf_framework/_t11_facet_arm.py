@@ -26,6 +26,11 @@ tag = sys.argv[1]
 wulff = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 band = sys.argv[3] if len(sys.argv) > 3 else "20"
 bh = sys.argv[4] if len(sys.argv) > 4 else "6.477"      # ★ 物理值 A/B（默认=生产值）
+# ★ 步数（默认 300；长跑用 1500）—— `R636 §4`：形状是速度的**时间积分**，
+#   以 ~4.5× 的速度比长到 9:1 需约 2900 步 ⇒ 长跑必须显式加步数。
+#   ⚠ 记账：第一版把 `STEP` 定义在 `argv` **之后** ⇒ 静默失效（同 `bw` 的坑）；
+#     现提到 `argv` 之前，并**显式打印**以便核对（`P44`：要看独有成功串）。
+STEP = sys.argv[11] if len(sys.argv) > 11 else "300"
 dip = sys.argv[5] if len(sys.argv) > 5 else "0.0"       # ★ 45° 凹陷（`R30 §46`：与凸化配套）
 iform = sys.argv[6] if len(sys.argv) > 6 else "exp2"    # ★ 面内角函数（`R64 §52`：ellipse ⇒ ratio 恰兑现）
 rmode = sys.argv[7] if len(sys.argv) > 7 else ""        # ★ `R634` 重初始化档（'' = 不设 ⇒ sussman）
@@ -52,7 +57,7 @@ fproj = sys.argv[10] if len(sys.argv) > 10 else "0"
 
 argv = [
     PY, "-u", "_bk_exp.py",
-    "--N", "64", "--dx-nm", "62.5", "--steps", "300",
+    "--N", "64", "--dx-nm", "62.5", "--steps", STEP,
     "--every", "25", "--snap-every", "25", "--pair-every", "200",
     "--norm-smooth", "0", "--nthreads", "4", "--arm", "dry",
     "--plate-L", nuc, "--plate-W", nuc, "--plate-T", nuc,
@@ -76,10 +81,12 @@ env = dict(os.environ)
 if rmode:
     env['REINIT_MODE'] = rmode            # ★ `R634`：重初始化档（不设 ⇒ 默认 sussman）
     print("tag=%s  mob_wulff=%d  dip=%s  iform=%s  **REINIT_MODE=%s**"
-          % (tag, wulff, dip, iform, rmode), flush=True)
+          "  beta_w=%s  facet_proj=%s  steps=%s"
+          % (tag, wulff, dip, iform, rmode, bw, fproj, STEP), flush=True)
 else:
     print("tag=%s  mob_wulff=%d  dip=%s  iform=%s  REINIT_MODE=(默认 sussman)"
-          % (tag, wulff, dip, iform), flush=True)
+          "  beta_w=%s  facet_proj=%s  steps=%s"
+          % (tag, wulff, dip, iform, bw, fproj, STEP), flush=True)
 with open(log, "w") as fh:
     rc = subprocess.call(argv, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, env=env)
 print("退出码 = %d  日志=%s" % (rc, log))
