@@ -35,73 +35,78 @@ def load_src():
 
 
 def build(over):
+    """★ 2026-10-06 **重写**：从"手抄键清单"改为**整个 `exp_args` 全量透传**。
+
+    ## 为什么要改（我犯的错，留档）
+      第一版我**手抄了 40 多个键**逐项回读。结果漏掉 **`burst_km`** ——
+      而它控制 `_n_blk` 的算式与 `_rej_cap`：
+        `burst_km != 0` ⇒ `_n_blk = round(23·f_KM(849)) = 15` ⇒ `_tgt = 9×15 = 135`
+        `burst_km == 0` ⇒ `_n_blk = floor(α·(Ms−849)) = 1`  ⇒ `_tgt = 9×1  = 9`
+      ⇒ 生产跑 `t10PROD1` 的档目标被**钉死在 9**（与用户 ⑧ 的「两百多根」冲突）。
+      ⚠ **教训**：手写键清单的"逐项回读"**不是逐项** ⇒ 必须**全量透传**，
+        只显式覆盖**明确要改**的那几项。
+    """
     m, ea = load_src()
-    # ⚠ `laths` 在 meta.json 里是**字符串**（`a.laths` 被 json 原样存下，如 "1,1,2,2,…"），
-    #   不是数组 ⇒ 先判类型再解析（我第一版按数组处理 ⇒ ValueError）。
-    _l = ea.get("laths", m.get("laths"))
-    if isinstance(_l, str):
-        laths = [int(x) for x in _l.replace(' ', '').split(',') if x.strip()]
-    elif _l:
-        laths = [int(x) for x in _l]
-    else:
-        laths = []
-    nv = int(ea.get("nv", m.get("nv", len(laths) or 220)))
+    import _t11_argparse_meta as AM
+    META = AM.build_meta()
+    # ★ 规范化名 → 注册名（**必须做**：`exp_args` 是下划线名 `T_end`，
+    #   而 `add_argument('--T-end')` 注册的是 `T-end`；且 `_bk_exp.py` 里
+    #   **两种拼法都有**（如 `--dry_run` 与 `--cool-rate` 并存）
+    #   ⇒ 只按一种拼法查表会**漏掉大半参数**，所以建归一化映射。
+    NORM = {}
 
-    def g(k, dflt):
-        v = over.get(k, ea.get(k, m.get(k, dflt)))
-        return dflt if v is None else v
+    def _norm(x):
+        return str(x).lstrip('-').replace('_', '-').lower()
 
-    cmd = [PY, "-u", "_bk_exp.py",
-           "--N", str(g("N", 160)),
-           "--dx-nm", str(g("dx_nm", 62.5)),
-           "--steps", str(g("steps", 2400)),
-           "--every", str(g("every", 20)),
-           "--snap-every", str(g("snap_every", 200)),
-           "--pair-every", str(g("pair_every", 100)),
-           "--norm-smooth", str(g("norm_smooth", 0)),
-           "--nthreads", str(g("nthreads", 4)),
-           "--grow-stack",
-           "--nuc-init", str(g("nuc_init", 6)),
-           "--nuc-every", str(g("nuc_every", 0)),
-           "--nuc-law", str(g("nuc_law", "athermal")),
-           "--nuc-block-target", str(g("nuc_block_target", 9)),
-           "--nuc-block-parallel", str(g("nuc_block_parallel", 1)),
-           "--nuc-supercrit", str(g("nuc_supercrit", 1)),
-           "--nuc-sites-refill", str(g("nuc_sites_refill", 1)),
-           "--nuc-shape", str(g("nuc_shape", "ellipsoid")),
-           "--nuc-occ-guard", str(g("nuc_occ_guard", 1)),
-           "--nuc-periodic-seed", str(g("nuc_periodic_seed", 1)),
-           "--nuc-overlap-nm", str(g("nuc_overlap_nm", 62.5)),
-           "--eng-cadence", str(g("eng_cadence", 30)),
-           "--qs-clock", str(g("qs_clock", 1)),
-           "--qs-max-relax", str(g("qs_max_relax", 100)),
-           "--alpha-km", repr(float(g("alpha_km", 0.041739))),
-           "--T-end", repr(float(g("T_end", 298.0))),
-           "--cool-rate", repr(float(g("cool_rate", 2352400.0))),
-           "--plate-L", str(g("plate_L", 1000.0)),
-           "--plate-W", str(g("plate_W", 500.0)),
-           "--plate-T", str(g("plate_T", 510.0)),
-           "--gamma0", str(g("gamma0", 0.25)),
-           "--beta-h", str(g("beta_h", 6.477)),
-           "--facet-proj", str(g("facet_proj", 0)),
-           "--facet-excl", str(g("facet_excl", 0)),
-           "--reinit-dt", repr(float(g("reinit_dt", 1e-4))),
-           "--reinit-band", str(g("reinit_band", 6.0)),
-           # ---- 本轮新增的开关（生产值 = 归档 ⇒ 逐位不变）----
-           "--nuc-count-mode", str(g("nuc_count_mode", "manual")),
-           "--per-field-axes", str(g("per_field_axes", 0)),
-           "--nuc-order-by-drive", str(g("nuc_order_by_drive", 0)),
-           "--nuc-iface-nucleation", str(g("nuc_iface_nucleation", 0)),
-           "--nuc-resample-ungated", str(g("nuc_resample_ungated", 0)),
-           # ---- 本轮要对比的两项 ----
-           "--pf-phi", str(g("pf_phi", "materialized")),
-           "--ckpt-every", str(g("ckpt_every", 0)),
-           "--wrap-every", str(g("wrap_every", 0)),
-           "--laths", (",".join(str(int(x)) for x in laths) if laths
-                       else ",".join("1" for _ in range(nv))),
-           "--out", str(g("out", "_exp/_bk_t5")),
-           "--tag", str(g("tag", "t10PROD2"))]
-    return cmd, nv, len(laths)
+    for k in META:
+        NORM.setdefault(_norm(k), k)
+        for al in META[k].get('aliases', []):
+            NORM.setdefault(_norm(al), k)
+
+    # `exp_args` 的值 → CLI 字符串（bool 转 0/1；其余 str）
+    def s_(v):
+        if isinstance(v, bool):
+            return '1' if v else '0'
+        return str(v)
+
+    def emit(argv, key, v):
+        """按 **argparse 源码派生的元信息** 决定怎么发一个参数（**不手写清单**）。
+
+        ⚠ 四个坑（我全踩过，见 `_t11_argparse_meta.py` 的说明）：
+          1. **开关型**（`store_true`）**不能带值** ⇒ 只发 `--key`；
+          2. **空串**会被 argparse 当"没给值" ⇒ **吞掉后面的 token**
+             （实测 `error: unrecognized arguments: 0 0 0 1 …`）⇒ **跳过空串**；
+          3. 键不在解析器里 ⇒ 不发（`_bk_exp.py` 会拒未知参数）；
+          4. **下划线/连字符两种拼法**都要能查到 ⇒ 走 `NORM` 归一化。
+        """
+        reg = key if key in META else NORM.get(_norm(key))
+        if reg is None:
+            argv.append('#' + key + '=NOT_IN_PARSER')      # 留痕，便于自查
+            return
+        if META[reg]['flag']:
+            if v in (True, 1, '1', 'true', 'True'):
+                argv.append('--' + reg)
+            return
+        if v is None or (isinstance(v, str) and v.strip() == ''):
+            return                                          # 坑 2：跳过空串
+        argv += ['--' + reg, s_(v)]
+
+    EXCL = {'tag', 'out'}                     # 输出位置必须由本脚本决定
+    argv = []
+    for k in sorted(ea):
+        if k in EXCL or k in over:
+            continue
+        emit(argv, k, ea[k])
+    # 显式覆盖项也**必须走同一套归一化**（坑 4 的同一个坑）：
+    #   `--pf-phi` 在解析器里注册为**连字符**，若这里拼成 `--pf_phi`
+    #   ⇒ argparse 报 `unrecognized arguments`。
+    for k in sorted(over):
+        reg = k if k in META else NORM.get(_norm(k), k)
+        argv += ['--' + reg, s_(over[k])]
+    cmd = [PY, "-u", "_bk_exp.py"] + argv
+    nv = int(ea.get("nv", m.get("nv", 220)))
+    n_l = len(str(ea.get("laths", "")).split(',')) if ea.get("laths") else nv
+    return cmd, nv, n_l
 
 
 if __name__ == "__main__":
