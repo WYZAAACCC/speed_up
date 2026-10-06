@@ -340,6 +340,28 @@ ap.add_argument('--eng-elong', type=float, default=0.0, …)
   ⇒ 若核一出生就是 **7:1、4.48 µm 长**，那么"长宽比"这个量在**形核那一刻就被设定了**，
   而不是长出来的 ⇒ **判读时必须区分"核的初始长宽比"与"生长后的长宽比"**（`R606 §3` 的同一告诫）。
 
+### 4.6.6′ ✅ 公式级复核：结论**成立**（并抓到一句代码注释自相矛盾）
+
+**复核链（全部读实）**
+```
+:1548  def nuc_cfg(self, R_nuc, t_nuc, …, elong=1.0, along=None, …)   ← 形参确实存在
+:1772  elong=float(elong),  along=(… )                                ← 存进 c['elong']/c['along']
+:2265  elong=(c.get('elong', 1.0) …)                                  ← 落位通道读它
+:3192  if elong > 1.0 and along is not None:                          ← 生产两者都满足
+:3197      rperp = np.sqrt((e_par/elong)**2 + e_per**2)               ← 椭圆截面
+:3228      sdf = np.maximum(np.maximum(np.abs(d)-t/2,
+                          np.abs(e_par) - elong*R), …)                ← **长半轴 = elong·R**
+:3214      if elong*R > _margin: raise ValueError(...)                ← 越界硬检查
+```
+⇒ **生产：`elong·R = 7.0 × 320 nm = 2.24 µm` 长半轴** ⇒
+**引擎核 = 面内 2240 × 320 nm 的拉长椭球**（公式级确认，非推理）。
+
+⚠ **顺带抓到一句注释自相矛盾**：`:1764` 写
+> 「`elong=L/W=**3.75**`」
+
+而生产实际传的是 **`7.0`** ⇒ **同一文件里"文档值"与"生产值"不一致**
+（与 `§4.6.7/§4.6.8` 的四来源排除互相印证：**7.0 没有出处**）。
+
 ---
 
 ## 6. ★ ⑧ 的**根因决策树已预登记**（`_t11_p8_diag.py`）
