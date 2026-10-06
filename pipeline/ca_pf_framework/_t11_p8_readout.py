@@ -31,7 +31,17 @@ T_UM = 0.250                      # 单根厚度 µm（`--eng-t-nm 250` 的**值
 #      一致（2×250 + 1 胞 = 507）⇒ **若引用 250 nm 必须声明它属哪套约定**。
 #   ⇒ **判据改成"相邻层间距 ≈ 250 nm"**（厚度方向上第 k 层与第 k−1 层中心的距离），
 #     而**不是**用包围盒跨度当厚度。
-T_LAYER_NM = 250.0                # 单层的**厚度方向间距**（= 250 nm，两套约定的共识值）
+T_LAYER_NM = 250.0                # 单层的**厚度方向间距**（见 §4.6.3-3 的更正说明）
+# ★★ 第三轮更正（同轮内，读 `_bk_exp.py:2028-2030`）：
+#   引擎实际用的**核厚不是 250 nm**，而是
+#       `t_nuc = (250 + --nuc-overlap-nm)`（`R28` 的"自动补厚度"；界面落在重叠区中面
+#        ⇒ 每片被吃 `o/2`，于是把 `o` 加回去）
+#   生产：`250 + 62.5 = **312.5 nm**`。
+#   ⇒ 判"层间距"时**基准也要相应给两种**：`250`（名义）与 `312.5`（引擎实际）。
+#   ⚠ 而 `blk_span_nm` 是**包围盒跨度**（含 ±1Δx 阶梯）⇒ 单根种子的理论跨度
+#     ≈ `τ + 2Δx` = 437.5–562.5 nm；实测 507 nm **落在区间内** ⇒
+#     **分辨力不足以判定"是否多除了一次 2"** ⇒ 登记为待判定（需专门探针）。
+T_ENG_NM = 312.5                  # = 250 + 62.5（`--eng-t-nm` + `--nuc-overlap-nm`）
 # 两套单根体积（R624 §11.4）
 V_ELL = 0.3753                    # 引擎椭球 4/3·π·(R·elong)·R·(t/2)
 V_PHYS = 0.1250                   # 物理足迹 1000×500×250 nm
@@ -53,19 +63,20 @@ print(f"  表头 {len(hdr)} 列：step … nblk_sig 在第 "
       f"{hdr.index('nblk_sig')} 列，blk_laths 在第 {hdr.index('blk_laths')} 列")
 
 print(f"\n{'step':>6} {'nblk_sig':>9} {'blk_laths':>10} {'blk_span_nm':>12} "
-      f"{'nslab_n':>8} {'Vt(m³)':>12} {'n_lath(椭球)':>12} {'n_lath(足迹)':>12}")
+      f"{'nslab_nu':>9} {'nslab_n':>8} {'Vt(m³)':>12} "
+      f"{'n(椭球)':>9} {'n(足迹)':>9}")
 for r in rows[-8:]:
     vt = r.get('Vt') or ''
     try:
         vtf = float(vt)
-        ne = vtf / (V_ELL * 1e-18)
-        nph = vtf / (V_PHYS * 1e-18)
-        se, sp = f"{ne:.1f}", f"{nph:.1f}"
+        ne = f"{vtf / (V_ELL * 1e-18):.1f}"
+        nph = f"{vtf / (V_PHYS * 1e-18):.1f}"
     except (TypeError, ValueError):
-        se = sp = '—'
+        ne = nph = '—'
     print(f"{r.get('step',''):>6} {r.get('nblk_sig',''):>9} "
           f"{r.get('blk_laths',''):>10} {r.get('blk_span_nm',''):>12} "
-          f"{r.get('nslab_n',''):>8} {vt:>12} {se:>12} {sp:>12}")
+          f"{r.get('nslab_nu',''):>9} {r.get('nslab_n',''):>8} {vt:>12} "
+          f"{ne:>9} {nph:>9}")
 
 last = rows[-1]
 print("\n" + "=" * 96)
