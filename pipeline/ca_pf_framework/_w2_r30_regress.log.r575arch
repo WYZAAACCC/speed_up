@@ -1,0 +1,54 @@
+################ ⓪ 清掉上一次的产物（★ R49 修：这里原先**没有** rm）  2026-10-02 10:09:52
+    已删除旧产物，_T0=1790906992
+
+################ ① 归档默认路径重跑（tag=r30reg）  2026-10-02 10:09:52
+★ 闭环参数已落盘: closure.json（nuc_law=cadence, α_KM=1.1000e-02, q=n/a, n=-1）
+--------------------------------------------------------------------------------------------------------
+判决 臂=dry    M=6  nslab_n 1→6（应 == M=6）  nf3_col 0→5  F3 面积 0.0000→7.6993 µm²  Δpos -6.642 dx  nc_max 1→1（显著 1→1）
+  主判据：**nslab_n == M** 且 **nf3_col == M-1**（低角晶界把每根都分开） ⇒ ✓
+
+################ ①a2 ★ 运行日志断言（R152 新增）
+  Traceback 行数 = 0（应 0）  ;  顶层异常行数 = 0（应 0）
+  '块内界面自检' 出现次数 = 1（应 ≥1 —— §108 的接线**真的生效**）
+★★ **块内界面自检（R146）**：`n_occ` = 1/6 ⇒ **判据不适用**（t=0 只有 1 根在场 ⇒ **没有"同变体界面"这个东西**）
+  **PASS**：无 Traceback / 无顶层异常 / 自检已生效
+
+################ ①c ★ 新鲜度断言（R49 新增；不过就整段作废）
+  CSV mtime=2026-10-02 10:20:24   _T0=2026-10-02 10:09:52
+  **PASS**：产物确实是本次新写的
+  新列在位检查（应为 3）： 3
+
+################ ①b 与归档 eng12 逐位比较（忽略 wall_s）
+行数: eng12=21  r30reg=21
+逐位比较（忽略 wall_s；**只比 eng12 有的列**）：差异字段数 = 0
+⚠ 未参与比较的新列：['f3_pairs_pos', 'nf2', 'f2_area_m2', 'nf1', 'f1_area_m2', 'f1_area_stair', 'cfl_used', 'nslab_n1', 'runs1', 'nf3_col1', 'r_col_nm', 'col_cover_min', 'nslab_nu', 'nslab_nu1', 'E_el_J', 'nblk_sig', 'blk_laths', 'blk_vars', 'n_var_sig', 'n_habit', 'f_var', 'r_selfac', 'blk_nlath', 'blk_span_nm', 'blk_alen_nm', 'blk_wlen_nm', 'blk_nprof', 'blk_nruns', 'box_touch_core', 'core_vox', 'ncomp_all', 'dG_max_Jm3', 'dG_p999', 'dG_ratio', 'dG_near_max', 'ed_tip', 'ed_side', 'ed_wide', 'dG_tip', 'dG_side', 'dG_wide', 'ed_obl', 'dG_obl', 'n_obl', 'dG_tip_p90', 'dG_side_p90', 'dG_tip_max', 'dG_side_max', 'ed_tip_p90', 'ed_side_p90', 'v_tip_nsgn', 'v_tip_nabs', 'v_side_nsgn', 'v_side_nabs', 'v_wide_nabs', 'v_obl_nabs', 'v_tip_f1', 'v_side_f1', 'v_wide_f1', 'f1_tip', 'f1_side', 'f1_wide', 'n_tip', 'n_side', 'n_wide', 'tip_sep_nm', 'side_sep_nm', 'wide_sep_nm']
+⇒ **共有列逐位一致**
+
+################ ② 新列非空核对
+             150               6               6               5               5          1530.5               1
+             160               6               6               5               5          1530.9               1
+             170               6               6               5               5          1529.3               1
+             180               6               6               5               5          1538.8               1
+             190               6               6               5               5          1539.5               1
+             200               6               6               5               5          1567.8               1
+
+################ ③ 量具自检
+----------------------------------------------------------------------------------------------------
+FAIL = 0 
+====================================================================================================
+
+################ ④ 弹性求解器自检（windowB_pf3d）
+  A0a 均匀 eps0 [clamped]: E=3.221154e-13 vs 解析 3.221154e-13  相对差 0.0e+00  PASS
+  A0a 均匀 eps0 [free]: E=0.000000e+00 vs 解析 0.000000e+00  相对差 0.0e+00  PASS
+  A0b 单模式 [clamped]: E=8.220284e-14 vs 闭式=8.220284e-14  相对差 1.5e-16  PASS
+  A0b 单模式 [free]: E=1.673993e-15 vs 闭式=1.673993e-15  相对差 0.0e+00  PASS
+  [A0c] max |eps:Lam:eps| /(mu|eps|^2) = 6.07e-16   PASS
+  [A0d] 纯体积 vs 2 mu e0^2 (1+nu)/(1-nu) 最大相对差 = 4.35e-16   PASS
+  判定: PASS
+  [clamped] max|sigma - sigma_ana| / |sigma_ana| = 0.00e+00   PASS
+  [free] max|sigma - sigma_ana| / |sigma_ana| = 0.00e+00   PASS
+  dE/dphi_0(3, 5, 7) (FD,delta=1e-6) = +6.96261805e+06 ;  -e0:sigma (解析) = +6.96253122e+06   PASS
+  [附加] `forces()` 弹性项 vs `+e0:sigma` 的相对差 = 0.00e+00  PASS（预期 0：驱动力口径）
+总判定: ALL PASS
+  ⇒ ✅ windowB_pf3d 自检 ALL PASS
+=== R30 REGRESS DONE 2026-10-02 10:20:29 ===

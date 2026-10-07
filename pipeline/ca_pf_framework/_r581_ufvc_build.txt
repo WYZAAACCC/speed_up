@@ -1,0 +1,21 @@
+==============================================================
+R581-L6 C 扩展构建记录（**可复现性证据**）
+时间        : 2026-10-02 09:55:28 +0800
+编译器      : gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+解释器      : /root/miniconda3/envs/ml/bin/python  (Python 3.12.14)
+numpy       : 2.5.3   include=/root/miniconda3/envs/ml/lib/python3.12/site-packages/numpy/_core/include
+python inc  : /root/miniconda3/envs/ml/include/python3.12
+主机        : Linux 6.18.40.1-microsoft-standard-WSL2 x86_64
+CPU         : Intel(R) Core(TM) i7-14700HX
+--------------------------------------------------------------
+构建命令（逐字，可重建）：
+  gcc -O2 -fPIC -shared -ffp-contract=off -fno-fast-math -fno-unsafe-math-optimizations -I/root/miniconda3/envs/ml/lib/python3.12/site-packages/numpy/_core/include -I/root/miniconda3/envs/ml/include/python3.12 _r581_ufv.c -o _r581_ufv.so -lm
+⚠ 关键选项：-ffp-contract=off（禁 FMA 收缩）、-fno-fast-math
+  ⇒ 缺任何一个都可能让 _minmod 不再逐位（见 _r581_ufv.c 记账第 4 条）
+--------------------------------------------------------------
+SHA256：
+  源码 _r581_ufv.c : c44b3731bc70bcda5dc79aaa9264810f5ec46b26bdf09c2f86a9d43d1e6c5347
+  产物 _r581_ufv.so : 66260bef011207e40084308a58568da14b654a2f2f715dab26e68159b65034a4
+  本脚本    : b821dbef10f982215be5f7e2bd7fcb7d90e42ba93ac41d2b6b22dd2ded0b6a9d
+  大小      : 20872 B
+==============================================================

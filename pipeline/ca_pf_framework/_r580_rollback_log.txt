@@ -1,0 +1,41 @@
+==============================================================
+[2026-10-02 07:46:52] rollback tag='afterP1' snap='_r580_backup/afterP1_20261002_065520' apply=0
+  ✓ 快照 SHA256 校验通过（7 个文件）
+  [同  ] _bk_exp.py
+  [同  ] windowB_acct.py
+  [同  ] windowB_lath.py
+  [不同] windowB_par.py  当前=52c93a4243855f73  快照=aa58d94341d3a48a
+  [同  ] windowB_pf.py
+  [同  ] windowB_pf3d.py
+  [同  ] windowB_surface.py
+  差异文件数：1 / 7
+  （dry-run，未改动任何文件。要真恢复请加 --apply）
+==============================================================
+[2026-10-02 07:46:56] rollback tag='afterP1' snap='_r580_backup/afterP1_20261002_065520' apply=1
+  ✓ 快照 SHA256 校验通过（7 个文件）
+  [同  ] _bk_exp.py
+  [同  ] windowB_acct.py
+  [同  ] windowB_lath.py
+  [不同] windowB_par.py  当前=52c93a4243855f73  快照=aa58d94341d3a48a
+  [同  ] windowB_pf.py
+  [同  ] windowB_pf3d.py
+  [同  ] windowB_surface.py
+  差异文件数：1 / 7
+  → 先给当前工作区打快照：rollback_from_afterP1
+  ✓ 当前状态留档于：_r580_backup/rollback_from_afterP1_20261002_074659
+  ✓ 已覆盖 7 个文件
+  ✓ 复验：7 个文件 sha256 与快照逐一相符
+★ 回滚完成：工作区 = _r580_backup/afterP1_20261002_065520
+  若要撤销这次回滚：bash _r580_rollback.sh rollback_from_afterP1 --apply
+==============================================================
+==============================================================
+[2026-10-02 07:54:10] rollback tag='_TESTBADSNAP_' snap='_r580_backup/_TESTBADSNAP_20261002_075410' apply=1
+✗ 快照 SHA256SUMS 校验失败 ⇒ 拒绝恢复。明细：
+    ./_bk_exp.py: OK
+    ./windowB_acct.py: OK
+    ./windowB_lath.py: OK
+    ./windowB_par.py: FAILED
+    ./windowB_pf.py: OK
+    ./windowB_pf3d.py: OK
+    ./windowB_surface.py: OK
+    sha256sum: WARNING: 1 computed checksum did NOT match

@@ -1,0 +1,18 @@
+audit(R141b): ncmp 同病 --- 变体-变体界面的选轴对 36/66 对偏 ~90 度
+
+_chk_pairnorm.py 实测（Fibonacci 20000 点，P-1 正对照比值 = 1.000000 PASS）:
+  E(ncmp)/E(best20k):  min 1.45 / 中位 25.4 / max 6943    （>1.5 的有 65/66）
+  <ncmp, n_best20k>:   min 0.83 度 / 中位 87.94 度 / max 89.98 度（>20 度的有 36/66）
+且 20k 点本身也未收敛 => 这些是缺陷程度的**下界**。
+
+链路（代码逐行核对）:
+  windowB_surface.py:1031-1053  _pair_normals(nsamp=600, seed=0) -> self.ncmp
+  windowB_surface.py:2479-2487  ncl = self.ncmp; nd_ref = where(has_pair, ncl[ki,li], ...)
+  windowB_surface.py:2670-2671  c2b_ = (ndir_ . nd_ref_)^2  <- beta_h 的指数
+=> ncmp 就是**变体-变体界面的 beta_h 参考轴**，即 block/colony/packet 赖以形成的那根轴。
+
+=> 与 NPF(400 点) / _nref->wtab,atab(400 点) 是同一个「抽样 argmin」模式，
+   三处都不收敛。这极可能就是「仿真长不出板条状马氏体」的机理级答案:
+   M6 早就实测变体取向差 58.9 度 vs 随机 59.7 度 = 完全没有变体选择，
+   现在有了根因 —— 驱动变体选择的那根轴本身指错了方向。
+=> A-6 优先级升为最高。

@@ -1,0 +1,11 @@
+[
+ {
+  "tag": "fr_b8ps",
+  "args": ["--nuc-block-target", "8", "--nfsv-diag", "1",
+           "--nuc-periodic-seed", "1"]
+ },
+ {
+  "tag": "fr_reg",
+  "args": ["--nuc-block-target", "4", "--nfsv-diag", "1"]
+ }
+]

@@ -1,0 +1,20 @@
+perf(R141): N=384 在构造期就 OOM —— 元凶是 lambda_packed 的 (N^3,6,6) 表 = 16.3 GB
+
+_w2_cost_N384.log 只有表头、没有任何 step 行 => 没跑到第 1 步就终止（进程消失）。
+
+根因（读代码定案）: windowB_pf3d.py:108
+    def lambda_packed(C, K, chunk=4096, k0_mode='free'):
+        Nk = K.shape[0]
+        Lp = np.zeros((Nk, 6, 6))      # 对**整个 N^3 的 k 网格**物化
+即 Lp = 36 * N^3 * 8 B:
+    N=96   0.26 GB + phi 0.09 GB = 0.35 GB  （实测峰值 1.52 GB，一致）
+    N=192  2.04 GB + phi 0.74 GB = 2.78 GB  （实测峰值 7.47 GB，一致）
+    N=384 16.30 GB + phi 5.48 GB = 21.8 GB  => 已到 22 GB 上限 => 必然 OOM
+异常时进程 RSS 10.4 GB => 与"死在 Lp 分配过程中"一致。
+
+=> 可独立修掉：Lambda(k):eps(k) 无需物化整表，可按 k 分块现算
+   （函数里已有 chunk 参数，设计上本来就支持分块）。
+   修掉后 N=384 的内存需求从 21.8 GB 降到约 6-8 GB => 能装下。
+
+诚实记账：当时我的 K=1/K=2 带宽测试也占约 3 GB，可能加速了 OOM；
+但由 Lp 的 16.3 GB 可知，即使没有干扰也装不下。

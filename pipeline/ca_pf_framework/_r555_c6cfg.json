@@ -1,0 +1,12 @@
+[
+ {
+  "tag": "c6_b4f32",
+  "args": ["--nuc-block-target", "4", "--nfsv-diag", "1",
+           "--nuc-periodic-seed", "1", "--phi-prec", "f32"]
+ },
+ {
+  "tag": "c6_b8f32",
+  "args": ["--nuc-block-target", "8", "--nfsv-diag", "1",
+           "--nuc-periodic-seed", "1", "--phi-prec", "f32"]
+ }
+]

@@ -1,0 +1,10 @@
+[
+ {
+  "tag": "b4",
+  "args": ["--nuc-block-target", "4", "--nfsv-diag", "1"]
+ },
+ {
+  "tag": "b3",
+  "args": ["--nuc-block-target", "3", "--nfsv-diag", "1"]
+ }
+]

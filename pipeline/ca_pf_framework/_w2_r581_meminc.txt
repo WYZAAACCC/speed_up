@@ -1,0 +1,38 @@
+=== 时间：2026-10-02 14:35:16 ===
+
+## ① 内存现状
+                 total        used        free      shared  buff/cache   available
+  Mem:           24032       22131        1825           3         330        1901
+  Swap:           8192        5663        2528
+  loadavg 9.87 11.08 8.53
+
+## ② 各 worker 的 RSS
+  pid=44187   tag=p2_m12     RSS=  8750 MB  末step=0     (CSV mtime 14:27:20)
+  pid=44188   tag=p2_m12b    RSS=  8132 MB  末step=0     (CSV mtime 14:27:34)
+  pid=44557   tag=D          RSS=  1346 MB  末step=200   (CSV mtime 14:34:32)
+
+## ③ 看门狗（在不在、日志说了什么）
+  _r581_memguard.sh      进程=2
+  _r581_softguard.sh     进程=1
+  --- _w2_r581_memguard.log（末 6 行）---
+    [2026-10-02 08:42:38] memguard 启动：阈值 1800 MB，最长 5 h
+    [2026-10-02 13:42:37] memguard 正常退出（跑满 5 h，未触发）
+    [2026-10-02 13:43:01] memguard 启动：阈值 1800 MB，最长 6 h
+  --- _w2_r581_softguard.log（末 6 行）---
+    [2026-10-02 10:46:37] softguard 启动：阈值 2600 MB，先牺牲 tag=p2_b5ps，最长 4 h
+
+## ④ 两臂日志尾（判它们是否还在推进）
+  --- p2_m12（mtime 14:27:22）---
+      [   0] Vt=0.2495 µm³ | **nslab=1** nf3col=0 runs=1             | F3面=0      面积=0.0000 
+    [WindowB] 平流格式 adv_grad='proj2'（DEFAULT）；D17 之前默认是 central，归档读�
+    [WindowB] 算子开关：eps0=einsum、ed_pair=gather、k_loop=act、act=bincount、argmin2=copy
+  --- p2_m12b（mtime 14:27:35）---
+      [   0] Vt=0.2495 µm³ | **nslab=1** nf3col=0 runs=1             | F3面=0      面积=0.0000 
+    [WindowB] 平流格式 adv_grad='proj2'（DEFAULT）；D17 之前默认是 central，归档读�
+    [WindowB] 算子开关：eps0=einsum、ed_pair=gather、k_loop=act、act=bincount、argmin2=copy
+
+## ⑤ 各队列的内存闸门（它们会不会再往上加）
+  _w2_r581_mqueue.log        [2026-10-02 14:17:37] 起 p2_m12b: --m 12 --B 3 --cores 4-7
+  _w2_r581_mqueue2.log       [2026-10-02 14:18:01] 阶段 1b： 已出现；等它和它的同�
+  _w2_r581_mqueue3.log       [2026-10-02 14:16:59] 阶段 2：等  的  与  的  都跑完 ≤
+  _w2_r581_mqueue4.log       [2026-10-02 13:54:42] 阶段 1：等所有臂结束…

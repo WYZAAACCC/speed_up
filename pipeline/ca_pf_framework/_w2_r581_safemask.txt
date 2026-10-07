@@ -1,0 +1,54 @@
+=== 时间：2026-10-02 14:10:37 ===
+
+## ① 定义点（主副本 3 个文件，逐行）
+--- _bk_exp.py ---
+  （无匹配）
+--- windowB_surface.py ---
+1830:    def _nuc_safe_mask(self, R_nuc, gap_cells=2):
+2079:                #   唯一现成的守卫工具 `_nuc_safe_mask()` 全仓零调用（死代码），
+--- windowB_pf3d.py ---
+  （无匹配）
+
+## ② 整个 ca_pf_framework 下的 .py（排除备份目录）
+./windowB_surface.py:1830:    def _nuc_safe_mask(self, R_nuc, gap_cells=2):
+./windowB_surface.py:2079:                #   唯一现成的守卫工具 `_nuc_safe_mask()` 全仓零调用（死代码），
+./_bk_engine_old.py:1259:    def _nuc_safe_mask(self, R_nuc, gap_cells=2):
+./_bk_engine_old.py:1379:                #   唯一现成的守卫工具 `_nuc_safe_mask()` 全仓零调用（死代码），
+./_bk_engine_prenuc.py:1319:    def _nuc_safe_mask(self, R_nuc, gap_cells=2):
+./_bk_engine_prenuc.py:1439:                #   唯一现成的守卫工具 `_nuc_safe_mask()` 全仓零调用（死代码），
+
+## ③ 定义点上下文（若存在，打印 ±12 行）
+  定义在 windowB_surface.py:1830 ⇒ 打印 1818..1850 行
+     1	        R, t = c['R'], c['t']
+     2	        pad = R + 2 * self.dx
+     3	        sites, ns = [], 0
+     4	        for _ in range(n * 20):
+     5	            if ns >= n:
+     6	                break
+     7	            ctr = rng.random(3) * (self.L - 2 * pad) + pad
+     8	            k = int(rng.integers(1, self.nreg))
+     9	            sites.append((k, ctr))
+    10	            ns += 1
+    11	        self._nuc['sites'] = sites
+    12	
+    13	    def _nuc_safe_mask(self, R_nuc, gap_cells=2):
+    14	        """到任何非母相胞的欧氏距离 ≥ `R_nuc + gap` 的母相胞（用 EDT，避免手工盒扫描）。"""
+    15	        from scipy import ndimage
+    16	        par = (self.region() == 0)
+    17	        if not par.any():
+    18	            return np.zeros_like(par), par
+    19	        dt = ndimage.distance_transform_edt(par) * self.dx
+    20	        return (dt >= (R_nuc + gap_cells * self.dx)) & par, par
+    21	
+    22	    def _supercrit_probe(self, kk, cc, nrm, R, t, cover, df, gamma,
+    23	                          shape='disc'):
+    24	        """★ R479：**超临界试放**（真放 + **精确回滚**，净效果 = 不改任何场）。
+    25	
+    26	        判据（`PHYSICS_FIRST_SPEC §6.1`）：板条能站住 ⟺ `ΔG_v(T) + ed_face > 2γ/t`。
+    27	
+    28	        ## ⚠⚠ 本方法的第一版被**它自己的预登记判据否决了**（留痕，不抹掉）
+    29	        第一版**不写场**：只造一个"假如把 `cover` 划给 `kk`"的试放 `region`，
+    30	        跑一次弹性求解就读 `ed`。理由是"`sigma_tensor(idx)` 只认 `region` 不认 `phi`"。
+    31	        **实测（`_r479_supercrit.py` T1）**：
+    32	            试放 `med_ed = −4.074e8`  vs  真放 `med_ed = −3.172e8`  ⇒ **相对差 28.4%**
+    33	            （预登记判据 ≤ 15% ⇒ **FAIL**）

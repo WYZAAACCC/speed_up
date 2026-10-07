@@ -1,0 +1,35 @@
+lit(R141): 独立二次复核的增量结论 + 更正我自己的 DeMott 说法
+
+取全文可用路线（实测）:
+  OK  europepmc REST fullTextXML;  OAE 出版方 HTML;  PMC 图片 CDN
+  NG  mdpi.com 403;  pmc.ncbi.nlm.nih.gov reCAPTCHA
+  !!  Europe PMC 的 FULL_TEXT: 字段在本机恒返 0（静默失效）-> 用无字段短语检索
+
+L-5a Xie 2026: Table 2 表头逐字 Thickness(mm)/Average Length(um)/Average Width(um),
+     10 行数值 10/10 命中; 抽样语句逐字命中; 无长度预筛（但属"论文里没有这句话"）。
+     !! 该文没给 length/width 的测量定义（补充材料被 403 挡）
+     !! 工艺参数可疑: 190W + 90mm/s + 140um hatch + 30um layer => VED ~503 J/mm3,
+        比 LPBF Ti64 常见值高 6-10 倍, 疑 900 mm/s 笔误 => 其工艺参数不得进仿真
+     无热处理(as-built alpha') 确认。
+
+L-5b Shuai 2026: 全文没有任何 alpha' 板条长度（lath length=0; length 仅 1 次且指
+     prior-beta 柱状晶 >1.00mm）; 同段 §2.2 同一次测量先叫 lath width 后叫 lath thickness。
+     => L-1 的「9-16 跨篇拼接彻底作废」得到全文级确认。
+     !! 0.51-0.68um（6 样品）与 0.51-0.88um（56 条件）是两个不同总体, 不得混用。
+
+L-5c 靶③: Table 3 / Fig 9a 数值与角度轴逐字命中（原图读图复核）。
+     !! 但论文未说明是长度分数还是数目分数（length/number fraction 均为 0,
+        y 轴只写 Relative fraction(%)）=> 不得替它下结论
+     !! 该表 OR 引自其参考[55] = laser hot-wire DED（非 LPBF）
+     !! EBSD 步长 0.35um vs 板条宽 0.51-0.88um => 每条板条仅 1.5-2.5 个步长
+     => 靶③ 对照值带"口径未知 + 分辨率勉强"的双重偏差。
+
+L-5d 更正我自己: DeMott 2020 确实是真三维(plasma-FIB 3D-EBSD, 100nm 体素,
+     ~30x30x14um3, 316 切片)也确实是 ARCAM EBM(非 LPBF) —— 但它**没有报告任何
+     定量三维板条宽度**(width 全文 1 次且指别的特征; thickness 3 次全是层厚;
+     aspect ratio=0; lath width=0)。=> 属"论文里没有这句话", 不是"有数但不适用"。
+     => 即使跨到 EBM, 三维 alpha 板条宽度这个数在本次检索范围内也不存在。
+
+L-5e 负结论措辞收窄: 写「本次检索范围内未找到反例」, 不得写「不存在」。
+     盲区记账: Elsevier 全系期刊无法做全文短语检索（而那是相关文献最集中处）;
+     已实测 Europe PMC 覆盖不足（"nf-HEDM" AND "titanium" -> 0 命中, 但 Wielewski 2015 存在）。

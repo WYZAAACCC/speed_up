@@ -1,0 +1,31 @@
+=== 时间：2026-10-02 15:06:18 ===
+
+## ① `limitations` 的定义点与调用点
+_bk_closure_report.py:150:    for i, s in enumerate(CL.limitations(), 1):
+_bk_exp.py:659:            P('      ⚠ **块的数目是输入、不是涌现** —— 框架 `limitations()` 第 1 条明写'
+_bk_exp.py:719:              '（`limitations()` 第 1 条的适用范围之外）')
+_bk_exp.py:1995:            #   （块厚 `W_block = n·t`），而 `limitations()` 第 1 条明写
+_bk_exp.py:2044:                #     （`limitations()` 第 1 条明写："面内并列的多个 block 需要在面内
+_bk_exp.py:2761:    #   ⚠ **物理记账（硬约束，不得含糊）**：`windowB_closure.limitations()` 第 1 条明写
+_r424_design.py:62:P('    ⚠ 记账：α_KM 原值 0.011 是 [标]（**无 Ti-64 实测值**，`limitations()` 第 2 条）；')
+_r454_fixscope.py:54:# ---- 5) limitations() 自陈
+_r454_fixscope.py:55:P('\n[5] `limitations()` 自陈的局限条数')
+_r454_fixscope.py:56:m2 = re.search(r'def limitations\(\):(.*?)\n\ndef ', clo, re.S)
+_r499_population.py:143:    print('        而**"块数"在框架里没有律**（`limitations()` 第 3 条明写"本轮不做"）。')
+_r499_population.py:172:        print('        ⚠ **但框架里没有"块数"这条律**（`limitations()` 第 3 条明写）')
+
+## ② 定义体（从 def 起 60 行）
+  在 _r454_fixscope.py:56
+   56| m2 = re.search(r'def limitations\(\):(.*?)\n\ndef ', clo, re.S)
+   57| if m2:
+   58|     n = len(re.findall(r"^\s+'", m2.group(1), re.M))
+   59|     P('    共 **%d** 条' % n)
+   60| P('=' * 92)
+
+## ③ 谁**打印**了这句话（"块的数目是输入"）
+_bk_exp.py:659:            P('      ⚠ **块的数目是输入、不是涌现** —— 框架 `limitations()` 第 1 条明写'
+_bk_exp.py:2048:                #     ⚠ 所以：**本开关下的"块数"是规定的，不是涌现的**，不得当成物理�
+_bk_exp.py:2765:    #     ⇒ **本开关下的"块数"是规定的、不是涌现的**，不得当成物理结论。
+_bk_exp.py:2970:                    help='块数 B（输入，不是涌现）。>0 时全盒事件上界 = B·n(T)；'
+_r503_blockverdict.py:128:        print('   ⚠ 仍必须记账：**块的数目是输入、不是涌现**。')
+_r581_c3mis.py:232:                         '参数化强加的，不是涌现的**')

@@ -301,3 +301,82 @@ pipeline/ca_pf_framework/*.png
 pipeline/ca_pf_framework/_audit_logs/
 pipeline/ca_pf_framework/tests/*.e
 pipeline/ca_pf_framework/tests/*.out
+
+# =============================================================================
+# 2026-10-07 追加：**重产物一律不入库**（为交给专家审阅而整理）
+# =============================================================================
+# 实测体量（本机，2026-10-07）：
+#   pipeline/ca_pf_framework/_exp/                     33 301 MB
+#   pipeline/ca_pf_framework/prod_mob_snap/             1 688 MB
+#   pipeline/ca_pf_framework/prod_mob_snap_boxB_*/        ~300 MB × 5
+#   pipeline/ca_pf_framework/pf1d_moose/                  856 MB
+#   pipeline/ca_pf_framework/_r580_backup/                192 MB
+#   未跟踪的 .npz/.npy                                 1 947 个 = 4.74 GB
+# ⇒ 这些**全部可由 .py/.sh + 归档 `series.csv` 重新生成**；
+#   入库只会让仓库无法 clone。**源码 / 报告 / 小体积归档读数照常入库。**
+# -----------------------------------------------------------------------------
+
+# ---- 快照 / checkpoint 大数组（可复现）----
+pipeline/ca_pf_framework/**/*.npz
+pipeline/ca_pf_framework/**/*.npy
+pipeline/ca_pf_framework/_exp/
+pipeline/ca_pf_framework/prod_mob_snap/
+pipeline/ca_pf_framework/prod_mob_snap_boxB_2ax_fine600/
+pipeline/ca_pf_framework/prod_mob_snap_boxB_mob_fine600/
+pipeline/ca_pf_framework/prod_mob_snap_boxB_mob_hi200/
+pipeline/ca_pf_framework/prod_mob_snap_boxB_mob_mid60/
+pipeline/ca_pf_framework/prod_mob_snap_boxB_nob_hi200/
+pipeline/ca_pf_framework/pf1d_moose/*.e
+pipeline/ca_pf_framework/pf1d_moose/*.npz
+pipeline/ca_pf_framework/ckpt/
+
+# ---- 备份 / 回退锚点（`R629 E3`/`B2-D4` 的就地回退副本）----
+pipeline/ca_pf_framework/_r580_backup/
+*.b2orig
+*.b2backup
+*.b2bak
+*_backup_windowB_surface.py_*
+*_backup__bk_exp.py_*
+*.orig
+*.rej
+*.bak
+*.bak_*
+*.sighup_*
+*.crash_*
+
+# ---- 性能 / 审计的中间产物 ----
+pipeline/ca_pf_framework/.jitcache/
+pipeline/ca_pf_framework/*.time
+pipeline/ca_pf_framework/*.trace
+pipeline/ca_pf_framework/_superseded/
+
+# ---- 顶层运行残留（_w2_* 日志、_r*_msg 提交信息草稿）----
+/_w2_*.log
+/_w2_*.txt
+/_r*_msg*.txt
+/_commit_*.txt
+/_t11_commitmsg.txt
+/_w2_*_outer.log
+/wsl_*.log
+
+# ---- 文献检索工作区（下载缓存 / 抽取正文，属衍生作品，公开仓库不能分发）----
+lit/
+lit2/
+lit_mech/
+lit_tmp/
+_lit/
+_lit_tmp/
+_litidx/
+_litcheck/
+.litsearch/
+_verify_tmp/
+docs/refcheck/
+
+# ---- Window B 之外的仿真结果目录（本仓审阅范围之外的重产物）----
+pipeline/gibbs/results*/
+pipeline/gibbs/prod3d/results_*/
+/_exp/
+/_vis/
+lit_search/
+pipeline/ca_pf_framework/_viz/
+pipeline/ca_pf_framework/_r581_wfout/

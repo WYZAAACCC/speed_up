@@ -1,0 +1,86 @@
+=== 时间：2026-10-02 14:48:58 ===
+
+## ① 定义点与调用点
+windowB_surface.py:947:def _argmin_normal(C, e, **kw):
+windowB_surface.py:954:    return argmin_normal(C, e, **kw)
+windowB_surface.py:960:def argmin_normal_cached(C, E):
+windowB_surface.py:977:        v = _argmin_normal(C, E)
+windowB_surface.py:1494:                #   ⇒ `argmin_normal(C, 0)` 的泛函**恒等于 0**，任意法向都是最小值
+windowB_surface.py:5572:        npref[v + 1] = _argmin_normal(C, np.asarray(eps0[v], float))[0]
+windowB_pf3d.py:852:def argmin_normal(C, e, nsamp=20000, iters=140, nsamp_loc=256, r0=0.35,
+_bk_exp.py:493:    #     `NPF[v] = argmin_normal(C, ε)` 是**弹性能泛函的极小法向**，**不是**晶体学惯习面。
+_bk_exp.py:3232:    #   `none`（默认）= `NPF = argmin_normal(C,ε)`（弹性能极小法向）⇒ **逐位不变**；
+
+## ② 定义体（从 def 起 70 行）
+  在 windowB_surface.py:960
+  960| def argmin_normal_cached(C, E):
+  961|     """`_argmin_normal` 的**进程级 memo**（键 = `(C, E)` 的字节）。
+  962| 
+  963|     ★★★ R-block（2026-09-29）：**为什么必须有**
+  964|       `_argmin_normal` 是"20k Fibonacci + 局部模式搜索"的**纯函数**，
+  965|       单次 ~10 s。而 `LevelSetMulti.__init__` 会调用它
+  966|       **每个场一次**（12 变体 = 12 次）**加每对一次**（`_pair_normals` = 66 次）
+  967|       ⇒ 单个对象构造 **~780 s**；4 个算例并发时还会互相抢 CPU
+  968|       ⇒ 实测生产臂构造 **>15 min** 还没完。
+  969|       而**同变体的 `eps0` 逐位相同**（本项目的板条表就是复制出来的）
+  970|       ⇒ 12 次里其实只有 1 次是新的。
+  971|     ★ 正确性：纯函数 + 只读缓存 + 键是完整输入 ⇒ 命中与未命中**逐位相同**。
+  972|       `C` / `E` 都按 float64 的字节做键，不受 NaN 影响（这两个量里没有 NaN）。
+  973|     """
+  974|     key = (np.asarray(C, float).tobytes(), np.asarray(E, float).tobytes())
+  975|     v = _ARG_NORMAL_CACHE.get(key)
+  976|     if v is None:
+  977|         v = _argmin_normal(C, E)
+  978|         _ARG_NORMAL_CACHE[key] = v
+  979|     return v
+  980| 
+  981| 
+  982| class LevelSetMulti(object):
+  983|     """多区域 level-set：每个相/变体一个 φ_k（有符号距离），region = argmin_k φ_k。
+  984|        · 身份由 φ 平流携带（**没有随机胞翻转** ✗）
+  985|        · 体相耦合：ε⁰(φ) 由 region 给出 ⇒ 复用已验的谱法微弹性
+  986|        · 界面动力学：∂φ_k/∂t + v_n^k|∇φ_k| = 0，v_n^k = M[Δf_k + Δf_el,k − Ω γ(n) κ_k]
+  987|     """
+  988| 
+  989|     def __init__(self, N, L, C=None, eps0=None, gamma=0.15, Mob=1e-9, df=None,
+  990|                  Lam=0.0, k0_mode='clamped', workers=4, reinit_every=20, nv=None,
+  991|                  aniso_elastic=False, C_hex_tab=None, C_cub=None, sigma_ext=None,
+  992|                  reinit_iters=100, reinit_dtau=None, reinit_grad='upwind2',
+  993|                  dG_of_T=None, T=None, T_of_t=None, reinit_dt=None,
+  994|                  reinit_band_cells=6.0, phi_prec='f64',
+  995|                  fft_mode='c2c', eps0_mode='loop', ed_pair_mode='full',
+  996|                  k_loop_mode='full', act_mode='unique', argmin2_mode='legacy',
+  997|                  grad_mode='legacy', pf_phi_mode='materialized', h_chunk=4,
+  998|                  eps0_tile=0, argmin_reuse=False, ufv_c=False, bbox_mode='legacy'):
+  999|         # ★★★ W1-2（2026-09-28，**Gate A-1 选项① —— 用户已批准启用**）：pair reinit 的**统计量域**。
+ 1000|         #   **默认 `6.0`（启用）**；显式传 `None` ⇒ 退回"全域"（改动前的旧行为，可复现归档）。
+ 1001|         #   为什么必须改（`_probe_grad_fixpoint.py` 实测）：
+ 1002|         #     算子用 `max(gm)` 定伪时间步。**同一场**：中心差分全域 max = **1.00**，
+ 1003|         #     而算子实际驱动的 `upwind_grad2` 全域 max = **68.5** ⇒ `_dte/dtau` 只剩 **0.0146**。
+ 1004|         #     水平集场**必然有中轴/脊线**，脊线上梯度间断 ⇒ `upwind_grad2` 伪尖峰
+ 1005|         #     ⇒ **一个远离界面的脊线胞，把整个 reinit 冻结**。
+ 1006|         #   效果（`_chk_w12.py` C-3，真实代码）：恢复率 **−11.0% → +88.0%**；
+ 1007|         #     `region()` 翻转 **0**、界面键 **1.0000×**（**零几何损伤**）。
+ 1008|         #   敏感性（`_probe_fix_bandstats.py`）：`band_cells ∈ {3,6,12}` ⇒ 96.9% / **97.1%** / 46.3%，
+ 1009|         #     且 **6 正是 `reinitialize()` 本来就在用的那个值** ⇒ **不是新增的可调参数**。
+ 1010|         #   ⚠ **这是"改数"的改动**（用户 2026-09-28 批准）⇒ 按 `R8` 必须全量重跑引用它的判据（Wave 2）。
+ 1011|         #     **此前取得的几何读数（板厚/长径比/分组统计）已被本改动超越，必须重取。**
+ 1012|         self.reinit_band_cells = (None if reinit_band_cells is None
+ 1013|                                   else float(reinit_band_cells))
+ 1014|         # EXPERT-#3: reinit_iters 由硬编码 30 提到 100。依据 _tune_reinit.py：
+ 1015|         #   两变体平面界面 d=phi_k-phi_l 的零等值面 iters=30 停在 0.025um，
+ 1016|         #   iters>=100 落到 0.01200um = **解析值** => 残余偏差来自迭代不足。
+ 1017|         self.reinit_iters = int(reinit_iters)
+ 1018|         self.reinit_dtau = reinit_dtau
+ 1019|         self.reinit_grad = reinit_grad
+ 1020|         self.N, self.L = N, L
+ 1021|         self.dx = L / N
+ 1022|         self.gamma = gamma
+ 1023|         self.M = Mob
+ 1024|         self.reinit_every = reinit_every
+ 1025|         # ★★ T11（2026-09-28）：**重初始化按物理时间**（而不是步数）。
+ 1026|         #   为什么必须：CFL 给 `dt ∝ dx` ⇒ 固定 `reinit_every`（步数）时，
+ 1027|         #   **物理上的重初始化间隔 `reinit_every·dt` 正比于 Δx** ⇒ 换个分辨率就换了物理！
+ 1028|         #   给了 `reinit_dt`（秒）时按它触发；不给（默认 None）⇒ 沿用步数语义（逐位兼容）。
+ 1029|         self.reinit_dt = None if reinit_dt is None else float(reinit_dt)
+ 1030|         self._t_since_reinit = 0.0

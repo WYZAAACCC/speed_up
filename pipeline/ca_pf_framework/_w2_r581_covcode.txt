@@ -1,0 +1,87 @@
+=== 时间：2026-10-02 14:20:22 ===
+
+## ① `cov` 计数器在哪里累加（主副本 3 个文件）
+--- windowB_surface.py ---
+570:        cov = np.zeros_like(v)
+575:            cov += w * np.where(w > 0, dm, dp)
+576:        v = v - dtau * cov
+1738:                         #   时两侧都被别的场占住 ⇒ `cover` 守卫拒掉 ⇒ 该次事件作废
+1839:    def _supercrit_probe(self, kk, cc, nrm, R, t, cover, df, gamma,
+1846:        第一版**不写场**：只造一个"假如把 `cover` 划给 `kk`"的试放 `region`，
+1861:        ⚠ **几何全部由调用方传入**（`cc`/`nrm`/`R`/`t`），**不从 `cover` 反推** ——
+1864:        返回 `(ok, med_ed, fcrit, n_cover)`。
+1867:        nc = int(cover.sum())
+1875:            med = float(np.median(ed[kk][cover]))
+1923:        _dbg = c.setdefault('dbg', dict(att=0, oob=0, cov=0, exc=0, ok=0, nocand=0))
+1999:                _c7 = c.setdefault('dbg', dict(att=0, oob=0, cov=0,
+2037:                    _c3 = c.setdefault('dbg', dict(att=0, oob=0, cov=0, exc=0, ok=0, nocand=0))
+2054:                        _c4 = c.setdefault('dbg', dict(att=0, oob=0, cov=0, exc=0,
+2080:                #   故此处**直接复用 stack 通道已验证的 `cover` 判据**（几何与 `seed_plate`
+2090:                    #   第二个变体的 `cover` 守卫会发现那个盘已被**兄弟核**占据 ⇒ **必然被挡**
+2114:                        #       (a) `_cover` 为空 或 `region()[_cover] != 0`
+2120:                        #     `fresh_covfail` 候选被 (a) 否掉的次数
+2126:                        _cd = c.setdefault('dbg', dict(att=0, oob=0, cov=0,
+2132:                        _cover = (np.abs(_dd) <= t / 2) & (_rp <= R)
+2133:                        if (not bool(_cover.any())) or \
+2134:                                (not bool((self.region()[_cover] == 0).all())):
+2135:                            _cd['fresh_covfail'] = _cd.get('fresh_covfail', 0) + 1
+2148:                                kk, _cc, _nrm, R, t, _cover, df, c['gamma'],
+2150:                            _c6 = c.setdefault('dbg', dict(att=0, oob=0, cov=0,
+--- _bk_exp.py ---
+94:        #   `r_col_nm`/`col_cover_min` 是**可见性守卫**：静默丢层从此是落盘数字。
+95:        'nslab_n1', 'runs1', 'nf3_col1', 'r_col_nm', 'col_cover_min',
+295:    except Exception as exc:                                    # pragma: no cover
+1694:    #     （实测 `n_occ = 0`、`cov = nan`，与"空 region"的负对照**逐位一致**）
+1697:    #   ⚠ `cov` 有 **`L` 依赖**（`§100`：L=450 ⇒ 0.44；L=1600 ⇒ 1.08）
+1698:    #     ⇒ 判据用 `cov_norm = cov / cov_baseline(L)`（阈值 0.95）。
+1706:        _cv = BM.snapshot_coverage(_zc)
+1707:        _cov = float(_cv.get('cov', float('nan')))
+1710:        _cn, _cb, _cn_n, _cn_ex = BM.cov_norm(_cov, a.plate_L * 1e-9)
+1714:        #   ⇒ `exp_int = tot_broad·(n_occ−1)/n_occ = **0**` ⇒ `cov = nan`。
+1725:            _ok_cov = (_cn == _cn) and (_cn >= 0.95)
+1727:            P('★★ **块内界面自检（R146 / `§99` 的缺口）**：`cov(t=0)` = **%.3f**，'
+1729:              % (_cov, _mb, _nocc, len(laths_eff)))
+1730:            P('   `cov_norm` = %.3f（基线 `cov_base(L=%.0f nm)` = %.3f，该档 n=%d%s）⇒ %s'
+1733:                 '✅ ≥0.95' if _ok_cov else '❌ **低于 0.95**'))
+1735:            if not (_ok_cov and _ok_b):
+1737:                P('      参照：合格的 L=1600 档 `cov` = 1.079；L=600 档最好的只有 0.532。')
+1739:    except Exception as _e:                                     # pragma: no cover
+2355:            col_cover_min=round(mm['col_cover_min'], 4))
+2532:    except Exception as exc:                                    # pragma: no cover
+2559:        except Exception as exc:                                # pragma: no cover
+2581:        except Exception as exc:                                # pragma: no cover
+--- windowB_pf3d.py ---
+
+## ② `_nuc['dbg']` 里 cov 的写点（含上下文）
+windowB_surface.py:2564:                                _dbg['cov'] += 1
+windowB_surface.py:2626:                                _dbg['cov'] += 1
+
+## ③ 找 "coverage" / "cover" 的判据（可能叫别的名）
+1738:                         #   时两侧都被别的场占住 ⇒ `cover` 守卫拒掉 ⇒ 该次事件作废
+1839:    def _supercrit_probe(self, kk, cc, nrm, R, t, cover, df, gamma,
+1846:        第一版**不写场**：只造一个"假如把 `cover` 划给 `kk`"的试放 `region`，
+1861:        ⚠ **几何全部由调用方传入**（`cc`/`nrm`/`R`/`t`），**不从 `cover` 反推** ——
+1864:        返回 `(ok, med_ed, fcrit, n_cover)`。
+1867:        nc = int(cover.sum())
+1875:            med = float(np.median(ed[kk][cover]))
+2080:                #   故此处**直接复用 stack 通道已验证的 `cover` 判据**（几何与 `seed_plate`
+2090:                    #   第二个变体的 `cover` 守卫会发现那个盘已被**兄弟核**占据 ⇒ **必然被挡**
+2114:                        #       (a) `_cover` 为空 或 `region()[_cover] != 0`
+2132:                        _cover = (np.abs(_dd) <= t / 2) & (_rp <= R)
+2133:                        if (not bool(_cover.any())) or \
+2134:                                (not bool((self.region()[_cover] == 0).all())):
+2148:                                kk, _cc, _nrm, R, t, _cover, df, c['gamma'],
+2246:            #   `att` 尝试次数、`oob` 越界、`cov` 被 `cover` 守卫拒、`exc` `seed_plate` 抛错、
+2258:                    #   `self.phi` ⇒ `cover` 守卫**看不见同一次调用里刚种下的核**；
+2428:                        #   ⇒ `cover` 守卫拒 ⇒ 本次事件作废（`eng2` 实测慢半拍）。
+2556:                            cover = (np.abs(dd) <= t / 2) & (rp <= R)
+2557:                            if not bool(cover.any()):
+2562:                            _okr = reg[cover]
+2582:                    #   几乎必然越界或被 `cover` 守卫拒 ⇒ 实测 `stack=0`（通道静默失效）。
+2599:                        #   真正的物理约束是"**不重叠**"，而它由下面的 `cover` 守卫精确执行
+2601:                        #   现在按 `s` 从大到小扫描：`base` → `R+gap`，取第一个过界内+`cover` 的。
+2615:                            cover = (np.abs(dd) <= t / 2) & (rp <= R)
+2618:                            #   `t/2 < ~dx/2`（薄核）时 `cover` 为空 ⇒ 守卫被"真空真"绕过，
+2621:                            if not bool(cover.any()):
+2625:                            if not bool((reg[cover] == 0).all()):
+3472:        except Exception:                                          # pragma: no cover

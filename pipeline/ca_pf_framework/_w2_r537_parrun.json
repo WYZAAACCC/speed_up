@@ -1,0 +1,28 @@
+{
+ "done": [
+  {
+   "tag": "prec_f32",
+   "s": 1.22,
+   "n": 31,
+   "Vt": 5.0156,
+   "nfsv_nofield": 0,
+   "crash": false,
+   "dbg_path": "/mnt/f/speed_up/pipeline/ca_pf_framework/_exp/_bk_par/prec_f32/dry_prec_f32/nuc_dbg.json",
+   "steps": null,
+   "rc": 0
+  },
+  {
+   "tag": "prec_f64",
+   "s": 1.23,
+   "n": 31,
+   "Vt": 4.9966,
+   "nfsv_nofield": 0,
+   "crash": false,
+   "dbg_path": "/mnt/f/speed_up/pipeline/ca_pf_framework/_exp/_bk_par/prec_f64/dry_prec_f64/nuc_dbg.json",
+   "steps": null,
+   "rc": 0
+  }
+ ],
+ "peak": 4.92,
+ "wall": 926.002283334732
+}

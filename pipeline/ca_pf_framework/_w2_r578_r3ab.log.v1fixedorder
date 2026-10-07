@@ -1,0 +1,31 @@
+=== R578 §(3) 逐项 + 合并 A/B（交错 3 轮）N=64 NV=24 W=4 ===
+  HOSTFP py_loop=0.1326 np_axpy=0.1665 np_matmul=0.0063
+  HOSTFP_DERIVED py_ops_per_s=22629127.1 axpy_GB_per_s=15.12 matmul_GFLOP_per_s=128.2
+  ⚠ 分配器口径：本脚本**不设** MALLOC_*（= PLAIN）。所有臂同一口径 ⇒ 比值有效。
+---- round 1 ----
+  BASEr1 clean=0.4605 vnk=25.00/步  |    P0=PASS  P0b=PASS  P1=100.0%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  KLOOPr1 clean=0.4021 vnk=4.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ACTBCr1 clean=0.4187 vnk=25.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ARG2r1 clean=0.4316 vnk=25.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ALL3r1 clean=0.4265 vnk=4.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ALL5r1 clean=0.4267 vnk=4.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+---- round 2 ----
+  BASEr2 clean=0.4386 vnk=25.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  KLOOPr2 clean=0.4236 vnk=4.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ACTBCr2 clean=0.4010 vnk=25.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ARG2r2 clean=0.4541 vnk=25.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ALL3r2 clean=0.3976 vnk=4.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ALL5r2 clean=0.3450 vnk=4.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+---- round 3 ----
+  BASEr3 clean=0.4335 vnk=25.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  KLOOPr3 clean=0.4120 vnk=4.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ACTBCr3 clean=0.4119 vnk=25.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ARG2r3 clean=0.4305 vnk=25.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ALL3r3 clean=0.3194 vnk=4.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+  ALL5r3 clean=0.2529 vnk=4.00/步  |    P0=PASS  P0b=PASS  P1=99.9%  P1b=99.9%  P2=PASS  P2b=PASS  P2c=PASS  P3=PASS  P5=PASS
+
+--- 汇总（相对 BASE 的每轮配对提速；>1 = 更快）---
+Traceback (most recent call last):
+  File "<stdin>", line 4, in <module>
+AssertionError: 参数 252 != 18
+=== R578 §(3) A/B DONE 2026-10-02 02:52:01 ===

@@ -1,0 +1,28 @@
+fix(R141): n* 与 ncmp 的抽样 argmin 换成收敛的 argmin_normal（用户批准：只修收敛性，选支沿用 nref）
+
+改了三处「在 400/600 个随机法向里取 argmin」+ 一个调用方重抽:
+  windowB_pf3d.py      新增 _lam_full_batch（向量化核）/ _fib_sphere / E_normal /
+                       argmin_normal（20k Fibonacci + 半径收缩局部模式搜索）
+  windowB_surface.py   __init__ 的 wtab/atab nref: 400 点随机 -> _argmin_normal
+                       _pair_normals (ncmp):        600 点随机 -> _argmin_normal
+                       生产入口的 npref:            400 点随机 -> _argmin_normal
+                       新增模块级 _argmin_normal 包装（延迟导入，避免环形依赖）
+                       新增收敛证书 self.nstar_conv / self.nstar_spread
+  T16_verify_rve.py    NPF 不再自己重抽 400 点，改为向引擎要（单一真源）
+
+验证（全部有正对照）:
+  _lam_full_batch vs 逐点 _lam_full: 相对差 1.02e-15  PASS
+  可复现性: 两次调用逐位相同  PASS（修前是随机的）
+  收敛证书: 12 个变体能量全部 = 5.869e3 J/m3  PASS（立方对称性要求相等）
+  E(400点最优)/E_min: 16.8..1545（中位 234） -> 1.000
+  <n400, n*>: 1.3..84.5 度 -> 0 度
+  E(ncmp)/E_best: 中位 25.4、max 6943、>1.5 有 65/66  ->  中位 0.000、>1.5 有 0/66
+  <ncmp, n_best20k>: 中位 87.9 度、>20 度有 36/66      ->  中位 0.25 度、>20 度有 0/66
+  <NPF, 引擎 wtab>: 6 个变体 ~90 度                   ->  全部 7.29 度（已知代理量伪影）
+  |n*.w|: max 0.0862 -> 0.0000（判据 <0.02）
+  |n*.a|: 0.10..1.0000 -> 0.1269..0.1271（= trace(eps)）
+  smoke(_probe_shape 6 步) 通过; M-5 的 |n.n*|>0.8 族均值 0.036 对设计值 0.030
+
+按 R8: 本改动改变全部引用 n*/ncmp 的归档读数 => 引用前必须重跑。
+开放未决: 两个 rank-1 解哪个是物理宽面法向（能量只差 8.6%，无分辨力）——
+本轮按用户决定沿用 max|n.nref| 选支，选支本身未解决。

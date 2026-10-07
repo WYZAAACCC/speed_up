@@ -1,0 +1,92 @@
+=== 时间：2026-10-02 14:47:04 ===
+
+## ① 定义点
+966:      **每个场一次**（12 变体 = 12 次）**加每对一次**（`_pair_normals` = 66 次）
+1422:                self.ncmp = self._pair_normals(C, eps0)
+1466:    def _pair_normals(C, eps0, nsamp=600, seed=0):
+4137:        #   (k,l) 类界面 -> ncmp[k,l] (两变体的不变平面, 见 _pair_normals)
+
+## ② 定义体（从 def 起 55 行）
+ 1466|     def _pair_normals(C, eps0, nsamp=600, seed=0):
+ 1467|         """变体-变体配对 (k,l) 的 rank-1 相容法向表 (MATH_FRAMEWORK 5.6).
+ 1468| 
+ 1469|         返回 (nv+1, nv+1, 3): ncmp[k,l] = argmin_n 0.5 dEps0:Lam(C,n):dEps0.
+ 1470|         母相相关项 (k==0 或 l==0) 与对角项 = nan (物理上不适用, 调用方 fallback 到 npref).
+ 1471|         与 _chk_morph.py 的 M6 用**同一**定义 (那里也按 de = eps0[k-1]-eps0[l-1] 取 argmin).
+ 1472| 
+ 1473|         ★★★ 2026-09-29 Round 141 修复：**改用收敛的 `argmin_normal`**。
+ 1474|           原写法「**600 个随机法向**取 argmin」实测（`_chk_pairnorm.py`，`_w2_pairnorm.log`）：
+ 1475|             `E(ncmp)/E(20k点最优)` 中位 **25.4**、最大 **6943**；
+ 1476|             夹角中位 **87.9°**，**36/66 对 > 20°**（且 20k 点本身也未收敛 ⇒ 这是**下界**）。
+ 1477|           而 `ncmp` 正是 `advance()` 里**变体-变体界面的 `β_h` 参考轴**
+ 1478|           （`windowB_surface.py` 的 `nd_ref = where(has_pair, ncl[ki,li], ...)`）
+ 1479|           —— 也就是 **block / colony / packet** 赖以形成的那根轴。
+ 1480|           ⇒ 旧行为等于**把驱动变体选择的轴对多数配对指错了约 90°**。
+ 1481|         `nsamp`/`seed` 参数保留只为向后兼容调用签名，**不再被使用**。
+ 1482|         """
+ 1483|         nv = len(eps0)
+ 1484|         tab = np.full((nv + 1, nv + 1, 3), np.nan)
+ 1485|         E = [np.asarray(e, float) for e in eps0]
+ 1486|         cons = np.full((nv + 1, nv + 1), np.nan)
+ 1487|         n_zero = 0
+ 1488|         for k in range(1, nv + 1):
+ 1489|             for l in range(k + 1, nv + 1):
+ 1490|                 de = E[k - 1] - E[l - 1]
+ 1491|                 # ★★★ R-block（2026-09-29）：**零应变差 ⇒ 该表项保持 NaN**。
+ 1492|                 #   为什么必须守卫：板条身份层（`windowB_lath.py`）让**同变体**的
+ 1493|                 #   两根板条各占一个场 ⇒ `eps0[k] == eps0[l]`（逐位相同）⇒ `de = 0`
+ 1494|                 #   ⇒ `argmin_normal(C, 0)` 的泛函**恒等于 0**，任意法向都是最小值
+ 1495|                 #   ⇒ 返回值**没有物理意义**。
+ 1496|                 #   实测（`_bk_smoke_f3.py` 探针 B4）：**不崩**，返回
+ 1497|                 #     `n=[0.010, 0, 0.99995]`、`E=0`、`cons=0` —— 一个随机方向。
+ 1498|                 #   保持 NaN ⇒ `facet_nref` 回退到 `npref[k]` = **惯习面法向**；
+ 1499|                 #   而"同变体板条面对面堆叠"的界面**正好就是惯习面**
+ 1500|                 #   ⇒ **回退分支就是正确的那一支**（`BLOCK_DERIVATION.md` §2.3）。
+ 1501|                 if not np.any(np.abs(de) > 1e-30):
+ 1502|                     n_zero += 1
+ 1503|                     continue
+ 1504|                 n_p, v_p, c_p = argmin_normal_cached(C, de)
+ 1505|                 tab[k, l] = tab[l, k] = n_p
+ 1506|                 cons[k, l] = cons[l, k] = c_p
+ 1507|         if n_zero:
+ 1508|             print('[WindowB] ncmp：%d 对**零应变差**（同变体板条在场层面的复制）'
+ 1509|                   '⇒ 保持 NaN，`facet_nref` 回退 `npref`（惯习面）' % n_zero,
+ 1510|                   flush=True)
+ 1511|         return tab
+ 1512| 
+ 1513|     def region(self):
+ 1514|         # ★★ R1（2026-09-29）：空间切片并行（逐位相同；`argmin` 沿 axis=0 的次序不变）。
+ 1515|         #   实测（N=192）：`argmin over 13 fields` 单线程 0.216 s → ×4.1 @16 线程。
+ 1516|         #
+ 1517|         # ★★★ R474（2026-10-01，**任务(3)：放开"位置数"上限**）：**int8 → int16**。
+ 1518|         #   为什么必须改：`int8` 的**有符号**上限是 **127**，而 `region()` 的取值是
+ 1519|         #   **场号 0..nreg−1**，其中 `nreg = nv + 1`（`nv` = 板条数）。
+ 1520|         #   ⇒ 实际天花板是 **nv ≤ 119**（还有 `windowB_lath.py` 的显式守卫）。
+ 1521|         #   实测影响（不是将来问题，是**现在就有**）：
+
+## ③ 其它构造期的大块（找构造期里可能的 O(nv²) 或 O(nv·N³)）
+126:            out = np.empty(n, dtype=np.float64)
+264:    lo = np.empty(3, np.int64)
+265:    hi = np.empty(3, np.int64)
+266:    touch = np.zeros(3, bool)
+473:        return 0, np.zeros(0)
+487:        return 0, np.zeros(0)
+583:    def __init__(self, N, L, gamma=0.15, Mob=1.0, kappa_omega=1.0, ic='sphere',
+680:            return np.zeros(3)
+743:            return np.zeros((0, 3)), np.zeros((0, 3))
+745:        pts = np.zeros((len(idx), 3))
+746:        nrm = np.zeros((len(idx), 3))
+989:    def __init__(self, N, L, C=None, eps0=None, gamma=0.15, Mob=1e-9, df=None,
+1113:        #   旧写法 `[np.zeros(...)] * 3` 还顺带把**同一个数组引用了三遍**（潜在别名 bug）。
+1116:        self.df = np.zeros(self.nreg) if df is None else np.asarray(df, float)
+1179:        self.sigma_ext = (np.zeros((3, 3)) if sigma_ext is None
+1181:        self.sext_e0 = (np.zeros(self.nv) if eps0 is None else
+2904:        b = np.zeros(reg.shape)
+2970:            self._Gam = np.zeros((self.N, self.N, self.N))
+2980:            self._Gam_mol = np.zeros((self.N, self.N, self.N))
+2992:            self._J_edge = [np.zeros((self.N,) * 3) for _ in range(3)]
+3379:        out = np.zeros(np.shape(larr))
+3568:        out = np.zeros((self.nreg,) + reg.shape)
+3574:            phi = np.zeros((self.nreg,) + reg.shape)
+3577:            e0l = [np.zeros((3, 3))] + [np.asarray(e, float)
+3654:            out = np.empty((c,) + self.phi.shape[1:], dtype=np.float64)

@@ -1,0 +1,61 @@
+=== 时间：2026-10-02 14:47:39 ===
+
+## ① `_bk_exp.py` 里 `eps0` 是怎么造出来并传进引擎的
+10:| 板条表 | 复制 `eps0`（无 θ） | **`windowB_lath.LathTable`**：逐板条变体 + 小转动 ⇒ F3 面能 = @@\\gamma_{\\rm RS}(\\theta)@@ |
+283:        b = _BM.blocks(reg, dx, vmap, eps0_var=EPS0, npf_var=NPF, axes_var=ax)
+392:    return WL.LathTable(laths, omegas=om, eps0_var=EPS0, npref_var=NPF,
+597:    eps0 = [np.asarray(EPS0[v - 1], float).copy() for v in laths_eff]
+741:    g = W.LevelSetMulti(N, L, C=C, eps0=eps0, gamma=a.gamma0, Mob=MOB,
+751:                        #   推荐组合 `--eps0-mode einsum --ed-pair gather`：
+754:                        eps0_mode=str(getattr(a, 'eps0_mode', 'loop')),
+764:                        eps0_tile=int(getattr(a, 'eps0_tile', 0) or 0),
+2864:    #   ⇒ 推荐 `--eps0-mode einsum --ed-pair gather`：**零物理代价**（逐位相同，判据 V2/V3 = 0.0）。
+2867:    ap.add_argument('--eps0-mode', type=str, default='loop',
+2915:                         'float64 = 8 B/胞·nv）；onfly=**不物化**，`eps0_fields` 按 '
+2923:    # ★★★★★ R581-L2（goal §(4)）：`eps0_fields_stream` 的**首轴空间分块**。
+2924:    ap.add_argument('--eps0-tile', type=int, default=0,
+2925:                    help='`--pf-phi onfly` 下 `eps0_fields_stream` 的**首轴空间分块**'
+
+## ② `windowB_surface.py` 里 `eps0` 的**构造/来源**
+175:def interface_elastic_energy(C, eps0, k, l, n, N=32, dx=2.5e-8, k0_mode='clamped'):
+191:    nv = len(eps0)
+193:    g = LevelSetMulti(N, L, C=C, eps0=eps0, gamma=0.0, Mob=1.0,
+969:      而**同变体的 `eps0` 逐位相同**（本项目的板条表就是复制出来的）
+989:    def __init__(self, N, L, C=None, eps0=None, gamma=0.15, Mob=1e-9, df=None,
+995:                 fft_mode='c2c', eps0_mode='loop', ed_pair_mode='full',
+998:                 eps0_tile=0, argmin_reuse=False, ufv_c=False, bbox_mode='legacy'):
+1031:        self.nv = (nv if nv is not None else (1 if eps0 is None else len(eps0)))
+1166:        # ★★ T10：保存建对象时的 C / eps0 引用，供 `gel_facet` 在**自己的小盒**里
+1169:        self._eps0_ref = None if eps0 is None else [np.asarray(e, float) for e in eps0]
+1172:        #     df_v = +eps0_v : sigma_int  +  sigma_ext : eps0_v
+1174:        #   驱动力 = −δF_el/δφ_v = +ε⁰_v:σ；外载项 `sigma_ext:eps0_v` 本来就对、不动。
+1181:        self.sext_e0 = (np.zeros(self.nv) if eps0 is None else
+1183:                                            np.asarray(e, float)) for e in eps0]))
+1200:        #     ② `soft=True` 走的是 `eps0_fields()`（非 gather），而**那正是
+1277:        #   'onfly'        = **不物化**：`eps0_fields` 按 `h_chunk` 分块现算软指示场
+1281:        #   ⚠ 逐位等价由 `_r579_pfphi.py` 判定（累积次序与 `eps0_mode='loop'` 同一串运算）。
+1289:        # ★★★★★ R581-L2（goal §(4)）：`eps0_tile` —— `eps0_fields_stream` 的**首轴空间分块**。
+1290:        #   0 = 归档旧路（整场 axpy）。>0 = 每块 `eps0_tile` 个首轴切片。
+1296:        self._eps0_tile = int(eps0_tile or 0)
+1297:        if self._eps0_tile < 0:
+1298:            raise ValueError('eps0_tile 必须 >= 0，收到 %r' % (eps0_tile,))
+1319:            self.pf._h_slab = self._eps0_tile
+1320:            self.pf._eps0_lag = None       # ★ R580（P1）：诊断缓存也要清
+1321:        if C is not None and eps0 is not None:
+1324:                self.pf = PF3D(N, L, C, eps0, gamma=0.0, w90=1e-8, Lmob=0.0,
+1329:                           #   （`eps0_fields` 里 `float*bool` 自动升 float64）。
+1345:                           #   `eps0_mode`：'loop'(旧) / 'einsum'(1.76×，**逐位相同**) /
+1348:                           fft_mode=fft_mode, eps0_mode=eps0_mode)
+1352:                self.e0v_eng = np.array([[eps0[v][i, j] for (i, j) in VOIGT]
+
+## ③ 找 `eps0_of` / `strain_of_variant` 这类"由变体派生"的函数
+windowB_surface.py:175:def interface_elastic_energy(C, eps0, k, l, n, N=32, dx=2.5e-8, k0_mode='clamped'):
+windowB_surface.py:989:    def __init__(self, N, L, C=None, eps0=None, gamma=0.15, Mob=1e-9, df=None,
+windowB_surface.py:1466:    def _pair_normals(C, eps0, nsamp=600, seed=0):
+windowB_surface.py:3371:    def _eps0_4gel(self):
+windowB_pf3d.py:182:    def __init__(self, N, L, C, eps0, gamma, w90, Lmob, dG=0.0, sigma_ext=None,
+windowB_pf3d.py:359:    def eps0_fields(self):
+windowB_pf3d.py:400:    def eps0_fields_stream(self, h_at, chunk=4, slab=0):
+windowB_pf3d.py:460:    def _eps0_fields_stream_tiled(self, h_at, chunk, slab):
+windowB_pf3d.py:477:    def eps0_fields_idx(self, idx):
+windowB_pf3d.py:547:    def _eps0_for_diag(self):

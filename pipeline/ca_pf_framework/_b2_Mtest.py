@@ -33,14 +33,22 @@ import sys
 
 PY = "/root/miniconda3/envs/ml/bin/python"
 FW = "/mnt/f/speed_up/pipeline/ca_pf_framework"
-tag, M = sys.argv[1], sys.argv[2]
+tag, M = sys.argv[1], int(sys.argv[2])
+
+# ★★ BUGFIX（2026-10-07 晚）：`_bk_exp.py:1029` 的语义是
+#     `laths = [int(x) for x in a.laths.split(',')]`；`M = len(laths)`。
+#   ⇒ 传 `--laths 3` 给的是 **`[3]` ⇒ M=1**（只播 1 个场，变体号 3），
+#     **不是 3 个场**。`Mlo3` 就是这样跑空的（日志 `LathTable M=1`、
+#     `nslab=1`、`nfsv_nofield=13`）⇒ **该臂数据作废**。
+#   ⇒ 正确写法：**M 个逗号项**，且与基线 `1,1,1,1,1,1` 同为变体 1（单变量）。
+LATHS = ",".join(["1"] * M)
 
 # 基线 = `_b2_arm0.py`（= `B2P_q0`），**只改 --laths**（单变量）
 argv = [
     "--N", "96", "--dx-nm", "62.5", "--steps", "400",
     "--every", "25", "--snap-every", "25", "--pair-every", "200",
     "--norm-smooth", "0", "--nthreads", "4", "--arm", "dry",
-    "--laths", str(M),                     # ★★ 唯一改动
+    "--laths", LATHS,                      # ★★ 唯一改动（M 个逗号项 ⇒ 真 M 个场）
     "--plate-L", "125.0", "--plate-W", "125.0", "--plate-T", "125.0",
     "--nuc-shape", "disc", "--grow-stack",
     "--nuc-every", "0", "--nuc-init", "0",

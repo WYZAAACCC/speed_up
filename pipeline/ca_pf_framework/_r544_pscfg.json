@@ -1,0 +1,12 @@
+[
+ {
+  "tag": "ps_b8",
+  "args": ["--nuc-block-target", "8", "--nfsv-diag", "1",
+           "--nuc-periodic-seed", "1"]
+ },
+ {
+  "tag": "ps_b3",
+  "args": ["--nuc-block-target", "3", "--nfsv-diag", "1",
+           "--nuc-periodic-seed", "1"]
+ }
+]

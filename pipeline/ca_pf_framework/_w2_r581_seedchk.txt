@@ -1,0 +1,49 @@
+=== 时间：2026-10-02 14:39:52 ===
+
+## ① `_bk_exp.py` 里所有 seed 相关的 add_argument / 赋值
+945:            _rng_b = np.random.default_rng(int(getattr(a, 'block_seed', 20261001)))
+992:                 _dmin * 1e9, int(getattr(a, 'block_seed', 20261001))))
+1308:                  #   并动手加了 `seed=int(getattr(a,'nuc_seed',11))` + 新开关 `--nuc-seed`。
+1413:                  periodic_seed=bool(int(getattr(a, 'nuc_periodic_seed', 0) or 0)),
+2743:    ap.add_argument('--block-seed', type=int, default=20261001,
+2838:    ap.add_argument('--nuc-periodic-seed', type=int, default=0, choices=(0, 1),
+3084:    #   ⇒ 旋钮是 **`--eng-seed`**（见 `ap.add_argument('--eng-seed'...)`）。
+3101:    ap.add_argument('--eng-seed', type=int, default=11)
+
+## ② `_bk_exp.py` 里 `eng_seed` 的全部出现
+1310:                  #   —— 因为 **`nuc_cfg(...)` 的调用里本来就有 `seed=a.eng_seed`**
+1311:                  #   （在本段下方，我第一遍 `grep` 只搜了 `--seed`/`nuc_seed`，**漏了 `eng_seed`**）。
+1335:                  seed=a.eng_seed,
+1446:             a.eng_seed))
+3083:    #   **实测证明那是错的**：`nuc_cfg(...)` 的调用里**本来就有 `seed=a.eng_seed`**
+
+## ③ `windowB_surface.py` 里 `seed` 的构造点（签名 + 用在哪）
+1466:    def _pair_normals(C, eps0, nsamp=600, seed=0):
+1793:                         rng=np.random.default_rng(seed))
+2713:    def seed_sphere(self, k, center, R):
+2721:    def _seed_undo_note(self, k, sdf, undo):
+2753:    def _seed_undo_apply(self, undo):
+2758:    def seed_plate(self, k, center, normal, R, t, elong=1.0, along=None, flat_end=False,
+5576:        g.seed_plate(v + 1, (rng.random(3) * (N * dx - 2 * R) + R), npref[v + 1], R, t)
+
+## ④ 引擎构造里 rng 是怎么来的（关键：谁喂 seed）
+1793:                         rng=np.random.default_rng(seed))
+1817:        rng = c['rng']
+1824:            ctr = rng.random(3) * (self.L - 2 * pad) + pad
+1825:            k = int(rng.integers(1, self.nreg))
+1896:        rng = c['rng']
+1992:                #   ⚠ 默认 `False` ⇒ 与原写法**逐位相同**（同一行代码、同一 `rng` 调用序）。
+1995:                sites.append((int(rng.integers(1, self.nreg)),
+1996:                              rng.random(3) * _span + _lo))
+2063:                #   ⚠ **向后兼容硬约束**：`'ed'`（默认）下 `_ks` 只有 1 个元素、**且不消耗 `rng`**
+2064:                #     （原式在 `'ed'` 下也不调 `rng`）⇒ 默认路径**逐位不变**（由 `_chk_w16.py` D-1 证明）。
+2068:                    _ks = [int(rng.integers(1, nv + 1))]
+2070:                    _ks = [int(x) for x in rng.choice(np.arange(1, nv + 1), size=2,
+2213:                    sites[_ii] = (int(rng.integers(1, self.nreg)),
+2214:                                  rng.random(3) * (self.L - 2 * _pad2) + _pad2)
+2269:                    #       `k = ks[rng.integers(...)]` 是**均匀随机挑一个已有场**，
+2284:                    #     `k = int(ks[rng.integers(0, len(ks))])` 一行 ⇒ 归档**逐位不变**。
+2305:                                k = int(ks[rng.integers(0, len(ks))])
+2309:                            k = int(ks[rng.integers(0, len(ks))])
+2311:                        k = int(ks[rng.integers(0, len(ks))])
+2313:                        k = int(rng.integers(1, nv + 1))

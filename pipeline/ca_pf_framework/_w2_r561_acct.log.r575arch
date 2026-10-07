@@ -1,0 +1,64 @@
+====================================================================================================
+R561 — 算子级时间记账  (N=64 nv=24 dx=0.0625 um workers=4 steps=8)
+====================================================================================================
+
+  预热前 pf.phi.dtype = bool（soft 前）
+  预热后 pf.phi.dtype = float64   ← **P0 正对照**
+  P0（必须是 float64，float64 = 生产 soft 路径）: ✅ PASS
+
+  干净单步 = **0.2083 s**（中位数 / 8 步）  min=0.2038 max=0.2253
+
+  P0b 记账器自检：直接调一次 g.region() ⇒ 计数 +1、计时 +0.0000 s  ⇒ ✅ PASS（包装真的挂上了）
+  记账跑单步 = 0.2170 s（含计时器开销 4.2%）
+
+  ── 互斥顶层块（秒 / 每步；外层含内层，故不重复相加）──
+    region()             区域场 argmin ×3         0.0117 s      5.4%
+    argmin2()            winner+runnerup       0.0143 s      6.6%
+    elastic_driving_pair() 【含下面全部】             0.0797 s     36.7%
+      └ elastic_driving()  （= pair 的实现）        0.0000 s      0.0%
+      └   fe.ed.soft_phi   nv 次整场 tanh         0.0246 s     11.4%
+      └   fe.ed.einsum     nv 次整场 einsum       0.0000 s      0.0%
+      └   el.sigma_tensor                      0.0458 s     21.1%
+      └     el.eps0_fields（慢路）                 0.0200 s      9.2%
+      └     el.fft_fwd(c2c)                    0.0000 s      0.0%
+      └     el.fft_inv(c2c)                    0.0000 s      0.0%
+    finish()             reinit+stefan         0.0061 s      2.8%
+      └ finish.reinit                          0.0000 s      0.0%
+      └ finish.stefan                          0.0000 s      0.0%
+    for_each（**弹性之外**的那几段）                     0.0554 s     25.5%
+      └ par.gradient                           0.0207 s      9.5%
+      └ par.upwind_flux_vec（4 线程并发之和）          0.1276 s     58.8%
+      └ op.upwind_flux_vec（模块级）                0.1275 s     58.8%
+      └ op._minmod                             0.0520 s     23.9%
+      └ op._bbox_pad                           0.0090 s      4.1%
+      └ op.sussman_reinit                      0.0000 s      0.0%
+      [明细] 弹性里的 fe.ed.* 合计                     0.0246 s     11.4%
+
+  P1 覆盖性：(region + argmin2 + elastic.pair + finish + 弹性外的 for_each)
+     = 0.1673 s = **77.1%** 的墙钟  ⇒ ⚠ <85%%：还有大块没记账，**不许据此下结论**
+
+  ── 调用次数（每步）──
+    argmin2                                1.00 /步
+    el.eps0_fields                         1.00 /步
+    el.sigma_tensor                        1.00 /步
+    elastic.pair                           1.00 /步
+    fe.advance.geom_k                      1.00 /步
+    fe.advance.k_loop                      1.00 /步
+    fe.ed.soft_phi                         1.00 /步
+    finish                                 1.00 /步
+    finish.stefan                          1.00 /步
+    op._bbox_pad                           4.00 /步
+    op._minmod                            24.00 /步
+    op.upwind_flux_vec                     4.00 /步
+    par.argmin                             2.00 /步
+    par.gradient                           6.00 /步
+    par.upwind_flux_vec                    4.00 /步
+    region                                 2.00 /步
+
+  P3 复现 `_r559`：慢路 eps0_fields=8 次 / 快路 eps0_fields_idx=0 次  ⇒ ✅ 与 _r559 一致（生产走慢路）
+
+     （已替换 `_minmod` 的模块：windowB_surface）
+  P2 记账器自证：给 `_minmod` 每次加 2.0 ms；本步调用 24 次
+     预期人工开销 ≥ 0.048 s；记账器看到 `op._minmod` = 0.122 s  ⇒ ✅ PASS（计时器确实挂在热路径上）
+
+  P0=PASS  P1=77.1%  P2=PASS  P3=PASS

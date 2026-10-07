@@ -1,0 +1,42 @@
+usage: _t5_short.py [-h] [--tag TAG] [--N N] [--dx-nm DX_NM] [--m M]
+                    [--nvar NVAR] [--therm-hist {linear,lpbf}]
+                    [--var-rule {ed,random,doublet}]
+                    [--mob-iform {exp2,ellipse}] [--mob-ratio MOB_RATIO]
+                    [--mob-wulff] [--mob-dip MOB_DIP] [--eng-elong ENG_ELONG]
+                    [--no-nucleation] [--diag-terms] [--burst-km {0,1}]
+                    [--ed-eta ED_ETA] [--facet-proj FACET_PROJ]
+                    [--nuc-block-parallel {0,1}]
+                    [--nuc-fresh-every NUC_FRESH_EVERY] [--B B]
+                    [--steps STEPS] [--every EVERY] [--snap-every SNAP_EVERY]
+                    [--pair-every PAIR_EVERY] [--nthreads NTHREADS]
+                    [--alpha-km ALPHA_KM] [--T-end T_END]
+                    [--ckpt-every CKPT_EVERY] [--ckpt-keep CKPT_KEEP]
+                    [--overlap-nm OVERLAP_NM] [--periodic-seed {0,1}]
+                    [--resume RESUME] [--out OUT]
+                    [--mem-limit-gb MEM_LIMIT_GB] [--cores CORES]
+                    [--archive-old]
+_t5_short.py: error: unrecognized arguments: --nuc-init 0
+Command exited with non-zero status 2
+	Command being timed: "/root/miniconda3/envs/ml/bin/python _t5_short.py --tag nvp8 --N 160 --nvar 1 --m 8 --B 0 --steps 1 --cores 0-3 --mem-limit-gb 18 --every 1 --snap-every 1000 --pair-every 1000 --ckpt-every 0 --nuc-init 0 --no-nucleation"
+	User time (seconds): 0.05
+	System time (seconds): 0.03
+	Percent of CPU this job got: 36%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.24
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 14416
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 1922
+	Voluntary context switches: 94
+	Involuntary context switches: 0
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 2

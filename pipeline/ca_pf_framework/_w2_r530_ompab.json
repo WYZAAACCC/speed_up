@@ -1,0 +1,49 @@
+{
+ "a": {
+  "tag": "omp_unset",
+  "nthreads": 16,
+  "omp": null,
+  "wall": 21.201565742492676,
+  "n_read": 6,
+  "s_per_step": 0.3,
+  "crash": false
+ },
+ "b": {
+  "tag": "omp_1",
+  "nthreads": 16,
+  "omp": 1,
+  "wall": 21.055677890777588,
+  "n_read": 6,
+  "s_per_step": 0.315,
+  "crash": false
+ },
+ "scale": [
+  {
+   "tag": "thr1",
+   "nthreads": 1,
+   "omp": 1,
+   "wall": 21.261463165283203,
+   "n_read": 6,
+   "s_per_step": 0.31,
+   "crash": false
+  },
+  {
+   "tag": "thr4",
+   "nthreads": 4,
+   "omp": 1,
+   "wall": 20.315353870391846,
+   "n_read": 6,
+   "s_per_step": 0.265,
+   "crash": false
+  },
+  {
+   "tag": "thr16",
+   "nthreads": 16,
+   "omp": 1,
+   "wall": 21.410630702972412,
+   "n_read": 6,
+   "s_per_step": 0.315,
+   "crash": false
+  }
+ ]
+}

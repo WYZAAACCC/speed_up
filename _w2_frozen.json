@@ -1,0 +1,33 @@
+{
+ "time": "2026-10-06 23:11:37",
+ "procs": [
+  {
+   "pid": 6735,
+   "cmd": "/root/miniconda3/envs/ml/bin/python -u _t11_watch.py /mnt/f/speed_up/_w2_t10PROD2.log 20 9"
+  },
+  {
+   "pid": 9314,
+   "cmd": "/root/miniconda3/envs/ml/bin/python -u _t11_cube2b.py"
+  },
+  {
+   "pid": 9315,
+   "cmd": "/root/miniconda3/envs/ml/bin/python -u _bk_exp.py --N 128 --dx-nm 62.5 --steps 1000 --every 100 --snap-every 100 --pair-every 200 --norm-smooth 0 --nthreads 8 --arm dry --plate-L 250.0 --plate-W 250.0 --plate-T 250.0 --nuc-shape disc --grow-stack --nuc-every 0 --nuc-init 0 --nuc-law cadence --nuc-block-target 0 --gamma0 0.25 --gamma-film 0.6 --alpha-km 0.041739 --T-end 298.0 --cool-rate 2352400.0 --qs-clock 1 --qs-max-relax 100 --beta-w 0.0 --ed-eta 0.253 --mob-iform exp2 --mob-ratio 9.0 --mob-dip 0.0 --facet-proj 0 --rank1-swap none --var-rule ed --nuc-sites-refill 1 --out _exp/_bk_t5 --beta-h 0.0 --tag c2Eq0"
+  },
+  {
+   "pid": 10488,
+   "cmd": "/root/miniconda3/envs/ml/bin/python -u _t11_run_one.py c2B647 6.477"
+  },
+  {
+   "pid": 10489,
+   "cmd": "/root/miniconda3/envs/ml/bin/python -u _bk_exp.py --N 128 --dx-nm 62.5 --steps 1000 --every 100 --snap-every 100 --pair-every 200 --norm-smooth 0 --nthreads 8 --arm dry --plate-L 250.0 --plate-W 250.0 --plate-T 250.0 --nuc-shape disc --grow-stack --nuc-every 0 --nuc-init 0 --nuc-law cadence --nuc-block-target 0 --gamma0 0.25 --gamma-film 0.6 --alpha-km 0.041739 --T-end 298.0 --cool-rate 2352400.0 --qs-clock 1 --qs-max-relax 100 --beta-h 6.477 --beta-w 0.0 --ed-eta 0.253 --mob-iform exp2 --mob-ratio 9.0 --mob-dip 0.0 --facet-proj 0 --rank1-swap none --var-rule ed --nuc-sites-refill 1 --out _exp/_bk_t5 --tag c2B647"
+  },
+  {
+   "pid": 10517,
+   "cmd": "/root/miniconda3/envs/ml/bin/python -u _t11_run_one.py c2PosA 6.477"
+  },
+  {
+   "pid": 10518,
+   "cmd": "/root/miniconda3/envs/ml/bin/python -u _bk_exp.py --N 128 --dx-nm 62.5 --steps 1000 --every 100 --snap-every 100 --pair-every 200 --norm-smooth 0 --nthreads 8 --arm dry --plate-L 1250.0 --plate-W 1250.0 --plate-T 138.88888888888889 --nuc-shape disc --grow-stack --nuc-every 0 --nuc-init 0 --nuc-law cadence --nuc-block-target 0 --gamma0 0.25 --gamma-film 0.6 --alpha-km 0.041739 --T-end 298.0 --cool-rate 2352400.0 --qs-clock 1 --qs-max-relax 100 --beta-h 6.477 --beta-w 0.0 --ed-eta 0.253 --mob-iform exp2 --mob-ratio 9.0 --mob-dip 0.0 --facet-proj 0 --rank1-swap none --var-rule ed --nuc-sites-refill 1 --out _exp/_bk_t5 --tag c2PosA"
+  }
+ ]
+}

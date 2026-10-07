@@ -1,0 +1,40 @@
+chk(R141): Xiang 2022 全部 12 个惯习面法向对照 —— 帧与约定验证通过（统一 0.42 度），选支仍未定案
+
+数据来源（子代理全文取证 + 作者 GitHub 源码交叉核对）:
+  Xiang H, Van Paepegem W, Kestens LAI, Materials 15 (2022) 5325, PMC9369925, Table 1
+  6 个 correspondence variants × 2 个 PTMT 解 = 12 组，β(bcc) 母相立方系。
+  报告: F:\speed_up\_lit\Xiang2022_PTMT_数据提取报告.md (42 KB)
+
+结论一 OK 我们的候选轴集会通过外部验证:
+  Xiang 的 12 个法向全部在我们的 24 个候选里找到匹配，夹角**全部 = 0.42 度**（统一系统差）。
+  => 坐标系、符号约定、rank-1 构造都对。0.42 度可归因于晶格常数不同 + 构造路径不同。
+  => 这是变体表第一次得到独立第三方 PTMT 计算的验证。
+
+结论二 OK 映射是完美 1:1 排列:
+  我们的 12 个变体各被命中恰好一次。与 Xiang 逐字自述一致
+  （"six correspondence variants and twelve crystallographic variants"）。
+  => Xiang 的「6 correspondence variants × 2 PTMT 解」= 我们的 12 个晶体学变体。
+  => 重要澄清: Xiang 的"每个 correspondence variant 的两个解"**不是我们的"两个支"**，
+     它们在我们的枚举里是两个**不同的变体**。
+     旁证: Xiang 两解夹角 88.97 度，我们两支夹角 82.70 度，不相等。
+
+结论三 !! 选支仍未定案: 9 个落 A 支、3 个落 B 支
+  分支归属不能按 n1/n2/a1/a2 标签判（标签随 eigh 符号翻转在变体间互换），
+  已改为按「哪一支离微弹性极小点 n_micro 更近」判定:
+     A 支 9 个: v10 v9 v11 v12 v6 v5 v7 v2 v4
+     B 支 3 个: v8 v1 v3
+  12 个变体在立方对称下等价 => 物理上应全部落同一支。9/3 说明还有未对齐处。
+
+结论四（很可能是根因）: "哪一支更近 n_micro"本身不是物理判据
+  _chk_branch2.py 已实测两个微弹性深谷只差 0.12%（5.869480e3 vs 5.876319e3）
+  => 全局 argmin 在两者间近乎抛硬币，不具物理分辨力。
+
+下一步: 1) 直接用 Xiang 的 Table 8 做对照（顺带验证我们的 argmin_normal 实现——
+  子代理复算 0.5*eps:Lam:eps / Bpp = 0.5000000000 逐项相同; B_min 1.70432e5 vs 论文 1.70e5）
+  2) 复核我们与 Xiang 的 (6 面 x 2 <111>) 配对顺序/规则是否一致
+  3) 记账两个论文印刷错误: Table 7 的 C44=7.5 GPa 应为 37.5 GPa（源码为准）;
+     式(3) 的 U5 印成非对称矩阵（用印错版本算 Bpp 大 3 个数量级）
+
+顺带否掉我们自己的一个混引: _chk_habit4 早先引 Xiang 的 "not an invariant habit plane"
+当作支持"两支简并"。读全文后: 那说的是 U^2 最接近 1 的特征值 = 1.0034，
+与"两支简并"是两件事，不得再混引。
