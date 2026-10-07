@@ -57,7 +57,9 @@
         │
         ▼
 ① 装配（_bk_exp.py:1029-2260）
-   · laths = [int(x) for x in --laths.split(',')]  ⇒ M = len(laths)   ← ⚠ 见 §四 坑 4
+   · laths = [int(x) for x in --laths.split(',')]  ⇒ M = len(laths)
+     ⚠ `--laths` 是**变体列表**不是根数整数：`--laths 3` 给 `[3]` ⇒ **M=1**；
+       要 M 根同变体板条必须写 `--laths 1,1,1`（`_bk_exp.py:1029`，`R707 §4`）
    · build_table(laths,...)  →  LathTable（逐板条变体 + θ ⇒ γ_RS(θ)）
    · 从 T16_verify_rve 取 C / EPS0 / NPF / DF / MOB
    · 播种：seed_plate(k, center, normal=n*, R, t, ...)   @windowB_surface:3181
