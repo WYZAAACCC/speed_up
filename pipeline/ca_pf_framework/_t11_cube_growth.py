@@ -54,7 +54,12 @@ COMMON = [
     "--plate-L", str(CUBE_NM), "--plate-W", str(CUBE_NM),
     "--plate-T", str(CUBE_NM),
     "--nuc-shape", "disc",          # 立方（elong=1、along=None ⇒ seed_plate 走圆盘/等轴分支）
-    "--nuc-every", "0",             # ★ 关驱动层后续播种
+    # ★★★ 关键修正：**必须传 `--grow-stack`** 才能"只播第 1 片"
+    #   （`_bk_exp.py:1886` 的 `if grow:` 分支走 `_seed_next()` ⇒ 只播 1 片；
+    #    而"此后每 --nuc-every 步播下一片"因 `--nuc-every 0` **永不触发**。
+    #    ⚠ 我第一版**漏传**它 ⇒ 落到 `:1909 else:` 分支 ⇒ **播了 6 片**（nslab=6、F3面=370）。）
+    "--grow-stack",
+    "--nuc-every", "0",             # ★ 关驱动层后续播种（配 --grow-stack ⇒ 只有 1 片）
     "--nuc-init", "0",              # ★ 无 fresh 待机位点
     "--nuc-law", "cadence",         # ★ 非 athermal ⇒ 无 athermal 补投
     "--nuc-block-target", "0",      # ★ 无块目标

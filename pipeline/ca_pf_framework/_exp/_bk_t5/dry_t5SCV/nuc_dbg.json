@@ -1,0 +1,209 @@
+{
+ "n_eng_ev": 6,
+ "nuc_law": "athermal",
+ "n_athermal_ev": 6,
+ "n_target_final": 7,
+ "nuc_fresh_every": 23,
+ "n_events_by_requested_mode": {
+  "attach": 6
+ },
+ "n_fresh_fallback_to_stack": 0,
+ "T_events": [
+  {
+   "step": 101,
+   "t": 1.0184665959598283e-05,
+   "T": 825.083183593282,
+   "df": 132669503.76386595,
+   "field": 2,
+   "n_target": 2,
+   "k": 2,
+   "k_in_block": 2,
+   "mode": "attach"
+  },
+  {
+   "step": 201,
+   "t": 2.0369331919196566e-05,
+   "T": 801.124775389923,
+   "df": 142605055.64579892,
+   "field": 3,
+   "n_target": 3,
+   "k": 3,
+   "k_in_block": 3,
+   "mode": "attach"
+  },
+  {
+   "step": 301,
+   "t": 3.0553997878794844e-05,
+   "T": 777.166367186564,
+   "df": 152540607.5277319,
+   "field": 4,
+   "n_target": 4,
+   "k": 4,
+   "k_in_block": 4,
+   "mode": "attach"
+  },
+  {
+   "step": 401,
+   "t": 4.073866383839313e-05,
+   "T": 753.207958983205,
+   "df": 162476159.4096649,
+   "field": 5,
+   "n_target": 5,
+   "k": 5,
+   "k_in_block": 5,
+   "mode": "attach"
+  },
+  {
+   "step": 501,
+   "t": 5.0923329797991413e-05,
+   "T": 729.249550779846,
+   "df": 172411711.29159787,
+   "field": 6,
+   "n_target": 6,
+   "k": 6,
+   "k_in_block": 6,
+   "mode": "attach"
+  },
+  {
+   "step": 601,
+   "t": 6.110799575758969e-05,
+   "T": 705.291142576487,
+   "df": 182347263.17353085,
+   "field": 7,
+   "n_target": 7,
+   "k": 7,
+   "k_in_block": 7,
+   "mode": "attach"
+  }
+ ],
+ "n_events_by_mode": {
+  "attach": 6
+ },
+ "dbg": {
+  "att": 0,
+  "oob": 0,
+  "cov": 1,
+  "exc": 0,
+  "ok": 6,
+  "nocand": 0,
+  "nfsv_ok": 6,
+  "c_shift_max_dx": 0.8060897272259387,
+  "edge_gap_min_dx": 0.0,
+  "attach_ok": 6,
+  "n_events": 6,
+  "forced_reinit": 0,
+  "end_pref": 2
+ },
+ "dbg_coercion_notes": [],
+ "nuc_cfg": {
+  "R": 3.2e-07,
+  "t": 3.125e-07,
+  "gamma": 0.25,
+  "p_auto": 0.0,
+  "harden_f": 1.0,
+  "gap": 0,
+  "cap": 1,
+  "var_rule": "ed",
+  "use_fcrit": false,
+  "periodic_seed": true,
+  "supercrit": true,
+  "nuc_shape": "ellipsoid",
+  "sites_refill": true,
+  "sites_margin": 4,
+  "vgroup": {
+   "1": 1,
+   "2": 1,
+   "3": 1,
+   "4": 1,
+   "5": 1,
+   "6": 1,
+   "7": 1,
+   "8": 1,
+   "9": 1,
+   "10": 1,
+   "11": 1,
+   "12": 1,
+   "13": 1,
+   "14": 1,
+   "15": 1,
+   "16": 1,
+   "17": 1,
+   "18": 1,
+   "19": 1,
+   "20": 1,
+   "21": 1,
+   "22": 1,
+   "23": 1
+  },
+  "nfsv": true,
+  "attach": true,
+  "attach_overlap": 6.250000000000001e-08,
+  "nfsv_diag": false,
+  "stack_pick_dg": false,
+  "elong": 7.0,
+  "along": [
+   -0.490868374423449,
+   0.4908683744234489,
+   0.7197891899589501
+  ],
+  "prefer_end": true,
+  "nfsv_strict": true,
+  "along_per_variant": true,
+  "block_edge": true,
+  "align_inplane": true,
+  "alt_side": true,
+  "t_last_reduce": 3.1250000000000005e-08,
+  "force_reinit_after_event": false,
+  "sites": [
+   [
+    17,
+    [
+     9.734235333814107e-07,
+     2.497032014628873e-06,
+     2.917158249832e-06
+    ]
+   ],
+   [
+    1,
+    [
+     1.052976207613344e-06,
+     4.2599473043671195e-06,
+     7.344285679937491e-07
+    ]
+   ],
+   [
+    20,
+    [
+     9.78370932031115e-07,
+     4.342629943029197e-06,
+     3.0009415663931344e-06
+    ]
+   ],
+   [
+    9,
+    [
+     2.5468129896114103e-06,
+     3.1692845348440458e-06,
+     1.5765192327782418e-06
+    ]
+   ],
+   [
+    11,
+    [
+     1.0120487794831866e-06,
+     3.6838427334114074e-06,
+     3.2001820006612094e-06
+    ]
+   ],
+   [
+    12,
+    [
+     3.8017867518352957e-06,
+     2.701699355055809e-06,
+     4.476555057511927e-06
+    ]
+   ]
+  ],
+  "pending_fresh": 6
+ }
+}

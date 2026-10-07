@@ -1,0 +1,508 @@
+{
+ "nuc_law": "athermal",
+ "alpha_KM": 0.041739,
+ "Ms": 873.0,
+ "T0": 1145.0,
+ "DS": 414700.0,
+ "dG_crit": 112800000.0,
+ "T_start": 849.041591796641,
+ "T_end": 298.0,
+ "T_start_kind": "T_1 = M_s − 1/α_KM（预摆片 = 第 1 根）",
+ "q": 2352400.0,
+ "q_source": "user",
+ "q_cap": 2940510.1195987677,
+ "n_law_float": 23.999924999999998,
+ "n_law": 23,
+ "T_k": [
+  849.041591796641,
+  825.083183593282,
+  801.1247753899231,
+  777.1663671865641,
+  753.2079589832051,
+  729.2495507798462,
+  705.2911425764872,
+  681.3327343731282,
+  657.3743261697692,
+  633.4159179664102,
+  609.4575097630513,
+  585.4991015596923,
+  561.5406933563333,
+  537.5822851529745,
+  513.6238769496155,
+  489.66546874625647,
+  465.7070605428975,
+  441.7486523395385,
+  417.7902441361796,
+  393.8318359328206,
+  369.87342772946164,
+  345.9150195261027,
+  321.9566113227437
+ ],
+ "steps_min_ordered": 4737.234591194521,
+ "beta_h_floor": 5.907123398674232,
+ "beta_h_T": 5.218616567036721,
+ "beta_h_used": 6.477,
+ "geometry": {
+  "N": 160,
+  "dx_nm": 62.50000000000001,
+  "L_box": 1.0000000000000003e-05,
+  "plate_L_nm": 1000.0,
+  "plate_W_nm": 500.0,
+  "plate_T_nm": 510.0,
+  "plate_T_physical_nm": 510.0,
+  "t_over_dx": 8.159999999999998
+ },
+ "params": [
+  {
+   "name": "a_beta",
+   "value": 0.331,
+   "unit": "nm",
+   "where": "windowB_ti64_variants",
+   "role": "Burgers OR → ε⁰",
+   "tier": "借",
+   "source": "WINDOWB_PARAMS §1（β-Ti 0.3306–0.3320）"
+  },
+  {
+   "name": "a_alpha",
+   "value": 0.295,
+   "unit": "nm",
+   "where": "windowB_lath.A_ALPHA",
+   "role": "Burgers OR → ε⁰；也是位错 b",
+   "tier": "借",
+   "source": "WINDOWB_PARAMS §1（α-Ti）"
+  },
+  {
+   "name": "c_alpha",
+   "value": 0.4683,
+   "unit": "nm",
+   "where": "windowB_ti64_variants",
+   "role": "Burgers OR → ε⁰（c/a=1.5875）",
+   "tier": "借",
+   "source": "WINDOWB_PARAMS §1"
+  },
+  {
+   "name": "eps0_v (×12)",
+   "value": "—",
+   "unit": "-",
+   "where": "windowB_ti64_variants.variants()",
+   "role": "弹性能 ed_k、变体选择",
+   "tier": "推",
+   "source": "由 a_beta/a_alpha/c_alpha + Burgers OR 构造；C1–C6 六条判据全过"
+  },
+  {
+   "name": "Ms",
+   "value": 873.0,
+   "unit": "K",
+   "where": "windowB_km.M_S_TI64",
+   "role": "athermal 钟的零点；C-2 的 n",
+   "tier": "借",
+   "source": "Ji 2016 DOI 10.1007/s11669-015-0436-9（原文为估 ΔG 取的名义值）"
+  },
+  {
+   "name": "T0",
+   "value": 1145.0,
+   "unit": "K",
+   "where": "windowB_km.T0_TI64",
+   "role": "ΔG=0 的温度",
+   "tier": "借",
+   "source": "Ji 2016 CALPHAD f^β=f^α"
+  },
+  {
+   "name": "T_beta",
+   "value": 1268.0,
+   "unit": "K",
+   "where": "windowB_km.T_BETA_TI64",
+   "role": "仅用于冷速时间表的起点",
+   "tier": "借",
+   "source": "WINDOWB_PARAMS §1（Ji 2016 给 1249 K）"
+  },
+  {
+   "name": "C (β-Ti cubic)",
+   "value": [
+    134,
+    110,
+    36
+   ],
+   "unit": "GPa",
+   "where": "T16_verify_rve.C",
+   "role": "弹性能 ed_k（母相刚度）",
+   "tier": "借",
+   "source": "WINDOWB_PARAMS §2；β-Ti 高温外推，误差未量化"
+  },
+  {
+   "name": "E_TI64",
+   "value": 114000000000.0,
+   "unit": "Pa",
+   "where": "windowB_lath.E_TI64",
+   "role": "→ G → E0",
+   "tier": "借",
+   "source": "WINDOWB_PARAMS §2（α′ 多晶近似 114 GPa）"
+  },
+  {
+   "name": "NU_TI64",
+   "value": 0.34,
+   "unit": "-",
+   "where": "windowB_lath.NU_TI64",
+   "role": "→ G → E0",
+   "tier": "借",
+   "source": "同上 0.34"
+  },
+  {
+   "name": "G_TI64",
+   "value": 42537313432.835815,
+   "unit": "Pa",
+   "where": "windowB_closure.G_TI64",
+   "role": "E0 = Gb/[4π(1−ν)]",
+   "tier": "推",
+   "source": "G = E/[2(1+ν)]，由 E_TI64/NU_TI64 导出"
+  },
+  {
+   "name": "gamma0 (F1, α′/β)",
+   "value": 0.15,
+   "unit": "J/m²",
+   "where": "_bk_exp.py:186 / T16",
+   "role": "F1 界面刚度",
+   "tier": "标",
+   "source": "**占位**。文献 Murzinova 2017 给 0.201–0.337(975 °C)/0.298–0.429(600 °C) ⇒ 建议改用 0.25（主）/带 [0.201,0.337]"
+  },
+  {
+   "name": "gamma0 (F2, 异变体)",
+   "value": 0.15,
+   "unit": "J/m²",
+   "where": "同上",
+   "role": "F2 界面刚度",
+   "tier": "标",
+   "source": "**占位且从未被检验**：归档块算例 6 场同变体 ⇒ F2 面积为 0"
+  },
+  {
+   "name": "E0 (RS)",
+   "value": 1.5129977205394731,
+   "unit": "J/m²",
+   "where": "windowB_lath.E0_TI64",
+   "role": "γ_RS 的尺度",
+   "tier": "推",
+   "source": "E0 = Gb/[4π(1−ν)] = 1.51300（自检 S-3.1）"
+  },
+  {
+   "name": "theta_m",
+   "value": 15.0,
+   "unit": "deg",
+   "where": "windowB_lath.THETA_M_DEG",
+   "role": "RS 平台角",
+   "tier": "借",
+   "source": "Read–Shockley 通用平台角 15°"
+  },
+  {
+   "name": "gamma_m (RS)",
+   "value": 0.3961018769787426,
+   "unit": "J/m²",
+   "where": "windowB_lath.GAMMA_M_TI64",
+   "role": "γ_RS 的上限",
+   "tier": "推",
+   "source": "γ_m = E0·θ_m = 0.39610（自检 S-3.2）"
+  },
+  {
+   "name": "theta ladder",
+   "value": 5.0,
+   "unit": "deg",
+   "where": "_bk_exp.py --omega-max-deg",
+   "role": "F3 面能 γ_RS(θ)",
+   "tier": "标",
+   "source": "**无直接实验值**；用户文献复核建议改做 0.5–2/2–5/5–10° 三情景"
+  },
+  {
+   "name": "GAMMA_AB (α′/β)",
+   "value": {
+    "T600C": [
+     0.298,
+     0.429
+    ],
+    "T975C": [
+     0.201,
+     0.337
+    ]
+   },
+   "unit": "J/m²",
+   "where": "windowB_lath.GAMMA_AB",
+   "role": "C-6 润湿判据",
+   "tier": "借",
+   "source": "Murzinova 2017 DOI 10.22226/2410-3535-2017-1-55-59"
+  },
+  {
+   "name": "DG_CRIT_REF",
+   "value": 112800000.0,
+   "unit": "J/m³",
+   "where": "windowB_km",
+   "role": "|ΔG(Ms)|；M_s 锚；C-1/C-3",
+   "tier": "借",
+   "source": "1200 J/mol（Ji 2016）÷ V_m"
+  },
+  {
+   "name": "DS_REF",
+   "value": 414700.0,
+   "unit": "J/(m³K)",
+   "where": "windowB_km",
+   "role": "ΔG_v(T) = DS(T0−T)",
+   "tier": "推",
+   "source": "= DG_CRIT_REF/(T0−Ms)；带 ±20%（DS_BAND）"
+  },
+  {
+   "name": "V_m",
+   "value": 1.064e-05,
+   "unit": "m³/mol",
+   "where": "windowB_km 注释",
+   "role": "J/mol ↔ J/m³",
+   "tier": "借",
+   "source": "Boccardo 2024 附录 A1 引 Singman 1984；β/α′ 用同一个值（未区分）"
+  },
+  {
+   "name": "df (引擎常数)",
+   "value": 350000000.0,
+   "unit": "J/m³",
+   "where": "T16_verify_rve.DF",
+   "role": "引擎的驱动力",
+   "tier": "推",
+   "source": "= drive_of_T(298 K)。**本应是 T 的函数** ⇒ 闭环版改用 set_T(T_of_t)"
+  },
+  {
+   "name": "cfl",
+   "value": 0.15,
+   "unit": "-",
+   "where": "_bk_exp.py:375",
+   "role": "dt = cfl·dx/(M·ΔG)",
+   "tier": "数",
+   "source": "CFL 数；与实际最大速度配套（suggest_dt）"
+  },
+  {
+   "name": "MOB",
+   "value": 1e-09,
+   "unit": "m⁴/(J·s)",
+   "where": "T16_verify_rve.MOB",
+   "role": "v = M·ΔG",
+   "tier": "标",
+   "source": "**占位**。C-3 给下界 MOB_min = α_KM·q·L/ΔG_crit；上界由\"界面不拖后腿\"给"
+  },
+  {
+   "name": "alpha_KM",
+   "value": 0.011,
+   "unit": "1/K",
+   "where": "windowB_km.ALPHA_KM_REF",
+   "role": "C-2 的 n；C-3 的节奏",
+   "tier": "标",
+   "source": "**占位**（钢的常见量级 1e-2，Ti-64 未核实）。可测：原位 f(T) 或中断淬火数板条"
+  },
+  {
+   "name": "beta_h",
+   "value": 3.5,
+   "unit": "-",
+   "where": "_bk_exp.py --beta-h",
+   "role": "M(n)=M0 e^{−β_h(n·n̂)²}",
+   "tier": "标",
+   "source": "锚在 Ms：位错环形成能→3.8；长厚比→3.0 ⇒ 取 3.5。闭环版用 β_h(T)=3.5·Ms/T 与 C-5 下界取大"
+  },
+  {
+   "name": "beta_w",
+   "value": 2.3,
+   "unit": "-",
+   "where": "_bk_exp.py --beta-w",
+   "role": "宽度方向钉扎",
+   "tier": "标",
+   "source": "由\"长/宽~10\"反推 ⇒ **该观测无出处**（Wang 2026 只给长与厚）"
+  },
+  {
+   "name": "p_auto",
+   "value": 0.0,
+   "unit": "-",
+   "where": "nuc_cfg(p_auto=…)",
+   "role": "sympathetic 增益 1+p·4f(1−f)",
+   "tier": "标",
+   "source": "**本项目自设**；原引 Bhadeshia (5.24) 已撤（分母未读到）"
+  },
+  {
+   "name": "harden_f",
+   "value": 1.0,
+   "unit": "-",
+   "where": "nuc_cfg(harden_f=…)",
+   "role": "阶段③开关（母相硬化）",
+   "tier": "数",
+   "source": "默认 1.0 = 不可达 ⇒ 归档算例**未启用阶段③**"
+  },
+  {
+   "name": "use_fcrit",
+   "value": false,
+   "unit": "-",
+   "where": "nuc_cfg(use_fcrit=…)",
+   "role": "f_nuc^crit = 4γ/d",
+   "tier": "数",
+   "source": "C-7：在本体系结构性惰性（ΔG_v/f_crit ≈ 17–70）"
+  },
+  {
+   "name": "R_nuc",
+   "value": 320.0,
+   "unit": "nm",
+   "where": "_bk_exp.py --eng-r-nm",
+   "role": "核的面内半宽",
+   "tier": "数",
+   "source": "不是物理核径（真实 r* = 2γ/ΔG_v ≈ 1.4–6.0 nm ≪ Δx）⇒ **亚网格种子约定**"
+  },
+  {
+   "name": "t_nuc",
+   "value": 250.0,
+   "unit": "nm",
+   "where": "_bk_exp.py --eng-t-nm",
+   "role": "核厚 = 板条厚",
+   "tier": "标",
+   "source": "**与文献冲突**：Shuai 2026 给 0.51–0.88 µm ⇒ 闭环版用 510 nm"
+  },
+  {
+   "name": "plate L/W/T",
+   "value": [
+    2400,
+    640,
+    250
+   ],
+   "unit": "nm",
+   "where": "_bk_exp.py --plate-*",
+   "role": "种子几何/长厚比",
+   "tier": "标",
+   "source": "归档 L/T = 9.6 ≈ Wang 2026 的 9:1 ✓；绝对尺度受盒子限制（C-4）"
+  },
+  {
+   "name": "elong",
+   "value": 3.75,
+   "unit": "-",
+   "where": "_bk_exp.py --eng-elong",
+   "role": "L/W",
+   "tier": "数",
+   "source": "= plate_L/plate_W"
+  },
+  {
+   "name": "nuc cadence",
+   "value": 30,
+   "unit": "steps",
+   "where": "_bk_exp.py --eng-cadence",
+   "role": "形核节奏",
+   "tier": "数",
+   "source": "**规定值**；闭环版由 C-2/C-3 的 athermal 律取代"
+  },
+  {
+   "name": "overlap",
+   "value": 62.5,
+   "unit": "nm",
+   "where": "_bk_exp.py --nuc-overlap-nm",
+   "role": "共用界面的咬入量",
+   "tier": "数",
+   "source": "剂量–响应实测：1Δx 最优；0 会留 1 胞 β 膜、1.5Δx 会撕碎先成片"
+  },
+  {
+   "name": "nv (场数)",
+   "value": 6,
+   "unit": "-",
+   "where": "_bk_exp.py --laths",
+   "role": "可表示的板条数上限",
+   "tier": "数",
+   "source": "表示上限（region() 是 int8 ⇒ nreg ≤ 127），不是物理上限。闭环版由 C-2 导出：`--laths` = n 个 1"
+  },
+  {
+   "name": "t_seed (播种厚)",
+   "value": "t_phys + o",
+   "unit": "nm",
+   "where": "_bk_closed.py",
+   "role": "引擎播种的板条厚",
+   "tier": "数",
+   "source": "**不是物理量**，是\"预补被咬量\"的记账偏移；判据（V-8b/A-8）的靶是 `--plate-t-physical`。⚠ Round 5 实测：被咬量**不是常数 o/2**（n=2 时≈0、n=6 时≈o）⇒ 本条的**取值未闭合**，开关 `--seed-comp-frac`（`_bk_closed.py`）"
+  },
+  {
+   "name": "q (冷速)",
+   "value": "q_cap × cool_ratio",
+   "unit": "K/s",
+   "where": "windowB_closure.q_max_ordered",
+   "role": "athermal 时钟 T(t)=T_start−q·t 的速率",
+   "tier": "推",
+   "source": "C-3 的有序性上界 `q ≤ M·ΔG_v(T_start)/(α_KM·L_lath)` × 安全系数。CLI：`_bk_exp.py --cool-rate`（0 = 自动取 C-3 的值；非 0 = 用户给定并检查）"
+  },
+  {
+   "name": "cool_ratio",
+   "value": 0.8,
+   "unit": "-",
+   "where": "_bk_exp.py --cool-ratio",
+   "role": "q 的安全系数",
+   "tier": "数",
+   "source": "0.8 ⇒ Δt_grow/Δt_nuc = 0.8（留 20% 余量）；同时决定 C-3 的步数下界要乘 1/0.8"
+  },
+  {
+   "name": "gamma_film (γ_f)",
+   "value": 0.6,
+   "unit": "J/m²",
+   "where": "_bk_exp.py --gamma-film",
+   "role": "`auto` 臂的面带 ψ 模型里的\"残余 β 膜\"面能",
+   "tier": "标",
+   "source": "用于 C-1/C-6 的润湿判决（P-2）：**假设存在**一层 β 膜时的膜/基体面能。C-6 说 γ_RS,max=0.277 < 2γ_α′β ⇒ **不润湿 ⇒ 干晶界**，而 `auto` 臂的实测 ψ 单调退湿到 0.09 与之一致。⚠ 它只在 `--arm auto` 被读到；闭环算例（`dry`/`gpos`）不用它"
+  },
+  {
+   "name": "N / dx",
+   "value": [
+    96,
+    62.5
+   ],
+   "unit": "-/nm",
+   "where": "_bk_exp.py --N/--dx-nm",
+   "role": "离散化",
+   "tier": "数",
+   "source": "约束① t/Δx ≥ 3；C-4 给 N=96 下 Δx 必须 ≥125 nm 才能装下文献厚度的 6 根"
+  },
+  {
+   "name": "aniso (Herring)",
+   "value": 0.4,
+   "unit": "-",
+   "where": "_bk_exp.py kw",
+   "role": "γ(n) 各向异性强度",
+   "tier": "数",
+   "source": "Herring 刚度项；与 γ_RS 的 θ 依赖正交"
+  },
+  {
+   "name": "facet_lam / facet_eps",
+   "value": [
+    0.0,
+    0.05
+   ],
+   "unit": "-",
+   "where": "_bk_exp.py --facet-*",
+   "role": "刻面（默认关）",
+   "tier": "数",
+   "source": "facet_lam=0 ⇒ 归档算例未启用刻面"
+  },
+  {
+   "name": "norm_smooth",
+   "value": 0,
+   "unit": "-",
+   "where": "_bk_exp.py --norm-smooth",
+   "role": "∇d 盒滤波宽度",
+   "tier": "数",
+   "source": "离散正则化，不是物理量"
+  },
+  {
+   "name": "reinit_dt / band",
+   "value": [
+    0.0001,
+    6.0
+   ],
+   "unit": "-",
+   "where": "_bk_exp.py",
+   "role": "Sussman 重初始化",
+   "tier": "数",
+   "source": "reinit_dt=1e-4 而 dt≈2.7e-8 ⇒ 200 步里不会触发（R22/R23 已记账）"
+  }
+ ],
+ "n_lath_derived": {
+  "L_lath_um": 1.0,
+  "W_lath_um": 0.2667,
+  "dx_nm_rec": 125.0,
+  "q_rec": 2352408.095679015,
+  "steps_rec": 3109,
+  "beta_h_rec": 6.286507297993167,
+  "n_geo_cap": 48,
+  "ordered_ratio": 0.8000000000000002,
+  "ok": true
+ }
+}
