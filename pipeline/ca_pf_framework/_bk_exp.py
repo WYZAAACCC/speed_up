@@ -2230,6 +2230,7 @@ def run(a):
               # ★★★★★ R69（`BLOCK_SELFAC.md §8 C`）：**周期性面片投影**（保面机制）。
               #   算子已过正对照（解析长方体幂等、体积 0.0%）。默认 0 ⇒ 逐位不变。
               facet_proj=int(a.facet_proj),
+              facet_proj_order=str(a.facet_proj_order),   # * B2 (default pre = current)
               # ★★★★★ R581-L1（goal §(3) L1）：`adv.extend` 的 EDT 分支档。
               #   默认 `legacy` ⇒ **归档路径逐位不变**（由 `_r576_regress.sh` 把关）。
               extend_mode=str(a.extend_mode))
@@ -4704,6 +4705,15 @@ def main():
     #   ⚠ 默认 0 = 关 ⇒ **归档路径逐位不变**。
     ap.add_argument('--facet-proj', type=int, default=0,
                     help='每多少步做一次面片投影；0 = 关（默认）')
+    # ***** B2 (user 2026-10-07 approved): causal direction of facet projection.
+    #   'pre'  = project at the step head (DEFAULT = current behaviour).
+    #   'post' = project at the step tail (B2: physics first, geometry after).
+    #   Default 'pre' => archive path bit-identical (_r30_regress.sh gates it).
+    #   NOTE: argparse does `help %% params`, so a literal percent must be escaped.
+    ap.add_argument('--facet-proj-order', default='pre', choices=('pre', 'post'),
+                    help='facet projection causal direction: pre=head (default), '
+                         + 'post=tail (physics first, then geometry; B2). '
+                         + 'Has no effect when --facet-proj is 0.')
     # ★★★★★ 2026-10-01（`R30_AUDIT_LEDGER.md` **§186**）：**投影的"排除掩码"开关**。
     #   `0`（**新默认**）= 不构造 `excl` ⇒ 同变体相邻两场的盒子**贴合**（实测缝宽 −0.32 胞）；
     #   `1` = 旧行为（R73）：把"与同变体另一个场相邻"的胞排除出取跨度的点云

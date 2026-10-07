@@ -4331,6 +4331,7 @@ class LevelSetMulti(object):
                 facet_lam=0.0, facet_eps=0.05, lambda_el=0.0, band_len=None,
                 norm_smooth=0, mob_wulff=False, mob_dip=0.0,
                 mob_iform='exp2', mob_ratio=9.0, el_scale=1.0, facet_proj=0,
+                facet_proj_order='pre',   # * B2 (default pre = current: project at step head)
                 extend_mode='legacy'):
         # ★★★★★ R69（`BLOCK_SELFAC.md §8 C` / `R30_AUDIT_LEDGER.md §65`）：
         #   **周期性面片投影**（保面机制）。动机：实测平坦端面在界面走过 ~5Δx
@@ -4341,6 +4342,11 @@ class LevelSetMulti(object):
         #   ⚠ 默认 `facet_proj=0` ⇒ **本段不进入，归档路径逐位不变**。
         #   ⚠ 记账：投影是**表示层的重整**，不是新增物理；其合法性来自
         #     "零厚度 Gibbs 面本就允许面与面之间是奇异的"这一**建模前提**。
+        # * B2: in 'post' mode we do NOT project at the step head; instead we
+        #   force the original guard below to be false, so the whole original
+        #   block (indentation untouched) is skipped. Default 'pre' => no-op.
+        if str(facet_proj_order) == 'post':
+            facet_proj = 0
         if facet_proj and int(facet_proj) > 0:
             if not hasattr(self, '_fp_cnt'):
                 self._fp_cnt = 0
@@ -4547,6 +4553,16 @@ class LevelSetMulti(object):
             self._advance_perfield(dt, karr, larr, ed, stiff_f, iface_band,
                                    band_cells, adv_grad)
             _r576_res = self._finish_advance(reg0, dt)
+            # ***** B2 (user 2026-10-07 approved, plan R693): move the geometric
+            #   constraint to the END of the step (reverse the causal direction).
+            #   Why: projecting at the step head makes the physics run on an
+            #     already-rewritten shape => kinetics changed by 2.27x (R674).
+            #   Now: physics runs on the REAL shape; geometry only keeps facets flat.
+            #   Default 'pre' => this block never runs => archive path bit-identical.
+            if (facet_proj and int(facet_proj) > 0
+                    and str(facet_proj_order) == 'post'
+                    and int(getattr(self, '_fp_cnt', 0)) % int(facet_proj) == 0):
+                self.facet_project()
             acct.span_end('adv.total')
             return _r576_res
         with acct.mark('adv.alloc'):
@@ -5556,6 +5572,16 @@ class LevelSetMulti(object):
         self.par.for_each([(lambda k=int(k): _step_k(int(k))) for k in _k_items],
                           tag='advance.k_loop')
         _r576_res = self._finish_advance(reg0, dt)
+        # ***** B2 (user 2026-10-07 approved, plan R693): move the geometric
+        #   constraint to the END of the step (reverse the causal direction).
+        #   Why: projecting at the step head makes the physics run on an
+        #     already-rewritten shape => kinetics changed by 2.27x (R674).
+        #   Now: physics runs on the REAL shape; geometry only keeps facets flat.
+        #   Default 'pre' => this block never runs => archive path bit-identical.
+        if (facet_proj and int(facet_proj) > 0
+                and str(facet_proj_order) == 'post'
+                and int(getattr(self, '_fp_cnt', 0)) % int(facet_proj) == 0):
+            self.facet_project()
         acct.span_end('adv.total')
         return _r576_res
 
