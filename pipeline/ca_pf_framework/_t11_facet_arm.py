@@ -59,6 +59,27 @@ nuc = sys.argv[9] if len(sys.argv) > 9 else "125.0"
 #   算子已过正对照（解析长方体上幂等 s=1.000、体积变化 0.0%）。
 #   ⚠ 默认 0（关）；语义 = **每 N 步做一次面片投影**。
 fproj = sys.argv[10] if len(sys.argv) > 10 else "0"
+# ★★★★ 2026-10-07（goal A6 的混淆修正）：`--nuc-mode`。
+#   **发现**（`_bk_exp.py:1774-1775`，逐字）：
+#     `use_engine = (a.arm=='eng') or (a.nuc_mode=='engine') or
+#                   (a.nuc_mode=='auto' and bool(a.grow_stack) and a.nuc_every <= 0)`
+#   ⇒ **`--nuc-every 0` 不等于"不形核"**！默认 `nuc_mode='auto'` + `grow_stack`
+#     ⇒ `use_engine=True` ⇒ **引擎在生长中自动形核**（`g.nucleate()` 在 :2863/:3114 被调）。
+#   ⇒ 这就是各臂**场数不同**（5/3/5/4/5）的来源 ⇒ **A6 的 `Λ` 对照被"形核历史"污染**。
+#   **修法（不改主代码）**：传 `--nuc-mode driver` ⇒ `use_engine=False`
+#     ⇒ **只播驱动层那 1 片**，此后不再形核 ⇒ **单板条隔离实验**。
+ncm = sys.argv[13] if len(sys.argv) > 13 else "auto"
+# ★★★★ 2026-10-07（A6 混淆的**正确**修法）：`--eng-cadence`。
+#   ⛔ **第一版修法是错的**：我传 `--nuc-mode driver` 想把自动形核关掉，
+#     结果 `use_engine=False` ⇒ `grow` 也变 False ⇒ **板条根本没长**
+#     （实测：`Q0/Q1` 跑到 step375 只有 **32 胞**；对照 `L0` 的场2 有 **18182 胞**）。
+#   ✅ **正确修法**（`_bk_exp.py:2855`）：引擎形核由
+#        `if use_engine and it>0 and a.eng_cadence >= 0 and not _athermal:`
+#      把关 ⇒ **保持 `--nuc-mode auto`（`use_engine=True`，生长路径不变），
+#      只传 `--eng-cadence -1`** ⇒ 关掉节奏形核、**只播驱动层那 1 片**。
+#   ⚠ 记账：`--eng-cadence` 默认 **30 步**（`:4479`）⇒ 我此前所有臂都是"每 30 步问一次"
+#     ⇒ **各臂场数 3–5 就是这么来的**（A6 的 `Λ` 对照因此被"形核历史"污染）。
+ecad = sys.argv[14] if len(sys.argv) > 14 else "30"
 
 argv = [
     PY, "-u", "_bk_exp.py",
@@ -69,6 +90,7 @@ argv = [
     "--nuc-shape", "disc", "--grow-stack",
     "--nuc-every", "0", "--nuc-init", "0",
     "--nuc-law", "cadence", "--nuc-block-target", "0",
+    "--nuc-mode", ncm, "--eng-cadence", ecad,
     "--gamma0", "0.25", "--gamma-film", "0.6",
     "--alpha-km", "0.041739", "--T-end", "298.0", "--cool-rate", "2352400.0",
     "--qs-clock", "1", "--qs-max-relax", "100",
