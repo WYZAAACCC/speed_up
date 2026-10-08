@@ -33,7 +33,8 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ⚠ 本文件归档在 `_r712_work/` ⇒ 它 import 的 `_r68_facet_op.py` 在**父目录**
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _r68_facet_op as FP          # noqa: E402
 
 
