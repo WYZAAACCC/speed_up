@@ -2597,6 +2597,11 @@ def run(a):
               't_sim=%.6g' % (_qs_T, _qs_stage, _qs_relax, _qs_conv,
                               len(_qs_dV), t_sim))
 
+    # ★★★★★★ R718 / S1：CFL 守卫状态（`R712 §10.3`）。**只在 CFL_GUARD 设了才用**。
+    #   ⚠ 前置条件（`R712 §10.3c`）：`_df_now` 原先**只在 `it > 0` 的 athermal 分支里赋值**
+    #     （`:2627/:2638`）⇒ 守卫**不得**依赖它；本守卫只用 `dt` 与 `g.dG_max`，两者每步都有。
+    _cfl_peak, _cfl_written, _cfl_last_report = 0.0, 0.0, 0.0
+    _cfl_n_over, _cfl_first_over, _cfl_told = 0, -1, False
     for it in range(_it0, a.steps + 1):
         # ★ R477（1B）：到 T_end **且该档已弛豫收敛** ⇒ 正常收工（不是步数用尽）。
         if _qs_clock and _qs_stop and _qs_conv:
@@ -2645,6 +2650,79 @@ def run(a):
             #   ⚠ 只新增属性 ⇒ 不影响任何既有路径。
             g.vmap = dict(vmap)
             g.advance(dt, **kw)
+            # ═══════════════════════════════════════════════════════════════════════
+            # ★★★★★★ R718 / S1：**有效 CFL 守卫**（`R712_REPAIR_SPEC.md §10.3`，设计已冻结）
+            #   症状（F8 / P1-7）：`advance` 把**总驱动**（Δf + Δed − γκ）的最大值写在
+            #     `g.dG_max`，而本驱动层定 dt 用的是**化学驱动力** `Δf`（见 `:2630/:2639`）
+            #     ⇒ 实际每步位移 `cfl_used = dt·MOB·dG_max/dx` **可能远大于设计值 0.15**。
+            #   实测基线（`R716`，扫 131 个归档）：全库峰值 **4.881**、越限 **2/131**；
+            #     **当前世代 `dG_max/Δf ≈ 1.0–1.24`（不越限）**，旧世代（`t5AB_C/D`）26–33。
+            #   ## 门控（**环境变量**，与 `SEED_CLEAN_EVERY`（`:2654`）同一套做法 ⇒ 不改参数集）
+            #     CFL_GUARD      = off | warn | abort      默认 off
+            #     CFL_GUARD_MAX  = <float>                 默认 1.0（仅 abort 档用）
+            #   ## 位置（`R712 §10.3c`）：`g.advance` **之后**、**任何 `continue` 之前**
+            #     —— 循环体的两个 `continue` 在 `:3404`（独立快照档）与 `:3406`（非测量档）
+            #   ## 口径（`R712 §10.3b`，写死不许事后挪）
+            #     cfl_used = dt·MOB·dG_max/dx   ← 与 `series.csv` 同名列（`:88`/`:3589`）同一口径
+            #   ## ⚠ 记账（`R712 §10.3d`）：**不能写 `meta.json`** —— 那份在运行开始时
+            #     已 dump（`:2263`），此时守卫还没跑。⇒ 守卫**自己落盘** `cfl_guard_<tag>.txt`。
+            #   ## ⚠ 与规范的唯一偏离：落盘时机取"**峰值更新时**"而非"循环结束后"
+            #     —— 理由：`continue` 在 `:3404/:3406`，放循环尾要另找位置；
+            #        放这里天然满足"每步都到"，且被中断时数据不丢。
+            #   ## 零副作用：不设 `CFL_GUARD` ⇒ 整段不进（不写文件、不改 dt、不打印）
+            if (os.environ.get('CFL_GUARD') or 'off').strip().lower() in ('warn', 'abort'):
+                try:
+                    _cfl_guard_mode = (os.environ.get('CFL_GUARD') or 'off').strip().lower()
+                    _cfl_guard_max = float(os.environ.get('CFL_GUARD_MAX') or 1.0)
+                    _cfl_now = (float(dt) * MOB
+                                * float(getattr(g, 'dG_max', float('nan'))) / dx)
+                    if _cfl_now == _cfl_now:                    # NaN 感知
+                        if _cfl_now > _cfl_peak + 1e-15:
+                            _cfl_peak = _cfl_now
+                        if _cfl_now > _cfl_guard_max:
+                            _cfl_n_over += 1
+                            if _cfl_first_over < 0:
+                                _cfl_first_over = it
+                    # 打印策略 (e)：**首次越限**时必报；之后峰值再涨 ≥25% 才报（避免刷屏）
+                    # ⚠ 更正（2026-10-08，V1–V5 验收抓到）：第一版写成
+                    #   `_cfl_guard_max < _cfl_now and not _cfl_told` —— 条件**反了**
+                    #   ⇒ 在**没越限**的算例上也会报"cfl_used=0.1528 > 上限 1.0000"（自相矛盾）。
+                    #   且 `_cfl_last_report` 从 0 起 ⇒ 首次必然触发 +25% 分支 ⇒ 每个算例都误报。
+                    #   正解：越限判断一律用 `_cfl_now > _cfl_guard_max`。
+                    _cfl_over = (_cfl_now == _cfl_now) and (_cfl_now > _cfl_guard_max)
+                    if _cfl_over and not _cfl_told:
+                        _cfl_told = True
+                        _cfl_last_report = _cfl_peak
+                        P('  ⚠ **CFL 守卫**（CFL_GUARD=%s）：step %d 出现 '
+                          'cfl_used=%.4f > 上限 %.4f ⇒ 界面每步位移超过一个 dx，'
+                          '**本算例的界面剖面不可信**'
+                          % (_cfl_guard_mode, it, _cfl_now, _cfl_guard_max))
+                    elif _cfl_told and _cfl_peak > _cfl_last_report * 1.25:
+                        _cfl_last_report = _cfl_peak
+                        P('  ⚠ CFL 守卫：峰值升到 %.4f（step %d）' % (_cfl_peak, it))
+                    # 落盘 (d)：峰值更新时重写；写失败**不得影响仿真**（N12 教训）
+                    if _cfl_peak > _cfl_written + 1e-15:
+                        _cfl_written = _cfl_peak
+                        _cfl_txt = ('cfl_used_max=%.8g\nn_steps_over_%g=%d\n'
+                                    'first_over_step=%d\nmode=%s\n'
+                                    % (_cfl_peak, _cfl_guard_max, _cfl_n_over,
+                                       _cfl_first_over, _cfl_guard_mode))
+                        try:
+                            with open(os.path.join(outdir,
+                                      'cfl_guard_%s.txt' % tag), 'w') as _fh:
+                                _fh.write(_cfl_txt)
+                        except Exception as _e:
+                            P('  ⚠ cfl_guard 落盘失败（不影响仿真）: %s' % _e)
+                    # abort 档：峰值超限 ⇒ 非零退出
+                    if _cfl_guard_mode == 'abort' and _cfl_peak > _cfl_guard_max:
+                        P('  ⛔ **CFL 守卫 abort**：峰值 cfl_used=%.4f > CFL_GUARD_MAX=%.4f '
+                          '⇒ 拒绝继续（step %d）' % (_cfl_peak, _cfl_guard_max, it))
+                        raise SystemExit(2)
+                except SystemExit:
+                    raise
+                except Exception as _e:                        # noqa: BLE001
+                    P('  ⚠ CFL 守卫异常（忽略，不影响仿真）: %s' % _e)
+            # ═══════════════════════════════════════════════════════════════════════
             # ★★★★★★ s303（**周期性连通性清理**）；未设 `SEED_CLEAN_EVERY` ⇒ 整段不进
             #   ## 为什么（t10FIX @step100 实测）
             #     s301c 的"播种后清理"修好后 ⑦ 从 27%→79%（J1 PASS），但仍 8/38 场带小碎片，
