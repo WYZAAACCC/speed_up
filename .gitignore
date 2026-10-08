@@ -384,3 +384,7 @@ pipeline/gibbs/prod3d/results_*/
 lit_search/
 pipeline/ca_pf_framework/_viz/
 pipeline/ca_pf_framework/_r581_wfout/
+
+# ---- 导出的主仿真包（含冒烟产物）----
+/winb_core/_smoke_out/
+/winb_core/*.npz
