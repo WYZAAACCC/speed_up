@@ -337,6 +337,8 @@ pipeline/ca_pf_framework/_r580_backup/
 *.b2bak
 *.s1orig
 *.s1bak
+*.lsqorig
+*.lsqbak
 *_backup_windowB_surface.py_*
 *_backup__bk_exp.py_*
 *.orig
